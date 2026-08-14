@@ -1,0 +1,27 @@
+{{- /*
+  Optional LimitRange (v1). Default on via .Values.limitRange.enabled so
+  omitted container resources still get requests (HPA denominator) and
+  limits (noisy-neighbor cap). Does not change Deployments that already
+  set resources. Set false to skip the object.
+*/ -}}
+{{- if .Values.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  limits:
+    - type: Container
+      max:
+        {{- toYaml .Values.limitRange.max | nindent 8 }}
+      min:
+        {{- toYaml .Values.limitRange.min | nindent 8 }}
+      default:
+        {{- toYaml (index .Values.limitRange "default") | nindent 8 }}
+      defaultRequest:
+        {{- toYaml .Values.limitRange.defaultRequest | nindent 8 }}
+{{- end }}

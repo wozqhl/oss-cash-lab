@@ -1,0 +1,37 @@
+{{- /*
+  Optional HorizontalPodAutoscaler (autoscaling/v2). Default off via
+  .Values.hpa.enabled so helm install does not manage replicas without
+  metrics-server. When enabled: CPU utilization (default 70%),
+  minReplicas 1 / maxReplicas 4. Does not change replicaCount default.
+  Needs metrics-server (metrics.k8s.io) to actually scale; idle without it.
+*/ -}}
+{{- if .Values.hpa.enabled }}
+{{- range $name, $bet := .Values.bets }}
+{{- if $bet.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    app.oss-cash-lab.dev/{{ $name }}: "true"
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ $.Values.hpa.minReplicas }}
+  maxReplicas: {{ $.Values.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $.Values.hpa.cpu.averageUtilization }}
+{{- end }}
+{{- end }}
+{{- end }}

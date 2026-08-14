@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-and-mvp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Skip install/cache: stdlib-only smoke (no lockfile).
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Smoke
+        run: make smoke
+
+      - name: Local MVP
+        run: make local-mvp
+
+      # Optional short stack demo (B+C+D+E+F HTTP without Docker)
+      - name: Stack demo (optional)
+        run: make stack-demo
+        continue-on-error: true
+
+  # Optional: AI-BOM SARIF → GitHub code scanning (enable code scanning first).
+  # Copy-paste consumer examples (not enabled here): examples/github-actions/
+  # Uncomment to run D scan + upload-sarif on pushes/PRs.
+  # ai-bom-sarif:
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     security-events: write
+  #     contents: read
+  #     actions: read
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
+  #     - name: Scan sample-app (SARIF)
+  #       working-directory: bets/d-ai-bom
+  #       run: |
+  #         PYTHONPATH=src python3 -m ai_bom scan examples/sample-app \
+  #           --policy policies/default.json \
+  #           --sarif out/bom.sarif
+  #     - name: Upload SARIF
+  #       uses: github/codeql-action/upload-sarif@v3
+  #       with:
+  #         sarif_file: bets/d-ai-bom/out/bom.sarif
+  #         category: ai-bom

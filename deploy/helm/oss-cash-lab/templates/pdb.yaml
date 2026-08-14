@@ -1,0 +1,27 @@
+{{- /*
+  Optional PodDisruptionBudget (policy/v1). Default off via
+  .Values.pdb.enabled so replicaCount 1 does not surprise-block
+  node drain. When enabled, maxUnavailable: 1 (allows eviction of
+  the last replica). HA: replicaCount >= 2 + consider minAvailable: 1.
+*/ -}}
+{{- if .Values.pdb.enabled }}
+{{- range $name, $bet := .Values.bets }}
+{{- if $bet.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    app.oss-cash-lab.dev/{{ $name }}: "true"
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/{{ $name }}: "true"
+{{- end }}
+{{- end }}
+{{- end }}

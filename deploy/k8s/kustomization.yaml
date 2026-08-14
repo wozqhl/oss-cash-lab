@@ -1,0 +1,34 @@
+# Optional kustomize overlay listing B–F HTTP services + NetworkPolicy + PDB + HPA + Ingress + LimitRange + ResourceQuota.
+# Images are placeholders (not published). No cluster required for smoke parse.
+# NetworkPolicy (networkpolicy.yaml) is networking.k8s.io/v1 (built-in, not a
+# CRD) — listed here. PodDisruptionBudget (pdb.yaml) is policy/v1 (built-in)
+# — listed here. HorizontalPodAutoscaler (hpa.yaml) is autoscaling/v2
+# (built-in) — listed here. HPA needs metrics-server to scale; without it
+# the objects sit idle and replica=1 is unchanged. Ingress (ingress.yaml)
+# is networking.k8s.io/v1 (built-in) — listed here. Needs an ingress
+# controller (ingress-nginx or similar); without it the object sits idle.
+# TLS omitted (local; no Secrets). LimitRange (limitrange.yaml) is v1
+# (built-in) — listed here. Fills omitted container CPU/memory requests
+# and limits (HPA needs requests; noisy-neighbor protection). Does not
+# change Deployments that already set resources. ResourceQuota
+# (resourcequota.yaml) is v1 (built-in) — listed here. Namespace hard
+# caps sized for B–F × HPA maxReplicas 4 plus headroom so the demo
+# namespace cannot unbounded-scale. Pairs with LimitRange. B–F Deployments bake restricted-ish pod+container securityContext (non-root, drop ALL, read-only root + emptyDir /tmp; B/C/F also /app/data). No extra overlay. ServiceMonitors
+# (servicemonitor.yaml) and PrometheusRules (prometheusrule.yaml) need
+# Prometheus Operator CRDs (monitoring.coreos.com/v1) — apply those files
+# separately, not listed here, so `kubectl apply -k deploy/k8s` still
+# works without the CRDs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - b-mcp-gateway.yaml
+  - c-agent-ci.yaml
+  - d-ai-bom.yaml
+  - e-otel-ai-cost.yaml
+  - f-cn-work-agent.yaml
+  - networkpolicy.yaml
+  - pdb.yaml
+  - hpa.yaml
+  - ingress.yaml
+  - limitrange.yaml
+  - resourcequota.yaml

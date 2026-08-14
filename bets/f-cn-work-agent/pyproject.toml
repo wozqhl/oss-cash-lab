@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cn-work-agent"
+version = "0.1.0"
+description = "On-prem WeCom/DingTalk/Feishu work agent"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [{ name = "wozqhl" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+cn-work-agent = "cn_work_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

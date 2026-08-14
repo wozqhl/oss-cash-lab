@@ -1,0 +1,196 @@
+# NetworkPolicy for B–F HTTP services (networking.k8s.io/v1 — built-in, not a CRD).
+# Listed in kustomization.yaml so `kubectl apply -k deploy/k8s` applies these too.
+# CNI must implement NetworkPolicy (Calico, Cilium, Antrea, kube-router, …).
+# The default CNI on some clusters (Flannel, kindnet without a policy plugin)
+# ignores these objects — apply is a no-op for enforcement.
+#
+# Ingress is same-namespace + Prometheus scrape + kube-system. Kubelet
+# liveness/readiness probes typically come from the *node* network, not a
+# pod. Many CNIs exempt host→pod; if /health or /ready fail after apply,
+# add an extra ingress peer `- {}` (allow all sources) on port `http`.
+# Do not drop the named port or probes cannot recover.
+#
+# Egress allow-list: DNS (UDP/TCP 53) + HTTPS 443 for outbound webhooks /
+# upstreams. policyTypes includes Egress, so anything else is denied —
+# do not ship an empty egress list (that would break DNS and webhooks).
+# Apply: kubectl apply -f deploy/k8s/networkpolicy.yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: b-mcp-gateway
+  labels:
+    app.oss-cash-lab.dev/b-mcp-gateway: "true"
+spec:
+  podSelector:
+    matchLabels:
+      app.oss-cash-lab.dev/b-mcp-gateway: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: c-agent-ci
+  labels:
+    app.oss-cash-lab.dev/c-agent-ci: "true"
+spec:
+  podSelector:
+    matchLabels:
+      app.oss-cash-lab.dev/c-agent-ci: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: d-ai-bom
+  labels:
+    app.oss-cash-lab.dev/d-ai-bom: "true"
+spec:
+  podSelector:
+    matchLabels:
+      app.oss-cash-lab.dev/d-ai-bom: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: e-otel-ai-cost
+  labels:
+    app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+spec:
+  podSelector:
+    matchLabels:
+      app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: f-cn-work-agent
+  labels:
+    app.oss-cash-lab.dev/f-cn-work-agent: "true"
+spec:
+  podSelector:
+    matchLabels:
+      app.oss-cash-lab.dev/f-cn-work-agent: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443

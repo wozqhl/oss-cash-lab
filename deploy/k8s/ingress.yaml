@@ -1,0 +1,83 @@
+# Ingress for B–F HTTP services (networking.k8s.io/v1 — built-in).
+# Listed in kustomization.yaml so `kubectl apply -k deploy/k8s` applies this too.
+#
+# One Ingress, five host rules, path Prefix `/` so backends do not need
+# path strip (services serve `/health` `/ready` `/metrics` at `/`, not
+# under `/mcp` `/ci` …). Path-based on a single host would require a
+# rewrite; per-host `/` is the cleaner local default.
+#
+# Hosts (add to /etc/hosts pointing at the ingress controller, e.g. 127.0.0.1
+# for kind/minikube port-forward):
+#   gateway.oss-cash-lab.local  → b-mcp-gateway
+#   ci.oss-cash-lab.local       → c-agent-ci
+#   bom.oss-cash-lab.local      → d-ai-bom
+#   cost.oss-cash-lab.local     → e-otel-ai-cost
+#   agent.oss-cash-lab.local    → f-cn-work-agent
+#
+# ingressClassName: nginx (ingress-nginx). Change the class for Traefik /
+# Contour / HAProxy / Istio gateway. Needs an ingress controller; without
+# one the object sits idle (no Address, no traffic). TLS omitted for local
+# (no Secrets). If NetworkPolicy is applied, allow the controller namespace
+# (typically ingress-nginx) to reach port http.
+#
+# Apply: kubectl apply -f deploy/k8s/ingress.yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oss-cash-lab
+  labels:
+    app.kubernetes.io/name: oss-cash-lab
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: gateway.oss-cash-lab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: b-mcp-gateway
+                port:
+                  name: http
+    - host: ci.oss-cash-lab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: c-agent-ci
+                port:
+                  name: http
+    - host: bom.oss-cash-lab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: d-ai-bom
+                port:
+                  name: http
+    - host: cost.oss-cash-lab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: e-otel-ai-cost
+                port:
+                  name: http
+    - host: agent.oss-cash-lab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: f-cn-work-agent
+                port:
+                  name: http

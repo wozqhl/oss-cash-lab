@@ -1,0 +1,3329 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "MCP Gateway API",
+    "description": "Enterprise MCP gateway: health, tools list/call, audit query/export, admin reload, admin tenants list, admin tenant API token rotation (`POST /admin/tenants/{tenantId}/rotate`). Auth via API key (X-Api-Key or Bearer) for tenants; admin token for reload, tenant inventory (`GET /admin/tenants`), redacted runtime config (`GET /admin/config` / `adminGetConfig`; **no** secrets), SIEM audit CSV (`GET /admin/audit.csv`), Markdown (`GET /admin/audit.md`), and HTML (`GET /admin/audit.html` / `GET /admin/audit?format=csv|json|md|html`; columns `ts,tenantId,tool,allow,reason,via,requestId`; **no** args/headers/tokens/bodies; empty CSV → header only; empty Markdown → heading + header; empty HTML → heading + “no events”), and cross-tenant audit. In-memory audit ring buffer: default max **10000** events (`--audit-max` / `AUDIT_MAX_EVENTS`; `0` = unlimited, dangerous). Over cap, drop oldest. Live `GET /audit`, `GET /audit/export`, and `GET /admin/audit` (CSV/JSON/Markdown/HTML) see only the retained window; webhook fan-out still posts every new event. Prometheus gauges `audit_events` and `audit_retained`. Optional per-tenant `ipAllowlist` (exact IPv4/IPv6 or IPv4 CIDR /8,/16,/24): client IP from X-Forwarded-For first hop or socket remoteAddress; mismatch → 403 `{error:\"forbidden\",reason:\"ip_denied\"}`. Prometheus `GET /metrics` includes `tool_calls_total`, `rate_limited_total`, optional `ip_denied_total`, `http_requests_total`. Optional `maxBodyBytes` (default 1048576; per-tenant override): POST body over limit → 413 `{error:\"payload_too_large\"}` before JSON parse (Content-Length early or stream count). Prometheus `body_too_large_total`. Optional `cors: { origins: [\"*\"] or explicit list, methods, headers }`. Default omitted/empty `origins` = no CORS headers (deny). When enabled with an explicit list, OPTIONS preflight for a listed Origin → 204 with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin → 403 `{error:\"forbidden\",reason:\"cors_denied\"}`. Matching GET/POST include ACAO. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 503 `Retry-After`). Optional `upstream.timeoutMs` (default 5000): HTTP and stdio upstream calls abort after the timeout. `POST /tools/call` timeout → 504 `{error:\"upstream_timeout\"}`; Prometheus `upstream_timeout_total`; audit `reason=upstream_timeout`. Optional `X-Request-Id` request header: echoed on **every** response. If omitted or empty, the gateway generates a UUID. The same value is stored as `requestId` on audit JSONL events (`GET /audit`, `GET /audit/export`, CLI `export-audit`) and webhook payloads. Optional gzip on audit export: query `gzip=1|true` or request header `Accept-Encoding: gzip` returns a gzipped body with `Content-Encoding: gzip` and `Content-Disposition` filename ending in `.json.gz` / `.csv.gz`. Explicit `gzip=0` disables compression even if Accept-Encoding includes gzip. Uncompressed JSON/CSV remains the default. CLI: `export-audit --gzip --out out/audit.json.gz`. Optional `upstream.breaker: { failureThreshold: 3, openMs: 2000 }` (omitted/`enabled:false`/threshold 0 = disabled). Consecutive `upstream_timeout` and 5xx/connect errors open the circuit: further `POST /tools/call` to that upstream return **503** `{error:\"circuit_open\"}` without calling upstream until `openMs` elapses (half-open: one probe). **503** includes `Retry-After` (remaining seconds until `openUntil`, minimum 1). Audit `reason=circuit_open`; Prometheus `circuit_open_total`. When the breaker is enabled, `GET /health` includes `breaker: { state: closed|open|half_open, failures, openUntil }` (ISO-8601 or null; **no secrets**). The `breaker` field is omitted when disabled so liveness stays `{ok:true}`. `GET /health` is liveness: always 200 `{ok:true}` even if the circuit is open. `GET /ready` is readiness: 200 `{ok:true}` when the breaker is disabled or `closed`/`half_open`; 503 `{ok:false, reason:\"circuit_open\"}` when `state` is `open`. On SIGTERM/SIGINT, 503 `{ok:false, reason:\"shutting_down\"}` wins (liveness `GET /health` stays 200 with `shuttingDown: true` while draining). When enabled, `/ready` includes the same `breaker` snapshot (no secrets). Compose/stack-demo healthchecks stay on `/health`. Optional outbound audit webhooks (`policy.webhooks[]`): fire-and-forget POST JSON after audit write (`type`, `source`, `redacted`, `requestId`, `event`). Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). Optional per-hook `secret`: when set, POST includes `X-Webhook-Signature: sha256=<hex>` HMAC-SHA256 of the **raw JSON body**. On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Optional Prometheus `webhook_retries_total`. Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. See `AuditWebhook`. Admin tenant API token rotation: `POST /admin/tenants/{tenantId}/rotate` (alias `POST /admin/tenants/rotate` body `{tenantId}`) requires the same admin token as `GET /admin/tenants`. Response `{ok:true, tenantId, token, previousTokenExpiresAt?}` — new key shown once. Previous key remains valid for a grace window (default **60s**, env `TOKEN_ROTATE_GRACE_SEC` / `--rotate-grace-sec`) then is rejected. During grace both keys work. Audit event `type=token_rotated` (**no** raw tokens in JSONL/CSV/logs/metrics labels). Unknown tenant → **404**; unauthenticated → **401**. File-backed policies persist the new `apiKey` (and `previousApiKey` / `previousApiKeyExpiresAt` during grace) the same way existing keys are stored; in-memory-only (no `--config`) keeps rotation in process until restart. Streamable HTTP MVP: `POST /mcp` (alias `POST /`) accepts JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`) with the same tenant API key as `/tools/*`. Echoes `MCP-Protocol-Version` (default `2025-03-26`). Assigns `Mcp-Session-Id` UUID on `initialize` if omitted; later calls may omit the session (backward compatible). **Not** full spec SSE: `GET /mcp` returns **405** `Allow: POST, DELETE`. `DELETE /mcp` with `Mcp-Session-Id` terminates that session (**204**; missing header **400** `{error:\"session_id_required\"}`; unknown/expired/already gone **404** `{error:\"session_not_found\"}`). Session id is the capability (no admin token). Idempotent: second DELETE → 404. REST `/tools/*` unchanged. Existing REST `POST /tools/list` and `POST /tools/call` are unchanged. Session TTL default **3600s** (`--session-ttl` / `MCP_SESSION_TTL_SEC`; `0` = no expiry). Unused sessions expire: POST with an expired `Mcp-Session-Id` → **404** `{error:\"session_expired\"}` (clients should re-initialize). Missing session still allowed; unknown (fresh) ids are accepted and tracked (in-memory last-seen cap **10000**, drop oldest).  REST `/tools/*` ignores session. Admin session inventory: `GET /admin/sessions` (same admin token as `GET /admin/tenants`) lists live in-memory Streamable HTTP sessions `{ok, ttlSec, cap, count, sessions[{id, ageMs, ttlRemainingMs, lastSeen}]}` (newest **100** by lastSeen; `count` is the full live size; `truncated: true` when capped; tombstones/expired omitted; optional `dropped` tombstone count; **no** secrets/API keys/Authorization). `ttlSec` is the configured TTL (`0` = no expiry → `ttlRemainingMs` may be `null`). Unauthenticated → **401**. CORS + `X-Request-Id` like other admin GET. Admin force-drop: `DELETE /admin/sessions/{id}` (`adminDeleteSession`; same admin token; **204**; unknown/expired/already gone **404** `{error:\"session_not_found\"}`; unauth **401**; id in the path, **no** `Mcp-Session-Id` header). Client `DELETE /mcp` unchanged. GET /admin/config (`adminGetConfig`) redacted runtime config (no secrets). Admin single-tenant GET: `GET /admin/tenants/{tenantId}` (`adminGetTenant`) returns one tenant with `hasApiKey` / `hasPreviousApiKey` / `previousApiKeyExpiresAt` / `allow` / `deny` / `rateLimit` — **never** `apiKey` or `previousApiKey` values. Unknown id → **404** `{error:\"tenant_not_found\"}`. Admin webhook inventory: `GET /admin/webhooks` (`adminListWebhooks`) returns `{ok, count, webhooks[{id, events, hasUrl, hasSecret}]}` — **never** `url` / `secret` / apiKey / admin token. Empty config → `{ok:true, count:0, webhooks:[]}`. Unauthenticated → **401**.",
+    "version": "0.1.0",
+    "license": {
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8787",
+      "description": "Local MVP default"
+    }
+  ],
+  "tags": [
+    {
+      "name": "health",
+      "description": "Liveness (`GET /health`, always ok:true; `shuttingDown: true` while draining) and readiness (`GET /ready`, 503 when circuit open or shutting down)"
+    },
+    {
+      "name": "tools",
+      "description": "MCP tools list and call"
+    },
+    {
+      "name": "mcp",
+      "description": "Streamable HTTP JSON-RPC MVP (POST JSON-RPC + DELETE session terminate; no SSE)"
+    },
+    {
+      "name": "audit",
+      "description": "Audit query, export packs (JSON/CSV gzip), and admin SIEM CSV/Markdown/HTML"
+    },
+    {
+      "name": "admin",
+      "description": "Hot reload, tenant inventory, single-tenant GET (`GET /admin/tenants/{tenantId}`), tenant API token rotation, SIEM audit CSV/Markdown/HTML, Streamable HTTP session inventory, admin session force-drop (`DELETE /admin/sessions/{id}`), ops, redacted runtime config (`GET /admin/config`), and redacted webhook inventory (`GET /admin/webhooks`)."
+    },
+    {
+      "name": "meta",
+      "description": "OpenAPI and metrics"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health check (optional circuit snapshot)",
+        "operationId": "getHealth",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Gateway is up. Optional `breaker` snapshot when the circuit breaker is configured/enabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins (or `*` when configured). Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "description": "Liveness. Always `{ok:true}` when the process is up (circuit open does not flip `ok`). When `upstream.breaker` is enabled, includes `breaker: { state, failures, openUntil }` (no secrets). Omitted when the breaker is disabled."
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readiness (503 when circuit open or shutting down)",
+        "operationId": "getReady",
+        "security": [],
+        "description": "Readiness. 200 `{ok:true}` when `upstream.breaker` is disabled or state is `closed`/`half_open`. 503 `{ok:false, reason:\"circuit_open\"}` when state is `open`. On SIGTERM/SIGINT drain, 503 `{ok:false, reason:\"shutting_down\"}` wins over healthy 200 (and over circuit_open). When the breaker is enabled, includes `breaker: { state, failures, openUntil }` (same snapshot as GET /health; no secrets). Omitted when disabled. Does not consume the half-open probe. Liveness remains `GET /health` (always 200 `{ok:true}` even if the circuit is open; includes `shuttingDown: true` while draining). Compose/stack-demo healthchecks should stay on `/health`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ready. Breaker disabled or closed/half_open. Optional `breaker` snapshot when enabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": true
+                }
+              }
+            },
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins (or `*` when configured). Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready: upstream circuit breaker is open (`reason: circuit_open`, plus `breaker` snapshot when enabled, `Retry-After` remaining seconds until `openUntil`, min 1) **or** process is shutting down (`reason: shutting_down`) after SIGTERM/SIGINT. GET /health stays 200 (`shuttingDown: true` while draining).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": false,
+                  "reason": "circuit_open",
+                  "breaker": {
+                    "state": "open",
+                    "failures": 1,
+                    "openUntil": "2026-08-13T05:40:00.000Z"
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins (or `*` when configured). Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "OpenAPI 3 document",
+        "operationId": "getOpenApi",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Prometheus metrics (incl. optional ip_denied_total, body_too_large_total, upstream_timeout_total, circuit_open_total, webhook_retries_total)",
+        "operationId": "getMetrics",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "description": "Prometheus text exposition. Counters: `tool_calls_total{tool,decision,tenant}`, `rate_limited_total`, `ip_denied_total` (per-tenant IP allowlist denials; optional / always present at 0), `body_too_large_total` (POST bodies exceeding `maxBodyBytes`; optional / always present at 0), `upstream_timeout_total` (HTTP/stdio upstream aborted after `upstream.timeoutMs`; always present at 0), `circuit_open_total` (tools/call rejected while upstream circuit is open; always present at 0), `webhook_retries_total` (outbound audit webhook POST retries; OSS one retry on 5xx/network/timeout; always present at 0), `http_requests_total{path,status}`. Gauges: `audit_events` and `audit_retained` (in-memory ring length; default cap 10000)."
+      }
+    },
+    "/tools/list": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "List allowed tools for the caller tenant",
+        "operationId": "toolsList",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Filtered tool catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Tool"
+                      }
+                    },
+                    "tenantId": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "upstreamConnected": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenIp"
+          }
+        }
+      }
+    },
+    "/mcp/tools/list": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Alias of /tools/list",
+        "operationId": "mcpToolsList",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Same as /tools/list"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenIp"
+          }
+        }
+      }
+    },
+    "/tools/call": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Call a tool (policy + rate-limit + audit)",
+        "operationId": "toolsCall",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolCallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool executed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "tool": {
+                      "type": "string"
+                    },
+                    "result": {},
+                    "tenantId": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "via": {
+                      "type": "string",
+                      "enum": [
+                        "builtin",
+                        "upstream"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "400": {
+            "description": "Missing tool name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Policy deny; or IP allowlist deny (`reason=ip_denied`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/CircuitOpen"
+          },
+          "504": {
+            "$ref": "#/components/responses/UpstreamTimeout"
+          }
+        },
+        "description": "Call a tool (policy + rate-limit + audit) Body size limited by `maxBodyBytes` (default 1MiB; per-tenant override); over → 413 `payload_too_large`. Upstream proxy abort: `upstream.timeoutMs` (default 5000) on HTTP fetch / stdio RPC; over → 504 `upstream_timeout`. Circuit breaker: `upstream.breaker` `{ failureThreshold, openMs }` (defaults 3 / 2000; omit to disable). Open → 503 `circuit_open` without calling upstream; after `openMs` one half-open probe. 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ]
+      }
+    },
+    "/mcp/tools/call": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Alias of /tools/call",
+        "operationId": "mcpToolsCall",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolCallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Same as /tools/call"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Denied; or IP allowlist deny (`reason=ip_denied`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "description": "Rate limited"
+          },
+          "503": {
+            "$ref": "#/components/responses/CircuitOpen"
+          },
+          "504": {
+            "$ref": "#/components/responses/UpstreamTimeout"
+          }
+        },
+        "description": "Alias of /tools/call Body size limited by `maxBodyBytes` (default 1MiB; per-tenant override); over → 413 `payload_too_large`. Upstream proxy abort: `upstream.timeoutMs` (default 5000) on HTTP fetch / stdio RPC; over → 504 `upstream_timeout`. Circuit breaker: `upstream.breaker` `{ failureThreshold, openMs }` (defaults 3 / 2000; omit to disable). Open → 503 `circuit_open` without calling upstream; after `openMs` one half-open probe. 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1)."
+      }
+    },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "mcp",
+          "tools"
+        ],
+        "summary": "Streamable HTTP JSON-RPC (POST-only MVP)",
+        "operationId": "mcpJsonRpc",
+        "description": "Minimal Streamable HTTP surface for current MCP clients. POST JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `ping`) on `/mcp` (alias `POST /`). Same tenant API key as `/tools/*` (Bearer or `X-Api-Key`). Echoes `MCP-Protocol-Version` (default `2025-03-26`; client YYYY-MM-DD is echoed when sent). Assigns `Mcp-Session-Id` UUID on `initialize` if the client omitted it; missing session on later `tools/list` / `tools/call` is accepted (backward compatible with REST local-mvp). **Not** a full spec SSE rewrite: GET is 405 `Allow: POST, DELETE`. `DELETE /mcp` terminates a session (see `mcpSessionDelete`). REST `/tools/list` and `/tools/call` unchanged (no session required). Session TTL default **3600s** (`--session-ttl` / `MCP_SESSION_TTL_SEC`; `0` = no expiry). Expired `Mcp-Session-Id` → **404** `{error:\"session_expired\"}` so clients re-initialize. Missing session still allowed; unknown ids accepted and tracked (cap 10000, drop oldest). Batch JSON-RPC is not supported (400). Notifications (`notifications/*`) return 202 empty.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/McpProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/McpSessionId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonRpcRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JSON-RPC result (initialize includes `sessionId` + protocolVersion).",
+            "headers": {
+              "MCP-Protocol-Version": {
+                "$ref": "#/components/headers/McpProtocolVersion"
+              },
+              "Mcp-Session-Id": {
+                "$ref": "#/components/headers/McpSessionId"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonRpcResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "JSON-RPC notification accepted (no body).",
+            "headers": {
+              "MCP-Protocol-Version": {
+                "$ref": "#/components/headers/McpProtocolVersion"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenIp"
+          },
+          "404": {
+            "description": "Expired `Mcp-Session-Id`. Body `{error:\"session_expired\"}`. Client should re-initialize. Missing session is still allowed; unknown ids are accepted and tracked. REST `/tools/*` is unaffected.",
+            "headers": {
+              "MCP-Protocol-Version": {
+                "$ref": "#/components/headers/McpProtocolVersion"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "session_expired"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "SSE not implemented (POST-only MVP)",
+        "operationId": "mcpStreamableGet",
+        "security": [],
+        "description": "Streamable HTTP GET would be SSE in the full spec. This MVP is POST JSON-RPC + DELETE session terminate: returns **405** with `Allow: POST, DELETE` so clients fail fast (no hanging event-stream).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/McpProtocolVersion"
+          }
+        ],
+        "responses": {
+          "405": {
+            "description": "Method not allowed. Streamable HTTP MVP is POST JSON-RPC or DELETE to terminate a session (no SSE).",
+            "headers": {
+              "Allow": {
+                "description": "Allowed methods for this path (`POST, DELETE`).",
+                "schema": {
+                  "type": "string",
+                  "example": "POST"
+                },
+                "example": "POST, DELETE"
+              },
+              "MCP-Protocol-Version": {
+                "$ref": "#/components/headers/McpProtocolVersion"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "Terminate Streamable HTTP session",
+        "operationId": "mcpSessionDelete",
+        "security": [],
+        "description": "Terminate the Streamable HTTP session identified by `Mcp-Session-Id`. The session id is the capability — **no** admin token and **no** tenant API key. Success → **204** No Content. Missing header → **400** `{error:\"session_id_required\"}`. Unknown, expired, or already terminated → **404** `{error:\"session_not_found\"}` (idempotent). Does not leak whether the id ever existed. TTL still applies independently. REST `/tools/*` unchanged. Optional audit `type=session_deleted` (**no** raw session id or tokens).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/McpProtocolVersion"
+          },
+          {
+            "name": "Mcp-Session-Id",
+            "in": "header",
+            "required": true,
+            "description": "Session id to terminate. Missing → 400 `session_id_required`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Session terminated. No body.",
+            "headers": {
+              "MCP-Protocol-Version": {
+                "$ref": "#/components/headers/McpProtocolVersion"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `Mcp-Session-Id`. Body `{error:\"session_id_required\"}`.",
+            "headers": {
+              "MCP-Protocol-Version": {
+                "$ref": "#/components/headers/McpProtocolVersion"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "session_id_required"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown, expired, or already terminated session. Body `{error:\"session_not_found\"}`.",
+            "headers": {
+              "MCP-Protocol-Version": {
+                "$ref": "#/components/headers/McpProtocolVersion"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "session_not_found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Query audit events (JSON)",
+        "operationId": "auditQuery",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          },
+          {
+            "AdminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "ISO-8601 lower bound (inclusive)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "ISO-8601 upper bound (inclusive)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "redact",
+            "in": "query",
+            "description": "1|true to redact arguments/result on read",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "redacted": {
+                      "type": "boolean"
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuditEvent"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid since/until"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Tenant mismatch; or IP allowlist deny (`reason=ip_denied`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit/export": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Download audit export pack (JSON or CSV; optional gzip)",
+        "operationId": "auditExport",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          },
+          {
+            "AdminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json"
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "redact",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gzip",
+            "in": "query",
+            "description": "1|true to gzip the pack. Also honored when Accept-Encoding includes gzip (or x-gzip). Explicit gzip=0 disables compression even if Accept-Encoding: gzip. Default uncompressed.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attachment download. Default uncompressed JSON or CSV. With `?gzip=1` or `Accept-Encoding: gzip`: gzipped body, `Content-Encoding: gzip`, filename `.json.gz` / `.csv.gz`.",
+            "headers": {
+              "Content-Disposition": {
+                "description": "attachment; filename=audit-<tenant>-<stamp>.json|csv or .json.gz|.csv.gz when gzipped",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Audit-Count": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Audit-Redacted": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Content-Encoding": {
+                "description": "Present as `gzip` when the pack is compressed (`?gzip=1` or Accept-Encoding: gzip).",
+                "schema": {
+                  "type": "string",
+                  "example": "gzip"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unsupported format or invalid filter"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Tenant mismatch; or IP allowlist deny (`reason=ip_denied`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/reload": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Hot-reload policy from config path and reconnect upstream",
+        "operationId": "adminReload",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy reloaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "reloaded": {
+                      "type": "boolean"
+                    },
+                    "tenants": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "allow": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "deny": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "upstreamTools": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "upstreamError": {
+                      "nullable": true,
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tenants": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List tenants (admin inventory; no raw API keys)",
+        "description": "Admin-token-protected tenant inventory. Returns id, allow/deny counts, rateLimit, hasIpAllowlist, maxBodyBytes, and apiKeyMasked (last 4 only). **Never** returns raw `apiKey`.",
+        "operationId": "adminListTenants",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant summaries (secrets masked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "tenants"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "tenants": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TenantSummary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tenants/{tenantId}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Get one tenant (admin; no secrets)",
+        "description": "Admin-token-protected single-tenant inventory. Complements `GET /admin/tenants` (list) and `POST /admin/tenants/{tenantId}/rotate`. Returns `{ok, id, hasApiKey, hasPreviousApiKey, previousApiKeyExpiresAt, allow, deny, rateLimit, hasIpAllowlist, maxBodyBytes}` from the effective policy. **Never** returns `apiKey` or `previousApiKey` values (booleans + expiry only). Unknown id → **404** `{error:\"tenant_not_found\"}`. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET.",
+        "operationId": "adminGetTenant",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "tenantId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Tenant id from policy.tenants[].id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One tenant (secrets omitted).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                },
+                "example": {
+                  "ok": true,
+                  "id": "acme",
+                  "hasApiKey": true,
+                  "hasPreviousApiKey": false,
+                  "previousApiKeyExpiresAt": null,
+                  "allow": [
+                    "echo",
+                    "digest"
+                  ],
+                  "deny": [
+                    "shell"
+                  ],
+                  "rateLimit": 120,
+                  "hasIpAllowlist": true,
+                  "maxBodyBytes": 1048576
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "unauthorized_admin"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown tenant id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "tenant_not_found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/sessions": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List live Streamable HTTP sessions (admin inventory; no secrets)",
+        "description": "Admin-token-protected inventory of in-memory MCP Streamable HTTP sessions. Returns `{ok, ttlSec, cap, count, sessions}` where `sessions` is up to **100** newest-by-lastSeen (`id`, `ageMs`, `ttlRemainingMs`, `lastSeen` ISO-8601). `count` is the full live size; `truncated: true` when more than 100 exist. Tombstones (deleted/expired ids) are **not** listed; optional `dropped` is the current tombstone count. **Never** includes API keys, Authorization headers, or other secrets. `ttlSec` is the configured TTL (`0` = no expiry → `ttlRemainingMs` may be `null`). Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET. List-only on this path. Admin force-drop is `DELETE /admin/sessions/{id}` (`adminDeleteSession`; id in the path; **no** `Mcp-Session-Id` header). Client `DELETE /mcp` with `Mcp-Session-Id` stays the capability path.",
+        "operationId": "adminListSessions",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Live session inventory (secrets omitted; array capped at 100 newest).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInventory"
+                },
+                "example": {
+                  "ok": true,
+                  "ttlSec": 3600,
+                  "cap": 10000,
+                  "count": 1,
+                  "sessions": [
+                    {
+                      "id": "11111111-1111-4111-8111-111111111111",
+                      "ageMs": 12,
+                      "ttlRemainingMs": 3599988,
+                      "lastSeen": "2026-08-14T02:54:00.000Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Force-drop a Streamable HTTP session (admin ops kill)",
+        "description": "Admin-token-protected force-drop of an in-memory MCP Streamable HTTP session. Session id is in the **path** — **no** `Mcp-Session-Id` header (client `DELETE /mcp` with `Mcp-Session-Id` stays the capability path for when the client is present). Same admin token as `GET /admin/tenants`. Success → **204** No Content (session tombstoned; subsequent `POST /mcp` with that id → **404** `{error:\"session_not_found\"}`). Unknown, expired, or already gone → **404** `{error:\"session_not_found\"}` (idempotent). Missing id in the path (`DELETE /admin/sessions` or `DELETE /admin/sessions/`) → **404** (router-style). Unauthenticated → **401** `unauthorized_admin`. Optional audit `type=session_deleted` with `via: admin` (**no** raw session id or tokens). CORS Allow-Methods include DELETE when CORS is enabled. REST `/tools/*` and client `DELETE /mcp` unchanged.",
+        "operationId": "adminDeleteSession",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Session id to terminate (from `Mcp-Session-Id` / initialize). Missing path segment → 404."
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Session terminated. No body.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "unauthorized_admin"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown, expired, or already terminated session. Body `{error:\"session_not_found\"}`.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "session_not_found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/config": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Redacted runtime config (admin; no secrets)",
+        "description": "Admin-token-protected snapshot of **safe** runtime config for pilot debugging: `sessionTtlSec`, `sessionCap` (default 10000), `auditMax`, `rotateGraceSec`, `rateLimit.perMinute`, `cors.origins` (list or `*`), `upstream.timeoutMs` / `upstream.breaker` (threshold / openMs / optional `state`), tenant **count** (not keys), webhook **count** and `hasWebhookSecret` per dest (**never** the secret). **Never** includes `apiKey`, `previousApiKey`, webhook secrets, admin token, Authorization, `--header` values, or tenant tokens. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET.",
+        "operationId": "adminGetConfig",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted runtime config (secrets omitted).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminRuntimeConfig"
+                },
+                "example": {
+                  "ok": true,
+                  "sessionTtlSec": 3600,
+                  "sessionCap": 10000,
+                  "auditMax": 10000,
+                  "rotateGraceSec": 60,
+                  "rateLimit": {
+                    "perMinute": 60
+                  },
+                  "cors": {
+                    "origins": [
+                      "http://localhost:3000"
+                    ]
+                  },
+                  "upstream": {
+                    "timeoutMs": 5000,
+                    "breaker": {
+                      "enabled": false,
+                      "failureThreshold": 3,
+                      "openMs": 2000,
+                      "state": "closed"
+                    }
+                  },
+                  "tenants": {
+                    "count": 3
+                  },
+                  "webhooks": {
+                    "count": 1,
+                    "destinations": [
+                      {
+                        "hasWebhookSecret": false
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/webhooks": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List outbound webhooks (admin inventory; no secrets)",
+        "description": "Admin-token-protected inventory of configured outbound audit webhooks. Returns `{ok, count, webhooks}` where each row is `{id, events, hasUrl, hasSecret}`. `id` is the configured id when present, otherwise the 0-based source index. `events` is the configured event list (or `[]`). `hasUrl` / `hasSecret` are booleans only. **Never** includes `url`, `secret`, apiKey, previousApiKey, admin token, Authorization, `--header` values, tenant tokens, or request bodies. Empty / omitted `webhooks` → `{ok:true, count:0, webhooks:[]}`. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`; tenant API keys are rejected). CORS + `X-Request-Id` same as other admin GET.",
+        "operationId": "adminListWebhooks",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted webhook inventory (urls and secrets omitted).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookInventory"
+                },
+                "example": {
+                  "ok": true,
+                  "count": 1,
+                  "webhooks": [
+                    {
+                      "id": 0,
+                      "events": [
+                        "tool_call",
+                        "deny"
+                      ],
+                      "hasUrl": true,
+                      "hasSecret": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/audit.csv": {
+      "get": {
+        "tags": [
+          "admin",
+          "audit"
+        ],
+        "summary": "Admin SIEM audit CSV (no bodies/tokens)",
+        "description": "Admin-token-protected audit CSV for SIEM/spreadsheet archive. Columns `ts,tenantId,tool,allow,reason,via,requestId` from JSONL (same fields as `AuditEvent` minus `arguments`/`result`/`argumentKeysHash`). **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log → header-only **200**. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). Uncompressed `text/csv; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=csv`. Markdown: `GET /admin/audit.md` / `?format=md`. HTML: `GET /admin/audit.html` / `?format=html`. CORS + `X-Request-Id` same as other admin GET.",
+        "operationId": "getAdminAuditCsv",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV audit snapshot (header + rows; header only when empty). No arguments/result/tokens.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ts,tenantId,tool,allow,reason,via,requestId\n2026-08-13T00:00:00.000Z,acme,echo,true,ok,builtin,mvp-req-id-a1b2c3d4\n"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid since/until"
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/audit.md": {
+      "get": {
+        "tags": [
+          "admin",
+          "audit"
+        ],
+        "summary": "Admin SIEM audit Markdown (no bodies/tokens)",
+        "description": "Admin-token-protected GitHub-flavored Markdown table for ops docs (Feishu/WeCom/Slack). Heading `# Audit` plus columns `ts | tenantId | tool | allow | reason | via | requestId` (same fields as `GET /admin/audit.csv`). `|` in cells is escaped. **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log → heading + header row only, **200**. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/audit.csv`). Uncompressed `text/markdown; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=md`. HTML: `GET /admin/audit.html` / `?format=html`. CORS + `X-Request-Id` same as other admin GET.",
+        "operationId": "getAdminAuditMd",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown audit snapshot (heading + GFM table; heading + header only when empty). No arguments/result/tokens.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# Audit\n| ts | tenantId | tool | allow | reason | via | requestId |\n| --- | --- | --- | --- | --- | --- | --- |\n| 2026-08-13T00:00:00.000Z | acme | echo | true | ok | builtin | mvp-req-id-a1b2c3d4 |\n"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid since/until"
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/audit.html": {
+      "get": {
+        "tags": [
+          "admin",
+          "audit"
+        ],
+        "summary": "Admin SIEM audit HTML (no bodies/tokens)",
+        "description": "Admin-token-protected self-contained HTML audit table for the local 5-min demo (no CDN / external CSS/JS). Heading `Audit` plus columns `ts`, `tenantId`, `tool`, `allow`, `reason`, `via`, `requestId` (same fields as `GET /admin/audit.csv`). All text escaped (`& < > \" '`). Deny vs allow rows are visually distinct (inline CSS). **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log → heading + “no events” + header row, **200**. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/audit.csv`). Uncompressed `text/html; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=html`. CORS + `X-Request-Id` same as other admin GET.",
+        "operationId": "getAdminAuditHtml",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML audit snapshot (heading + table; heading + “no events” when empty). No arguments/result/tokens.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "Echoed when request Origin matches policy.cors.origins. Absent when CORS disabled or origin not allowed.",
+                "schema": {
+                  "type": "string",
+                  "example": "http://localhost:3000"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Audit · local list</title></head><body><h1>Audit</h1><p>no events</p><table></table></body></html>\n"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid since/until"
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/audit": {
+      "get": {
+        "tags": [
+          "admin",
+          "audit"
+        ],
+        "summary": "Admin audit snapshot (json | csv | md | html)",
+        "description": "Admin-token-protected audit snapshot. Query `format=json` (default) is an uncompressed JSON pack (`ok`, `format`, `count`, `events`) — does **not** use `Accept-Encoding: gzip` (gzip stays on `GET /audit/export`). `format=csv` is the same SIEM-safe `text/csv` body as `GET /admin/audit.csv` (no args/tokens). `format=md` is the same `text/markdown` body as `GET /admin/audit.md` (`# Audit` GFM table; no args/tokens). `format=html` is the same `text/html` body as `GET /admin/audit.html` (self-contained table; no CDN; no args/tokens). Unknown format → **400** `unsupported_format`. Unauthenticated → **401** `unauthorized_admin`.",
+        "operationId": "getAdminAudit",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv",
+                "md",
+                "html"
+              ],
+              "default": "json"
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "redact",
+            "in": "query",
+            "description": "JSON only: 1|true to redact arguments/result. CSV never includes those fields.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit snapshot in the requested format",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ts,tenantId,tool,allow,reason,via,requestId\n2026-08-13T00:00:00.000Z,acme,echo,true,ok,builtin,mvp-req-id-a1b2c3d4\n"
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# Audit\n| ts | tenantId | tool | allow | reason | via | requestId |\n| --- | --- | --- | --- | --- | --- | --- |\n"
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!DOCTYPE html>\\n<html lang=\"en\">\\n<head><meta charset=\"utf-8\"><title>Audit · local list</title></head>\\n<body><h1>Audit</h1>\\n<p>no events</p>\\n<table></table></body></html>\\n"
+              }
+            }
+          },
+          "400": {
+            "description": "Unsupported format or invalid since/until. Body `{error:\"unsupported_format\"}`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "unsupported_format",
+                  "allowed": [
+                    "json",
+                    "csv",
+                    "md",
+                    "html"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tenants/{tenantId}/rotate": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Rotate a tenant API token (admin; new token shown once)",
+        "description": "Admin-token-protected tenant API key rotation. Replaces `tenants[].apiKey` in the same policy store. The new token is returned **once** in `{ok:true, tenantId, token, previousTokenExpiresAt?}`. The previous key remains valid until `previousTokenExpiresAt` (default grace **60s**, `TOKEN_ROTATE_GRACE_SEC` / `--rotate-grace-sec`; `0` = immediate). During grace both keys authenticate; after grace only the new key. Writes audit JSONL `{type:\"token_rotated\", tenantId, requestId}` — **never** raw tokens. File-backed `--config` persists the new `apiKey` (and previous key + expiry during grace) the same way existing keys are stored. In-memory-only (no config path) keeps rotation until restart. Unknown tenant → 404 `{error:\"unknown_tenant\"}`. Missing/invalid admin token → 401 `{error:\"unauthorized_admin\"}` (same gate as `GET /admin/tenants`). Alias: `POST /admin/tenants/rotate` with body `{tenantId}`.",
+        "operationId": "adminRotateTenantToken",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenantId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Tenant id from policy.tenants[].id"
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "New token (shown once). previousTokenExpiresAt is ISO-8601 when a previous key existed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantRotateResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown tenant id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/tenants/rotate": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Rotate a tenant API token (admin; body tenantId)",
+        "description": "Alias of `POST /admin/tenants/{tenantId}/rotate`. Body `{tenantId}` (or `{id}`). Same admin auth, grace window, audit, and persist rules. New token shown once. **Never** logs or audits the raw token.",
+        "operationId": "adminRotateTenantTokenByBody",
+        "security": [
+          {
+            "AdminToken": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "tenantId"
+                ],
+                "properties": {
+                  "tenantId": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "Alias of tenantId"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New token (shown once)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantRotateResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown tenant id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Api-Key",
+        "description": "Tenant API key"
+      },
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "APIKey",
+        "description": "Tenant API key as Bearer token (also accepted for admin when value matches adminToken)"
+      },
+      "AdminToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Admin-Token",
+        "description": "Admin token for reload, GET /admin/tenants, GET /admin/tenants/{tenantId}, GET /admin/sessions, DELETE /admin/sessions/{id}, POST /admin/tenants/{tenantId}/rotate, GET /admin/audit.csv, GET /admin/audit.md, GET /admin/config, GET /admin/webhooks, and cross-tenant audit/export"
+      }
+    },
+    "schemas": {
+      "Tool": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "inputSchema": {
+            "type": "object"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "local",
+              "upstream"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "ToolCallRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "args": {
+            "type": "object"
+          },
+          "params": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "arguments": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "tenantId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "TenantIpAllowlist": {
+        "type": "array",
+        "description": "Optional per-tenant client IP allowlist. Exact IPv4/IPv6 or IPv4 CIDR with prefix /8, /16, or /24. IPv6 exact match only. Absent or empty = no IP restriction. Client IP = X-Forwarded-For first hop or socket remoteAddress.",
+        "items": {
+          "type": "string"
+        },
+        "example": [
+          "127.0.0.1",
+          "::1",
+          "10.0.0.0/8"
+        ]
+      },
+      "MaxBodyBytes": {
+        "type": "integer",
+        "description": "Max HTTP request body size in bytes for POST /tools/call (and alias). Global policy `maxBodyBytes` (default 1048576); optional per-tenant override. Enforced by Content-Length check and streaming byte count before JSON.parse. Over limit → 413 `{error:\"payload_too_large\"}`.",
+        "default": 1048576,
+        "example": 1048576,
+        "minimum": 1
+      },
+      "TenantSummary": {
+        "type": "object",
+        "description": "Admin-safe tenant inventory row. Raw apiKey is never returned; apiKeyMasked shows only the last 4 characters.",
+        "required": [
+          "id",
+          "allowCount",
+          "denyCount",
+          "rateLimit",
+          "hasIpAllowlist",
+          "maxBodyBytes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Tenant id"
+          },
+          "allowCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of tools in effective allow list"
+          },
+          "denyCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of tools in effective deny list"
+          },
+          "rateLimit": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Effective rateLimitPerMinute"
+          },
+          "hasIpAllowlist": {
+            "type": "boolean",
+            "description": "True when tenant.ipAllowlist is non-empty"
+          },
+          "maxBodyBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Effective maxBodyBytes (tenant override or global/default)"
+          },
+          "apiKeyMasked": {
+            "type": "string",
+            "nullable": true,
+            "description": "API key with only last 4 characters visible (e.g. ********_dev). Never the raw key."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CorsConfig": {
+        "type": "object",
+        "description": "Optional CORS. Default omitted or empty `origins` = no extra CORS headers (deny all). `origins` may be `[\"*\"]` (any Origin) or an explicit list. When enabled with an explicit list, OPTIONS preflight for a non-listed Origin returns 403 `{error:\"forbidden\",reason:\"cors_denied\"}`; allowed Origin → 204 with ACAO/ACAM/ACAH. Matching GET/POST/DELETE get Access-Control-Allow-Origin. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (plus `X-Audit-Count`, `X-Audit-Redacted`, `Content-Disposition`). local-mvp uses `[\"http://localhost:3000\"]`. Default allow/expose also includes `MCP-Protocol-Version` and `Mcp-Session-Id` for Streamable HTTP browser clients.",
+        "properties": {
+          "origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[\"*\"]` or explicit origins. Empty/omitted disables CORS.",
+            "example": [
+              "http://localhost:3000"
+            ]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Methods (default GET, POST, DELETE, OPTIONS)",
+            "default": [
+              "GET",
+              "POST",
+              "DELETE",
+              "OPTIONS"
+            ]
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Headers (default Content-Type, Authorization, X-Api-Key, X-Admin-Token, X-Request-Id, MCP-Protocol-Version, Mcp-Session-Id)",
+            "default": [
+              "Content-Type",
+              "Authorization",
+              "X-Api-Key",
+              "X-Admin-Token",
+              "X-Request-Id",
+              "MCP-Protocol-Version",
+              "Mcp-Session-Id"
+            ]
+          },
+          "exposeHeaders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Expose-Headers (default includes Retry-After, X-Request-Id, MCP-Protocol-Version, Mcp-Session-Id)",
+            "default": [
+              "X-Audit-Count",
+              "X-Audit-Redacted",
+              "Content-Disposition",
+              "Retry-After",
+              "X-Request-Id",
+              "MCP-Protocol-Version",
+              "Mcp-Session-Id"
+            ]
+          }
+        }
+      },
+      "UpstreamConfig": {
+        "type": "object",
+        "description": "Optional upstream MCP proxy. `timeoutMs` (default 5000) aborts HTTP fetch and stdio JSON-RPC. Timeout on POST /tools/call → 504 `{error:\"upstream_timeout\"}`. Optional `breaker: { failureThreshold: 3, openMs: 2000 }` (omit / `enabled:false` / threshold 0 = disabled). Consecutive timeout and 5xx/connect errors open the circuit → 503 `{error:\"circuit_open\"}` until `openMs` (half-open: one probe). 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1). When enabled, GET /health includes a `breaker` snapshot (`state`, `failures`, `openUntil`; no secrets).",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "http",
+              "stdio"
+            ],
+            "description": "Upstream transport"
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "HTTP upstream base URL (type=http)",
+            "example": "http://127.0.0.1:8790"
+          },
+          "command": {
+            "type": "string",
+            "description": "stdio command (type=stdio)"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "stdio command args"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "default": 5000,
+            "minimum": 1,
+            "description": "Abort HTTP/stdio upstream calls after this many milliseconds (default 5000). Timeout → 504 `{error:\"upstream_timeout\"}`.",
+            "example": 5000
+          },
+          "breaker": {
+            "type": "object",
+            "description": "Optional consecutive-failure circuit breaker. Omitted, `enabled: false`, or `failureThreshold: 0` disables (existing timeout/proxy proves). Defaults when present: failureThreshold 3, openMs 2000. Failures: `upstream_timeout`, HTTP 5xx, connect errors. Open → 503 `{error:\"circuit_open\"}` without calling upstream; `Retry-After` is remaining seconds until `openUntil` (min 1). After openMs, half-open allows one probe. When enabled, GET /health includes `breaker: { state, failures, openUntil }` (no secrets).",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Set false to disable even if the object is present",
+                "default": true
+              },
+              "failureThreshold": {
+                "type": "integer",
+                "default": 3,
+                "minimum": 0,
+                "description": "Consecutive failures before opening (default 3). 0 disables.",
+                "example": 3
+              },
+              "openMs": {
+                "type": "integer",
+                "default": 2000,
+                "minimum": 1,
+                "description": "Milliseconds to stay open before a half-open probe (default 2000).",
+                "example": 2000
+              }
+            }
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "description": "GET /health body. `ok` is always true while the process is up. `breaker` is present only when `upstream.breaker` is enabled (no secrets).",
+        "required": [
+          "ok",
+          "service"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "service": {
+            "type": "string",
+            "example": "mcp-gateway"
+          },
+          "version": {
+            "type": "string"
+          },
+          "tenants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "upstream": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "connected": {
+                "type": "boolean"
+              },
+              "tools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "error": {
+                "nullable": true,
+                "type": "string"
+              }
+            }
+          },
+          "breaker": {
+            "nullable": true,
+            "description": "Present when `upstream.breaker` is enabled. Omitted when disabled. Snapshot only: state, consecutive failures, and openUntil. Never includes keys, tokens, URLs, or config secrets.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CircuitBreakerSnapshot"
+              }
+            ]
+          },
+          "shuttingDown": {
+            "type": "boolean",
+            "description": "Present and true while draining SIGTERM/SIGINT. Omitted otherwise so stack-demo /health is unchanged."
+          }
+        }
+      },
+      "Ready": {
+        "type": "object",
+        "description": "GET /ready body. 200 `{ok:true}` when the breaker is disabled or `closed`/`half_open`. 503 `{ok:false, reason:\"circuit_open\"}` when `state` is `open`. 503 `{ok:false, reason:\"shutting_down\"}` while draining SIGTERM/SIGINT (wins over healthy 200). `breaker` is present only when `upstream.breaker` is enabled (same snapshot as GET /health; no secrets).",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "circuit_open",
+              "shutting_down"
+            ],
+            "description": "Present on 503: `circuit_open` when the breaker is open; `shutting_down` while draining SIGTERM/SIGINT."
+          },
+          "breaker": {
+            "nullable": true,
+            "description": "Present when `upstream.breaker` is enabled. Omitted when disabled. Snapshot only: state, consecutive failures, and openUntil. Never includes keys, tokens, URLs, or config secrets.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CircuitBreakerSnapshot"
+              }
+            ]
+          }
+        }
+      },
+      "CircuitBreakerSnapshot": {
+        "type": "object",
+        "description": "Circuit-breaker snapshot on GET /health and GET /ready when enabled. `state` is closed, open, or half_open. `openUntil` is an ISO-8601 instant while open (when the breaker will enter half-open); null when closed or half_open. No secrets.",
+        "required": [
+          "state",
+          "failures",
+          "openUntil"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "closed",
+              "open",
+              "half_open"
+            ],
+            "description": "closed = calls pass; open = fail fast 503; half_open = one probe allowed"
+          },
+          "failures": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Consecutive upstream failure count"
+          },
+          "openUntil": {
+            "nullable": true,
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 instant when an open circuit will enter half-open. Null when closed or half_open."
+          }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "description": "JSONL audit row. `requestId` is the resolved `X-Request-Id` (incoming or generated UUID).",
+        "properties": {
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "tenantId": {
+            "type": "string",
+            "nullable": true
+          },
+          "tool": {
+            "type": "string"
+          },
+          "allow": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string",
+            "nullable": true
+          },
+          "arguments": {},
+          "result": {},
+          "argumentKeysHash": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "Resolved X-Request-Id for the originating HTTP request",
+            "example": "mvp-req-id-a1b2c3d4"
+          },
+          "type": {
+            "type": "string",
+            "description": "Present on non-tool-call rows. `token_rotated` is written on admin rotate — never includes raw tokens/apiKeys.",
+            "example": "token_rotated"
+          }
+        }
+      },
+      "AuditWebhook": {
+        "type": "object",
+        "description": "Outbound fire-and-forget POST body after an audit JSONL write. Configure `policy.webhooks: [{ url, events, secret }]`. `events` defaults to `[\"tool_call\",\"deny\"]`. Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). When `secret` is set, the POST includes `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw JSON body). Short timeout; errors never fail `/tools/call`. OSS retries the POST once after ~50ms on 5xx or network/timeout (success on first try = no retry; 4xx do not retry). Simple HMAC is OSS; exponential backoff / queues, key rotation / timestamp replay window enforcement = paid later. Not an inbound HTTP path.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool_call",
+              "deny"
+            ],
+            "description": "tool_call when allow=true; deny when allow=false (including rate-limit)."
+          },
+          "source": {
+            "type": "string",
+            "example": "mcp-gateway"
+          },
+          "deliveredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "redacted": {
+            "type": "boolean",
+            "description": "True when arguments/result were redacted (`webhooksRedact` default true)."
+          },
+          "requestId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Resolved X-Request-Id of the originating HTTP request."
+          },
+          "event": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AuditEvent"
+              }
+            ],
+            "description": "Audit row (redacted when webhooksRedact / redactOnWrite / export.redactDefault)."
+          }
+        },
+        "required": [
+          "type",
+          "source",
+          "redacted",
+          "event"
+        ]
+      },
+      "WebhookEndpoint": {
+        "type": "object",
+        "description": "Policy `webhooks[]` entry. `url` required. `events` optional (default tool_call+deny). `secret` optional: when set, outbound POST is signed with HMAC-SHA256 (`X-Webhook-Signature: sha256=<hex>` of the raw body). Empty/omitted secret = unsigned. Timestamp header is always sent; HMAC still signs body only. OSS: one retry after ~50ms on 5xx/network/timeout; 4xx do not retry. Exponential backoff / queues = paid.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "example": "http://127.0.0.1:8792/hook"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "tool_call",
+                "deny"
+              ]
+            },
+            "example": [
+              "tool_call",
+              "deny"
+            ]
+          },
+          "secret": {
+            "type": "string",
+            "description": "Optional HMAC-SHA256 key. When set, POST includes `X-Webhook-Signature: sha256=<hex>` of the raw JSON body. HMAC still signs body only; `X-Webhook-Timestamp` is an extra header. Simple HMAC is OSS; key rotation / timestamp replay window enforcement = paid later."
+          }
+        }
+      },
+      "TenantRotateResponse": {
+        "type": "object",
+        "description": "Admin rotate result. `token` is the new tenant API key, returned once. Never written to audit JSONL/CSV, access logs, or metrics labels. `previousTokenExpiresAt` is when the previous key stops being accepted (omit if there was no previous key).",
+        "required": [
+          "ok",
+          "tenantId",
+          "token"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "tenantId": {
+            "type": "string",
+            "example": "acme"
+          },
+          "token": {
+            "type": "string",
+            "description": "New tenant API key. Shown once. Treat as a secret."
+          },
+          "previousTokenExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 instant when the previous key is rejected. During grace both keys work. Default grace 60s."
+          }
+        }
+      },
+      "JsonRpcRequest": {
+        "type": "object",
+        "description": "JSON-RPC 2.0 request. Methods: initialize, tools/list, tools/call, ping. Notifications omit id.",
+        "properties": {
+          "jsonrpc": {
+            "type": "string",
+            "example": "2.0"
+          },
+          "id": {
+            "description": "Request id (omit for notifications)",
+            "nullable": true
+          },
+          "method": {
+            "type": "string",
+            "example": "initialize"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "JsonRpcResponse": {
+        "type": "object",
+        "description": "JSON-RPC 2.0 response. initialize result includes protocolVersion, serverInfo, sessionId.",
+        "properties": {
+          "jsonrpc": {
+            "type": "string",
+            "example": "2.0"
+          },
+          "id": {
+            "nullable": true
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer"
+              },
+              "message": {
+                "type": "string"
+              },
+              "data": {}
+            }
+          }
+        }
+      },
+      "SessionInventoryRow": {
+        "type": "object",
+        "description": "Live Streamable HTTP session. No secrets, API keys, or Authorization headers.",
+        "required": [
+          "id",
+          "ageMs",
+          "ttlRemainingMs",
+          "lastSeen"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Mcp-Session-Id (capability for DELETE /mcp)."
+          },
+          "ageMs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Milliseconds since lastSeen."
+          },
+          "ttlRemainingMs": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "description": "Milliseconds until TTL expiry. `null` when ttlSec is 0 (no expiry)."
+          },
+          "lastSeen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 last-seen timestamp."
+          }
+        }
+      },
+      "SessionInventory": {
+        "type": "object",
+        "description": "Admin inventory of live in-memory Streamable HTTP sessions. Tombstones omitted. No secrets.",
+        "required": [
+          "ok",
+          "ttlSec",
+          "cap",
+          "count",
+          "sessions"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "ttlSec": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Configured session TTL in seconds (`--session-ttl` / MCP_SESSION_TTL_SEC). 0 = no expiry."
+          },
+          "cap": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "In-memory last-seen map cap (default 10000). 0 = unlimited."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Full live session count (not the truncated array length)."
+          },
+          "sessions": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SessionInventoryRow"
+            },
+            "description": "Up to 100 newest-by-lastSeen live sessions. Tombstones and expired ids omitted."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "true when count > 100 and the sessions array was capped."
+          },
+          "dropped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Current tombstone (deleted id) count. Not listed in sessions."
+          }
+        }
+      },
+      "AdminRuntimeConfigRateLimit": {
+        "type": "object",
+        "description": "Global tool-call rate limit (per minute). No secrets.",
+        "required": [
+          "perMinute"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "perMinute": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "policy.rateLimitPerMinute (default 60)."
+          }
+        }
+      },
+      "AdminRuntimeConfigCors": {
+        "type": "object",
+        "description": "CORS origins only (list or `*`). Allow-header **values** are omitted.",
+        "required": [
+          "origins"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "origins": {
+            "description": "`*` when any Origin is allowed; otherwise an explicit list. Empty array when CORS is disabled.",
+            "oneOf": [
+              {
+                "type": "string",
+                "const": "*"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "AdminRuntimeConfigBreaker": {
+        "type": "object",
+        "description": "Resolved circuit-breaker config + optional live `state`. No secrets.",
+        "required": [
+          "enabled",
+          "failureThreshold",
+          "openMs"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "failureThreshold": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "openMs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "closed",
+              "open",
+              "half_open"
+            ],
+            "description": "Live breaker state when available."
+          }
+        }
+      },
+      "AdminRuntimeConfigUpstream": {
+        "type": "object",
+        "description": "Safe upstream knobs only. Omits baseUrl, command, args, and `--header` values.",
+        "required": [
+          "timeoutMs",
+          "breaker"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "http",
+              "stdio"
+            ]
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Resolved upstream.timeoutMs (default 5000)."
+          },
+          "breaker": {
+            "$ref": "#/components/schemas/AdminRuntimeConfigBreaker"
+          }
+        }
+      },
+      "AdminRuntimeConfigTenants": {
+        "type": "object",
+        "description": "Tenant **count** only — never ids, apiKeys, or tokens.",
+        "required": [
+          "count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AdminRuntimeConfigWebhookDest": {
+        "type": "object",
+        "description": "Whether HMAC is configured for this dest. **Never** the secret or URL.",
+        "required": [
+          "hasWebhookSecret"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "hasWebhookSecret": {
+            "type": "boolean",
+            "description": "true when webhooks[].secret is set. The secret itself is never returned."
+          }
+        }
+      },
+      "AdminRuntimeConfigWebhooks": {
+        "type": "object",
+        "description": "Webhook dest count + HMAC configured flag. No secrets/URLs.",
+        "required": [
+          "count",
+          "destinations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminRuntimeConfigWebhookDest"
+            }
+          }
+        }
+      },
+      "AdminRuntimeConfig": {
+        "type": "object",
+        "description": "Redacted runtime config for GET /admin/config. Allowlist of safe fields only. Never apiKey, previousApiKey, webhook secrets, admin token, Authorization, or `--header` values.",
+        "required": [
+          "ok",
+          "sessionTtlSec",
+          "sessionCap",
+          "auditMax",
+          "rotateGraceSec",
+          "rateLimit",
+          "cors",
+          "upstream",
+          "tenants",
+          "webhooks"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "sessionTtlSec": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Configured Streamable HTTP session TTL (`--session-ttl` / MCP_SESSION_TTL_SEC). 0 = no expiry."
+          },
+          "sessionCap": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "In-memory last-seen map cap (default 10000). 0 = unlimited."
+          },
+          "auditMax": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "In-memory audit ring cap (`--audit-max` / AUDIT_MAX_EVENTS). 0 = unlimited."
+          },
+          "rotateGraceSec": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Tenant API key rotate grace (`--rotate-grace-sec` / TOKEN_ROTATE_GRACE_SEC). Default 60."
+          },
+          "rateLimit": {
+            "$ref": "#/components/schemas/AdminRuntimeConfigRateLimit"
+          },
+          "cors": {
+            "$ref": "#/components/schemas/AdminRuntimeConfigCors"
+          },
+          "upstream": {
+            "$ref": "#/components/schemas/AdminRuntimeConfigUpstream"
+          },
+          "tenants": {
+            "$ref": "#/components/schemas/AdminRuntimeConfigTenants"
+          },
+          "webhooks": {
+            "$ref": "#/components/schemas/AdminRuntimeConfigWebhooks"
+          }
+        }
+      },
+      "WebhookInventoryRow": {
+        "type": "object",
+        "description": "One configured outbound webhook. url and secret are never returned; hasUrl / hasSecret are booleans. id is the configured id or 0-based index.",
+        "required": [
+          "id",
+          "events",
+          "hasUrl",
+          "hasSecret"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Configured webhook id when present; otherwise the 0-based source index.",
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Configured event list (empty when omitted)."
+          },
+          "hasUrl": {
+            "type": "boolean",
+            "description": "True when webhooks[].url is a non-empty string. The URL itself is never returned."
+          },
+          "hasSecret": {
+            "type": "boolean",
+            "description": "True when webhooks[].secret is a non-empty string. The secret itself is never returned."
+          }
+        }
+      },
+      "WebhookInventory": {
+        "type": "object",
+        "description": "Redacted outbound webhook inventory for GET /admin/webhooks. Allowlist of safe fields only. Never url, secret, apiKey, admin token, Authorization, or `--header` values.",
+        "required": [
+          "ok",
+          "count",
+          "webhooks"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of configured webhook entries in this response."
+          },
+          "webhooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookInventoryRow"
+            }
+          }
+        }
+      },
+      "TenantDetail": {
+        "type": "object",
+        "description": "Admin-safe single tenant for GET /admin/tenants/{tenantId}. Raw apiKey / previousApiKey are never returned; hasApiKey / hasPreviousApiKey are booleans. previousApiKeyExpiresAt is the grace expiry (ISO-8601) or null.",
+        "required": [
+          "ok",
+          "id",
+          "hasApiKey",
+          "hasPreviousApiKey",
+          "previousApiKeyExpiresAt",
+          "allow",
+          "deny",
+          "rateLimit"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "description": "Tenant id"
+          },
+          "hasApiKey": {
+            "type": "boolean",
+            "description": "True when tenant.apiKey is a non-empty string. The value is never returned."
+          },
+          "hasPreviousApiKey": {
+            "type": "boolean",
+            "description": "True when tenant.previousApiKey is stored (grace window). The value is never returned."
+          },
+          "previousApiKeyExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the previous key stops being accepted. null when no previous key."
+          },
+          "allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Effective allow list (tenant override or global)."
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Effective deny list (tenant override or global)."
+          },
+          "rateLimit": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Effective rateLimitPerMinute"
+          },
+          "hasIpAllowlist": {
+            "type": "boolean",
+            "description": "True when tenant.ipAllowlist is non-empty"
+          },
+          "maxBodyBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Effective maxBodyBytes (tenant override or global/default)"
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or unknown API key / admin token",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "ForbiddenIp": {
+        "description": "Client IP not in tenant ipAllowlist",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "forbidden",
+              "reason": "ip_denied"
+            }
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "Request body exceeds maxBodyBytes",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "payload_too_large"
+            }
+          }
+        }
+      },
+      "ForbiddenCors": {
+        "description": "OPTIONS preflight Origin not in policy.cors.origins (explicit list)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "forbidden",
+              "reason": "cors_denied"
+            }
+          }
+        }
+      },
+      "UpstreamTimeout": {
+        "description": "Upstream HTTP/stdio call aborted after `upstream.timeoutMs` (default 5000). Audit event `reason=upstream_timeout`; Prometheus `upstream_timeout_total`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "upstream_timeout"
+            }
+          }
+        }
+      },
+      "CircuitOpen": {
+        "description": "Upstream circuit breaker is open. `POST /tools/call` returns 503 `{error:\"circuit_open\"}` without calling upstream until `upstream.breaker.openMs` elapses (then one half-open probe). `Retry-After` is remaining seconds until `openUntil` (minimum 1). Triggered after `failureThreshold` consecutive upstream_timeout / 5xx / connect errors. Audit `reason=circuit_open`; Prometheus `circuit_open_total`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "circuit_open"
+            }
+          }
+        },
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        }
+      }
+    },
+    "parameters": {
+      "XRequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "description": "Optional correlation id. Echoed on every response as `X-Request-Id`. If omitted/empty, the gateway generates a UUID (max 128 chars; CR/LF stripped). Also stored as `requestId` on audit JSONL events and webhook payloads.",
+        "schema": {
+          "type": "string",
+          "maxLength": 128,
+          "example": "mvp-req-id-a1b2c3d4"
+        }
+      },
+      "McpProtocolVersion": {
+        "name": "MCP-Protocol-Version",
+        "in": "header",
+        "required": false,
+        "description": "MCP protocol version. Echoed on Streamable HTTP responses. If omitted or not YYYY-MM-DD, the gateway uses `2025-03-26`.",
+        "schema": {
+          "type": "string",
+          "example": "2025-03-26"
+        }
+      },
+      "McpSessionId": {
+        "name": "Mcp-Session-Id",
+        "in": "header",
+        "required": false,
+        "description": "Optional MCP session id. Echoed when present. On `initialize`, a UUID is assigned if omitted. Later JSON-RPC calls may omit it (backward compatible). Expired ids return **404** `{error:\"session_expired\"}` (TTL default 3600s; `--session-ttl` / `MCP_SESSION_TTL_SEC`; `0` = no expiry). Unknown (fresh) ids are accepted and tracked. `DELETE /mcp` requires this header (400 `session_id_required` if missing; 404 `session_not_found` if unknown/expired/already gone). Not required on REST `/tools/*`.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "headers": {
+      "XRequestId": {
+        "description": "Echo of incoming `X-Request-Id`, or a generated UUID when the request header is omitted/empty. Present on every response.",
+        "schema": {
+          "type": "string",
+          "example": "mvp-req-id-a1b2c3d4"
+        }
+      },
+      "RetryAfter": {
+        "description": "Seconds to wait before retrying while the upstream circuit is open (`POST /tools/call` 503 and `GET /ready` 503). Remaining time until `openUntil` (ISO-8601 on GET /health and GET /ready), rounded up, minimum 1.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "example": 2
+        }
+      },
+      "McpProtocolVersion": {
+        "description": "Echo of incoming `MCP-Protocol-Version`, or `2025-03-26` when omitted.",
+        "schema": {
+          "type": "string",
+          "example": "2025-03-26"
+        }
+      },
+      "McpSessionId": {
+        "description": "Session id: echoed from the request, or a generated UUID on `initialize` when omitted. Not required on subsequent tools/list or tools/call. Omitted on **404** `session_expired`.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  }
+}

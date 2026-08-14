@@ -1,0 +1,74 @@
+{
+  "name": "default",
+  "version": "1.0",
+  "description": "Baseline AI-BOM security / disclosure / license pack (Pro wedge sketch); forbiddenLicenseIds blocks GPL-3.0 / AGPL-3.0 / SSPL-1.0 (+ variants)",
+  "forbiddenPatterns": [
+    {
+      "id": "pickle.load",
+      "pattern": "\\bpickle\\.loads?\\b",
+      "severity": "high",
+      "message": "Unsafe pickle deserialization (pickle.load / pickle.loads)"
+    },
+    {
+      "id": "eval",
+      "pattern": "\\beval\\s*\\(",
+      "severity": "high",
+      "message": "Dynamic eval()"
+    },
+    {
+      "id": "exec",
+      "pattern": "\\bexec\\s*\\(",
+      "severity": "high",
+      "message": "Dynamic exec()"
+    },
+    {
+      "id": "os.system",
+      "pattern": "\\bos\\.system\\s*\\(",
+      "severity": "medium",
+      "message": "Shell execution via os.system()"
+    },
+    {
+      "id": "subprocess_shell",
+      "pattern": "subprocess\\.[A-Za-z_]+\\([^\\n]*shell\\s*=\\s*True",
+      "severity": "medium",
+      "message": "subprocess with shell=True"
+    },
+    {
+      "id": "yaml.load_unsafe",
+      "pattern": "\\byaml\\.load\\s*\\((?![^)]*Loader\\s*=)",
+      "severity": "medium",
+      "message": "yaml.load without explicit Loader"
+    }
+  ],
+  "requiredDisclosures": [
+    {
+      "id": "model-inventory",
+      "description_en": "At least one model or model-file component must be disclosed",
+      "description_zh": "须披露至少一个模型或模型文件组件",
+      "check": "has_models"
+    },
+    {
+      "id": "prompt-inventory",
+      "description_en": "When a prompts/ directory exists, prompt files must appear in the BOM",
+      "description_zh": "若存在 prompts/ 目录，提示词文件须出现在 BOM 中",
+      "check": "prompts_if_dir"
+    },
+    {
+      "id": "mcp-inventory",
+      "description_en": "MCP servers declared in mcp.json must appear in the BOM",
+      "description_zh": "mcp.json 中声明的 MCP 服务须出现在 BOM 中",
+      "check": "mcp_if_config"
+    }
+  ],
+  "forbiddenLicenseIds": [
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "GPL-3.0+",
+    "AGPL-3.0",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "AGPL-3.0+",
+    "SSPL-1.0"
+  ]
+}

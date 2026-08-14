@@ -1,0 +1,49 @@
+{{- /*
+  Optional NetworkPolicy (networking.k8s.io/v1). Default off via
+  .Values.networkPolicy.enabled. Same peers as deploy/k8s/networkpolicy.yaml.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- range $name, $bet := .Values.bets }}
+{{- if $bet.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    app.oss-cash-lab.dev/{{ $name }}: "true"
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.oss-cash-lab.dev/{{ $name }}: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: http
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,13 @@
+name: otel-ai-cost-gha
+description: Run otel-ai-cost report --format gha (thin CLI wrapper)
+inputs:
+  spans:
+    description: Spans JSON path
+    required: false
+    default: examples/spans.json
+runs:
+  using: composite
+  steps:
+    - name: Cost report (GHA annotations)
+      shell: bash
+      run: node src/cli.js report --in "${{ inputs.spans }}" --format gha

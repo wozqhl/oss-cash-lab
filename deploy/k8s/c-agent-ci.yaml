@@ -1,0 +1,93 @@
+# C agent-ci — placeholder image (not published yet).
+# Default serve port 8791 (CLI / docker-compose.yml).
+# Apply: kubectl apply -f deploy/k8s/c-agent-ci.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: c-agent-ci
+  labels:
+    app.oss-cash-lab.dev/c-agent-ci: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/c-agent-ci: "true"
+  template:
+    metadata:
+      labels:
+        app.oss-cash-lab.dev/c-agent-ci: "true"
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: c-agent-ci
+          image: ghcr.io/wozqhl/c-agent-ci:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8791
+          # Optional env names from compose/CLI (do not invent secrets):
+          # - name: AGENT_CI_CORS_ORIGINS
+          # - name: AGENT_CI_WEBHOOK_URL
+          # - name: AGENT_CI_WEBHOOK_SECRET
+          # - name: SHUTDOWN_DRAIN_MS
+          #   value: "5000"
+          # - name: LOG_FORMAT
+          #   value: json
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8791
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8791
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: c-agent-ci
+  labels:
+    app.oss-cash-lab.dev/c-agent-ci: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.oss-cash-lab.dev/c-agent-ci: "true"
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8791

@@ -1,0 +1,31 @@
+name: ai-bom-sarif
+description: Scan with ai-bom and write SARIF 2.1.0 (thin CLI wrapper)
+inputs:
+  path:
+    description: Scan root
+    required: false
+    default: examples/sample-app
+  policy:
+    description: Policy pack JSON
+    required: false
+    default: policies/default.json
+  sarif:
+    description: SARIF output path
+    required: false
+    default: ai-bom.sarif
+  pythonpath:
+    description: PYTHONPATH for the CLI (src if vendoring)
+    required: false
+    default: src
+outputs:
+  sarif-path:
+    description: Path to the SARIF file
+    value: "${{ inputs.sarif }}"
+runs:
+  using: composite
+  steps:
+    - name: Scan (SARIF)
+      shell: bash
+      env:
+        PYTHONPATH: "${{ inputs.pythonpath }}"
+      run: python3 -m ai_bom scan "${{ inputs.path }}" --policy "${{ inputs.policy }}" --sarif "${{ inputs.sarif }}"

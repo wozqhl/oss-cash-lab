@@ -1,0 +1,38 @@
+{{- /*
+  Optional Ingress (networking.k8s.io/v1). Default off via
+  .Values.ingress.enabled so helm install does not require an
+  ingress controller. When enabled: one Ingress, five host rules
+  (Prefix /) so backends do not need path strip. Needs
+  ingress-nginx (or change className). TLS omitted for local.
+  Without a controller the object sits idle.
+*/ -}}
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+  {{- range $name, $bet := .Values.bets }}
+  {{- if $bet.enabled }}
+  {{- $host := index $.Values.ingress.hosts $name }}
+  {{- if $host }}
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  name: http
+  {{- end }}
+  {{- end }}
+  {{- end }}
+{{- end }}

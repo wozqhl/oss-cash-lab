@@ -1,0 +1,61 @@
+# Copy to .github/workflows/sdk-mcp-gen-check.yml in a consumer repo.
+# Requires Node 18+ and sdk-mcp-gen CLI (src/cli.js or installed bin).
+# This portfolio: add working-directory: bets/a-sdk-mcp-gen
+#
+# Examples only — do not add this as a required push workflow on oss-cash-lab
+# (keep .github/workflows/ci.yml as the gate).
+#
+# Typical consumer:
+#   1. Commit a generated SDK as the baseline (`sdk/`), OR generate it once here.
+#   2. CI drift gate (exit 1 = removed/renamed tools; added tools are OK):
+#        node src/cli.js generate examples/petstore.openapi.json --out sdk-new --check-baseline sdk
+#      Compact (omit --out → temp dir vs committed sdk/):
+#        node src/cli.js generate examples/petstore.openapi.json --check-baseline sdk
+#      Two-step: generate into NEW, then
+#        node src/cli.js check --out sdk-new --baseline sdk
+#      Same-dir self-check (not a drift gate; overwrites then compares to itself):
+#        node src/cli.js generate examples/petstore.openapi.json --out sdk --check-baseline sdk
+#   3. Fail the job on exit 1.
+# Happy path (this job, petstore fixture): generate baseline, then generate again
+# with --check-baseline against it → exit 0.
+name: SDK MCP Gen (OpenAPI drift)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  sdk-mcp-gen-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Demo bootstrap. Consumer: skip if sdk/ is already committed.
+      - name: Generate baseline SDK
+        run: node src/cli.js generate examples/petstore.openapi.json --out sdk
+
+      # Drift gate: regenerate into a new dir and compare. Exit 1 if tools removed/renamed.
+      - name: Check OpenAPI drift
+        run: node src/cli.js generate examples/petstore.openapi.json --out sdk-new --check-baseline sdk
+
+      # Optional two-step (same result as --check-baseline):
+      # - name: Check (two-step)
+      #   run: node src/cli.js check --out sdk-new --baseline sdk
+
+      # Optional compact one-liner when sdk/ is already committed (omit --out → temp dir):
+      # - name: Check (temp out)
+      #   run: node src/cli.js generate examples/petstore.openapi.json --check-baseline sdk

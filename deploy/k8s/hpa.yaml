@@ -1,0 +1,118 @@
+# HorizontalPodAutoscaler for B–F HTTP services (autoscaling/v2 — built-in).
+# Listed in kustomization.yaml so `kubectl apply -k deploy/k8s` applies these too.
+#
+# CPU utilization target (70%) needs the metrics-server
+# (metrics.k8s.io) in the cluster. Without it, HPA objects sit idle and
+# do not change the Deployment replica count (still replicas: 1).
+# CPU requests are already set on each container (50m) so utilization
+# has a denominator once metrics-server is present.
+#
+# minReplicas: 1 keeps the replica=1 default; maxReplicas: 4 is a cap.
+# This is not HA by itself — see pdb.yaml for drain vs replica=1.
+#
+# Apply: kubectl apply -f deploy/k8s/hpa.yaml
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: b-mcp-gateway
+  labels:
+    app.oss-cash-lab.dev/b-mcp-gateway: "true"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: b-mcp-gateway
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: c-agent-ci
+  labels:
+    app.oss-cash-lab.dev/c-agent-ci: "true"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: c-agent-ci
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: d-ai-bom
+  labels:
+    app.oss-cash-lab.dev/d-ai-bom: "true"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: d-ai-bom
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: e-otel-ai-cost
+  labels:
+    app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: e-otel-ai-cost
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: f-cn-work-agent
+  labels:
+    app.oss-cash-lab.dev/f-cn-work-agent: "true"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: f-cn-work-agent
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

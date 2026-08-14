@@ -1,0 +1,73 @@
+# PodDisruptionBudget for B–F HTTP services (policy/v1 — built-in, not a CRD).
+# Listed in kustomization.yaml so `kubectl apply -k deploy/k8s` applies these too.
+#
+# Deployments currently use replicas: 1. `minAvailable: 1` with 1 replica
+# blocks voluntary eviction (node drain / cluster upgrade) — the PDB will
+# never allow the last pod to leave. This file uses `maxUnavailable: 1` so
+# replica=1 clusters can still drain (the single pod is disrupted).
+#
+# HA: bump replicas to >= 2, then switch to minAvailable: 1 if you want
+# voluntary disruptions to keep at least one pod. Do not rely on this PDB
+# for HA while replicaCount is 1.
+#
+# Apply: kubectl apply -f deploy/k8s/pdb.yaml
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: b-mcp-gateway
+  labels:
+    app.oss-cash-lab.dev/b-mcp-gateway: "true"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/b-mcp-gateway: "true"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: c-agent-ci
+  labels:
+    app.oss-cash-lab.dev/c-agent-ci: "true"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/c-agent-ci: "true"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: d-ai-bom
+  labels:
+    app.oss-cash-lab.dev/d-ai-bom: "true"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/d-ai-bom: "true"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: e-otel-ai-cost
+  labels:
+    app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: f-cn-work-agent
+  labels:
+    app.oss-cash-lab.dev/f-cn-work-agent: "true"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/f-cn-work-agent: "true"

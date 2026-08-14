@@ -1,0 +1,19 @@
+{{- /*
+  Optional ResourceQuota (v1). Default off via .Values.resourceQuota.enabled
+  so a thin install into a shared namespace does not fight existing quotas.
+  When enabled: hard caps sized for 5 B–F × HPA maxReplicas 4 plus headroom
+  (pairs with LimitRange + HPA). Does not change Deployment resource blocks.
+*/ -}}
+{{- if .Values.resourceQuota.enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  hard:
+    {{- toYaml .Values.resourceQuota.hard | nindent 4 }}
+{{- end }}

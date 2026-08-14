@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+.pytest_cache/
+# A→D dogfood output (regenerate via make dogfood-a-d)
+sdk/generated/

@@ -1,0 +1,1735 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "AI-BOM Local Serve API",
+    "description": "Local OSS BOM HTTP snapshot (stdlib `http.server`; hosted inventory = paid later). Documents `GET /health`, `GET /ready`, `GET /bom.json`, `GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|sarif|md|gha|html` (default json = internal AI-BOM; cyclonedx = CycloneDX 1.5 JSON; cyclonedx-xml = CycloneDX 1.5 XML; spdx = SPDX 2.3 JSON; spdx-xml = SPDX 2.3 XML; sarif = SARIF 2.1.0 same as CLI `--sarif`; md = human/Slack Markdown summary (`text/markdown`; not an SBOM spec); gha = GitHub Actions workflow commands (`::error`/`::notice`; `text/plain`; alias annotations); html = self-contained HTML BOM summary (`text/html`; no CDN; policy hits red); optional `GET /v1/bom.sarif` / `GET /v1/bom.xml` / `GET /v1/bom.spdx.xml` / `GET /v1/bom.md` / `GET /v1/bom.gha.txt` / `GET /v1/bom.html`; `/bom.json` unchanged), `GET /v1/policy` (active license/policy gate: `forbiddenLicenseIds`, `forbiddenPatterns` ids, `exceptionsCount`, `ignoreFile`; **200** even if no policy file — empty lists; never dumps file contents, regexes, exception reasons, or secrets), `GET /v1/config` (redacted runtime knobs: `ok`, `rateLimit.perMinute`, `cors.origins`, `watch`, `scanPathBase` basename only, `hasPolicyFile`, `webhooks.hasUrl` / `webhooks.hasSecret`; **never** webhook URL/secret, full policy JSON — that is `/v1/policy` — or exception file contents), `GET /v1/components` (lightweight inventory from the last scan: `{ok, count, components:[{name, version, license, path}]}`; `path` is relative to scan root or basename — never an absolute host path; empty scan → `{ok:true, count:0, components:[]}` **200**; optional `?license=` case-insensitive exact filter; cap **500** with `truncated:true`; not CycloneDX/SPDX), `GET /v1/exceptions` (redacted license-exception / waiver inventory: `{ok, count, exceptions:[{component, license, expiresAt, expired}]}`; `count` is the full waiver count; array cap **500** original file order with `truncated:true` when more; empty / no sidecar → `{ok:true, count:0, exceptions:[]}` **200**; optional `?expired=true|false` (unknown value → empty list 200); never sidecar path, full policy JSON, webhook URL/secret, API keys, or raw file dump), `GET /evidence.md`, `GET /`, `GET /openapi.json`, `GET /metrics` (Prometheus text: `ai_bom_component_count`, `ai_bom_policy_hits`, `ai_bom_forbidden_licenses`). `GET /ready` is **200** `{ok:true, service}` plus the same snapshot fields as `/health` when healthy (stateless; no circuit/queue). On SIGTERM/SIGINT, **503** `{ok:false, reason:\"shutting_down\"}` (liveness `GET /health` stays 200 with `shuttingDown: true` while draining). Compose/stack-demo healthchecks stay on `/health`. `GET /openapi.json` serves this file. Default scan runs once at process start. Optional `serve --watch` polls scan-root max mtime (~500ms) and rescans the snapshot used by `/bom.json`, `/health`, `/metrics`, `/` (and `/ready`; OpenAPI stays file-backed). Optional `X-Request-Id` request header: echoed on **every** response (including 4xx / OPTIONS). If omitted or empty, the server generates a UUID (max 128 chars; CR/LF stripped). Default allow/expose CORS headers include `X-Request-Id`. **403 CORS**: optional `--cors-origins` CSV or env `AI_BOM_CORS_ORIGINS` (`*` allowed). Default omitted/empty = no extra CORS headers (deny; OPTIONS **404**). When enabled with an explicit list, OPTIONS preflight for a listed Origin → **204** with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin (e.g. `http://evil.example`) → **403** `{error:\"forbidden\",reason:\"cors_denied\"}` (no ACAO). Matching GET includes ACAO. GET from a disallowed Origin still executes (e.g. 200) but omits ACAO. local-mvp isolated prove uses `http://localhost:3000`; main serve / stack-demo default deny. **429 rate limit**: `--rate-limit` / env `RATE_LIMIT_PER_MINUTE` (alias `RATE_LIMIT_RPM`) default **120** requests/minute per client IP (`X-Forwarded-For` first hop, else socket). In-memory sliding window. Exceed → `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. `/health`, `/ready`, `/metrics` are **not** rate-limited (k8s probes / Prometheus). Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 429 `Retry-After`). 0 disables the limit. Optional scan-root `.aibom-exceptions.json` (and CLI `--exceptions` / env `AI_BOM_EXCEPTIONS`) applies named component+license waivers (`summary.waived`; expired still count as hits in `expiredExceptions`). Query `?exceptions=` / `?exceptions=skip` on `/bom.json` and `/v1/bom` reconstructs un-waived hits. Bad exceptions JSON does not 500.",
+    "version": "0.1.0",
+    "license": {
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8793",
+      "description": "Local MVP default"
+    }
+  ],
+  "tags": [
+    {
+      "name": "health",
+      "description": "Liveness (GET /health always 200; shuttingDown true while draining) and readiness (GET /ready 200 when healthy, 503 shutting_down while draining)"
+    },
+    {
+      "name": "bom",
+      "description": "CycloneDX-like BOM JSON + bilingual evidence + HTML summary + GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|sarif|md|gha|html + GET /v1/policy (license/policy gate ids/counts; no file dump) + GET /v1/config (redacted knobs; no secrets) + GET /v1/components (lightweight inventory table; no CycloneDX/SPDX download) + GET /v1/exceptions (redacted waiver inventory; no sidecar dump)"
+    },
+    {
+      "name": "meta",
+      "description": "OpenAPI document and Prometheus metrics"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health check",
+        "description": "Liveness plus snapshot `componentCount`, `policyHits`, and license counts. CORS OPTIONS unlisted Origin → **403** `cors_denied` (see info). Not rate-limited.",
+        "operationId": "getHealth",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Server is up (scan snapshot at process start)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readiness (503 while shutting down)",
+        "description": "Readiness. **200** `{ok:true, service}` plus snapshot `componentCount`, `policyHits`, and license counts (same as `/health`) when healthy. On SIGTERM/SIGINT, **503** `{ok:false, reason:\"shutting_down\"}` (liveness `GET /health` stays 200 with `shuttingDown: true`). Stateless scan snapshot — no circuit/queue. Compose/stack-demo healthchecks stay on `/health`. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Not rate-limited.",
+        "operationId": "getReady",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ready (same snapshot fields as GET /health). 200 when healthy; 503 `{ok:false, reason:\"shutting_down\"}` while draining SIGTERM/SIGINT.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": true,
+                  "service": "ai-bom"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready: process is shutting down after SIGTERM/SIGINT. `{ok:false, reason:\"shutting_down\"}`. GET /health stays 200 with `shuttingDown: true` while draining.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": false,
+                  "reason": "shutting_down"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        }
+      }
+    },
+    "/bom.json": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "CycloneDX-like AI-BOM JSON",
+        "description": "Full scan result (`bomFormat=CycloneDX`) including components, SPDX licenses, and policy summary. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Optional `?exceptions=skip` omits applied waivers for this response.",
+        "operationId": "getBom",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "BOM snapshot",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bom"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ExceptionsSkip"
+          }
+        ]
+      }
+    },
+    "/v1/bom": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "BOM export (json | cyclonedx | cyclonedx-xml | spdx | spdx-xml | sarif | md | gha | html)",
+        "description": "Versioned BOM snapshot. Query `format=json` (default) is the internal AI-BOM (same body as `GET /bom.json`). `format=cyclonedx` is CycloneDX 1.5 JSON (`bomFormat` + `specVersion`). `format=cyclonedx-xml` is CycloneDX 1.5 XML (`bom` xmlns 1.5; same components/licenses/`aibom:*` properties; alias `cdx-xml`). `format=spdx` is SPDX 2.3 JSON (`spdxVersion` + `packages` + `documentNamespace`). `format=spdx-xml` is SPDX 2.3 XML (`SpdxDocument` + `spdxVersion` SPDX-2.3 + packages/`licenseConcluded`; alias `spdxxml`; path alias `GET /v1/bom.spdx.xml`). `format=sarif` is SARIF 2.1.0 JSON (`version` + `runs`; same builder as CLI `--sarif`). `format=md` is a human/Slack Markdown summary (`# AI-BOM` + component/policyHits/waived counts; `text/markdown`; not an SBOM spec; path alias `GET /v1/bom.md`). `format=gha` is GitHub Actions workflow commands (`::error title=<component>::<license or rule>` / waived `::notice`; `text/plain`; alias `annotations`; path alias `GET /v1/bom.gha.txt`; clean scan → empty 200). `format=html` is a self-contained HTML BOM summary (`text/html`; component count + license table + policy hits / forbidden licenses in red if any; names escaped; empty scan still 200 with heading; path alias `GET /v1/bom.html`; not an SBOM spec). Unknown format → **400** `{error:\"bad_format\"}`. Existing `/bom.json` clients are unchanged. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Optional `?exceptions=skip` omits applied waivers (same as `/bom.json`).",
+        "operationId": "getBomV1",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BomFormat"
+          },
+          {
+            "$ref": "#/components/parameters/ExceptionsSkip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "BOM snapshot in the requested format",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomExport"
+                }
+              },
+              "application/sarif+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomExport"
+                }
+              },
+              "application/vnd.cyclonedx+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/spdx+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown `format` query value. Body `{error:\"bad_format\"}`.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "bad_format",
+                  "detail": "format must be json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|sarif|md|gha|html"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/bom.sarif": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "SARIF 2.1.0 alias (same as GET /v1/bom?format=sarif)",
+        "description": "Same body as `GET /v1/bom?format=sarif` (SARIF 2.1.0; `version` + `runs`; same builder as CLI `--sarif`). Content-Type `application/sarif+json`. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getBomSarif",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SARIF 2.1.0 log (empty `results` is still 200)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/sarif+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomExport"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomExport"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/bom.xml": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "CycloneDX 1.5 XML alias (same as GET /v1/bom?format=cyclonedx-xml)",
+        "description": "Same body as `GET /v1/bom?format=cyclonedx-xml` (CycloneDX 1.5 XML; `bom` xmlns `http://cyclonedx.org/schema/bom/1.5`; empty components still 200). Content-Type `application/vnd.cyclonedx+xml`. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getBomXml",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CycloneDX 1.5 XML (empty `<components>` is still 200)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/vnd.cyclonedx+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/bom.spdx.xml": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "SPDX 2.3 XML alias (same as GET /v1/bom?format=spdx-xml)",
+        "description": "Same body as `GET /v1/bom?format=spdx-xml` (SPDX 2.3 XML; root `SpdxDocument` with `spdxVersion` SPDX-2.3, packages, licenseConcluded; empty packages still 200). Content-Type `application/spdx+xml`. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getBomSpdxXml",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SPDX 2.3 XML (empty `<packages>` is still 200)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/spdx+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/bom.md": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "Markdown BOM summary alias (same as GET /v1/bom?format=md)",
+        "description": "Same body as `GET /v1/bom?format=md` (human/Slack Markdown: `# AI-BOM` + **components** / **policyHits** / **waived** + license / policy-hit / waived tables; empty scan still 200). Content-Type `text/markdown`. Not an SBOM spec. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getBomMd",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ExceptionsSkip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown BOM summary (heading + zeros is still 200)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/bom.html": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "HTML BOM summary alias (same as GET /v1/bom?format=html)",
+        "description": "Same body as `GET /v1/bom?format=html` (self-contained HTML: heading + component count + license summary + policy hits / forbidden licenses; fail rows red; names escaped with stdlib `html.escape`; empty scan still 200). Content-Type `text/html; charset=utf-8`. No CDN. Not an SBOM spec. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getBomHtml",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ExceptionsSkip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML BOM summary (heading + zeros is still 200)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/bom.gha.txt": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "GitHub Actions annotations alias (same as GET /v1/bom?format=gha)",
+        "description": "Same body as `GET /v1/bom?format=gha` (workflow commands: `::error title=<component>::<license or rule>` for policy hits / forbidden licenses; waived `::notice title=<component>::waived <reason>`; clean scan → empty body 200, no `::error`). Content-Type `text/plain`. Does not require GitHub. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getBomGha",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ExceptionsSkip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GHA workflow commands (empty body is still 200)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/policy": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "Active license/policy gate",
+        "description": "Returns the loaded policy pack as a small JSON gate: `ok`, `forbiddenLicenseIds` (SPDX ids from the pack), `forbiddenPatterns` (pattern **ids** only, not regexes), `exceptionsCount` (sidecar count, not reasons), `ignoreFile` (whether scan-root `.aibomignore` exists). Missing / unloaded policy file → **200** with empty lists. Never dumps policy file contents, ignore-file lines, exception reasons, or secrets. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getPolicy",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active gate (empty lists when no policy file)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyGate"
+                },
+                "example": {
+                  "ok": true,
+                  "forbiddenLicenseIds": [
+                    "GPL-3.0",
+                    "GPL-3.0-only",
+                    "AGPL-3.0",
+                    "SSPL-1.0"
+                  ],
+                  "forbiddenPatterns": [
+                    "pickle.load",
+                    "eval"
+                  ],
+                  "exceptionsCount": 0,
+                  "ignoreFile": false
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/config": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "Redacted runtime config",
+        "description": "Public snapshot of non-secret runtime **knobs** (not the policy dump). Same auth as `GET /v1/policy` (no token). Allowlist only: `ok`, `rateLimit.perMinute` (null if unlimited), `cors.origins`, `watch` (`serve --watch`), `scanPathBase` (basename of `--path` only — never a full host path), `hasPolicyFile`, `webhooks.hasUrl` / `webhooks.hasSecret` (booleans — **never** the webhook URL, which may contain query tokens, and **never** the secret). **Forbidden:** webhook URL, webhook secret, full policy JSON (see `GET /v1/policy`), exception file contents. CORS + `X-Request-Id` same as other GET. Rate-limited like `/v1/policy` (not a probe path).",
+        "operationId": "getConfig",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted runtime config (no secrets)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfig"
+                },
+                "example": {
+                  "ok": true,
+                  "rateLimit": {
+                    "perMinute": 120
+                  },
+                  "cors": {
+                    "origins": []
+                  },
+                  "watch": false,
+                  "scanPathBase": "sample-app",
+                  "hasPolicyFile": true,
+                  "webhooks": {
+                    "hasUrl": false,
+                    "hasSecret": false
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/components": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "Lightweight component inventory",
+        "description": "Table-friendly inventory from the last scan snapshot: `{ok, count, components:[{name, version, license, path}]}`. Buyers get a list without downloading CycloneDX/SPDX (`GET /v1/bom` unchanged). `path` is relative to the scan root when possible, otherwise the basename — **never** an absolute host path. Empty scan → **200** `{ok:true, count:0, components:[]}`. Optional `?license=` is a case-insensitive exact match on the license label (SPDX id or name). List is capped at **500**; `truncated: true` when more match. CORS + `X-Request-Id` same as other GET. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. CORS OPTIONS unlisted Origin → **403** `cors_denied`.",
+        "operationId": "listComponents",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/LicenseFilter"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inventory (empty list when the last scan has no components)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComponentInventory"
+                },
+                "example": {
+                  "ok": true,
+                  "count": 2,
+                  "components": [
+                    {
+                      "name": "ai-bom-sample-app",
+                      "version": "0.0.1",
+                      "license": "MIT",
+                      "path": "package.json"
+                    },
+                    {
+                      "name": "gpt-4o-mini",
+                      "version": "",
+                      "license": "UNKNOWN",
+                      "path": "app.py"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/exceptions": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "Redacted license-exception inventory",
+        "description": "Public waiver table from the loaded sidecar (scan-root `.aibom-exceptions.json` and optional `--exceptions`): `{ok, count, exceptions:[{component, license, expiresAt, expired}]}`. `count` is the full waiver count (before cap). Array keeps original file order and is capped at **500**; `truncated: true` only when more. Empty / no exceptions file → **200** `{ok:true, count:0, exceptions:[]}`. `expiresAt` is the stored date string (YYYY-MM-DD) or `null`. `expired` uses the same expiry rule as the scanner (`expires` < today UTC). Optional `?expired=true|false` filters the list; unknown value → empty list **200** (not 400). Optional `reason` is included only when it is a short human note already on the sidecar and does not look like a secret. **Never** sidecar file path, full policy JSON, webhook URL/secret, API keys, Authorization, exception file dump, or ignore-file body. Same auth as `GET /v1/policy` (no token). CORS + `X-Request-Id`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. CORS OPTIONS unlisted Origin → **403** `cors_denied`.",
+        "operationId": "listExceptions",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ExpiredFilter"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted waiver inventory (empty list when no sidecar)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExceptionInventory"
+                },
+                "example": {
+                  "ok": true,
+                  "count": 1,
+                  "exceptions": [
+                    {
+                      "component": "leftpad",
+                      "license": "GPL-3.0",
+                      "expiresAt": "2099-12-31",
+                      "expired": false,
+                      "reason": "vendor approved 2026-Q3"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/evidence.md": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "Bilingual DRAFT evidence markdown",
+        "description": "Auditor-facing EN/中文 DRAFT evidence (policy hits, license summary, exit guidance). CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getEvidence",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Markdown evidence pack",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ]
+      }
+    },
+    "/": {
+      "get": {
+        "tags": [
+          "bom"
+        ],
+        "summary": "HTML summary",
+        "description": "Self-contained HTML: component count, license summary, policy hits. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Explicit HTML export: `GET /v1/bom.html` / `GET /v1/bom?format=html` (same formatter).",
+        "operationId": "getIndex",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "HTML summary page",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Prometheus metrics",
+        "description": "Prometheus text exposition of the BOM scan snapshot (computed once at process start). Gauges: `ai_bom_component_count`, `ai_bom_policy_hits`, `ai_bom_forbidden_licenses`. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Matching GET includes ACAO (same as other GET). Not rate-limited.",
+        "operationId": "getMetrics",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# TYPE ai_bom_component_count gauge\\nai_bom_component_count 4\\n# TYPE ai_bom_policy_hits gauge\\nai_bom_policy_hits 1\\n# TYPE ai_bom_forbidden_licenses gauge\\nai_bom_forbidden_licenses 0\\n"
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "OpenAPI 3 document",
+        "description": "File-backed spec from `openapi/bom.openapi.json`. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "getOpenApi",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON served from openapi/bom.openapi.json",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "500": {
+            "description": "Spec file missing or invalid JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "openapi_unavailable"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "headers": {
+      "AccessControlAllowOrigin": {
+        "description": "Echoed when request Origin matches `--cors-origins` / `AI_BOM_CORS_ORIGINS` (or `*` when configured). Absent when CORS disabled or origin not allowed.",
+        "schema": {
+          "type": "string",
+          "example": "http://localhost:3000"
+        }
+      },
+      "XRequestId": {
+        "description": "Echo of incoming `X-Request-Id`, or a generated UUID when the request header is omitted/empty. Present on every response (incl 4xx / OPTIONS).",
+        "schema": {
+          "type": "string",
+          "example": "mvp-req-id-a1b2c3d4"
+        }
+      },
+      "RetryAfter": {
+        "description": "Seconds to wait before retrying a rate-limited request.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "example": 60
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean",
+            "example": false
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "ok",
+          "service",
+          "version"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "service": {
+            "type": "string",
+            "example": "ai-bom"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.1.0"
+          },
+          "path": {
+            "type": "string",
+            "description": "Scan root used for this snapshot"
+          },
+          "componentCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "policyHits": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "licenses": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "License id/name → count",
+            "example": {
+              "MIT": 1
+            }
+          },
+          "shuttingDown": {
+            "type": "boolean",
+            "description": "Present and true while draining SIGTERM/SIGINT. Omitted otherwise so stack-demo /health is unchanged."
+          }
+        }
+      },
+      "LicenseEntry": {
+        "type": "object",
+        "properties": {
+          "license": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "example": "MIT"
+              },
+              "name": {
+                "type": "string"
+              },
+              "expression": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "BomComponent": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "bom-ref": {
+            "type": "string"
+          },
+          "licenses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LicenseEntry"
+            }
+          }
+        }
+      },
+      "BomSummary": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mcpServers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyHits": {
+            "type": "integer"
+          },
+          "licenses": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "forbidden": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "disclosureGaps": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "forbiddenLicenses": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "waived": {
+            "type": "array",
+            "description": "Applied license exceptions (not policy failures). {component, license, reason}.",
+            "items": {
+              "$ref": "#/components/schemas/BomWaiver"
+            }
+          },
+          "expiredExceptions": {
+            "type": "array",
+            "description": "Matching exceptions whose expires < today UTC; still policy hits.",
+            "items": {
+              "$ref": "#/components/schemas/BomWaiver"
+            }
+          }
+        }
+      },
+      "Bom": {
+        "type": "object",
+        "description": "CycloneDX-like AI-BOM (lite schema).",
+        "additionalProperties": true,
+        "properties": {
+          "bomFormat": {
+            "type": "string",
+            "example": "CycloneDX"
+          },
+          "specVersion": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BomComponent"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/BomSummary"
+          }
+        }
+      },
+      "CorsConfig": {
+        "type": "object",
+        "description": "Optional CORS. Default omitted or empty origins = no extra CORS headers (deny). `origins` may be `[\"*\"]` (any Origin) or an explicit list. When enabled with an explicit list, OPTIONS preflight for a non-listed Origin returns **403** `{error:\"forbidden\",reason:\"cors_denied\"}`; allowed Origin → **204** with ACAO/ACAM/ACAH. Matching GET get Access-Control-Allow-Origin. local-mvp uses `[\"http://localhost:3000\"]`. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id`.",
+        "properties": {
+          "origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[\"*\"]` or explicit origins. Empty/omitted disables CORS.",
+            "example": [
+              "http://localhost:3000"
+            ]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Methods (default GET, HEAD, OPTIONS)",
+            "default": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ]
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Headers (default Content-Type, X-Request-Id)",
+            "default": [
+              "Content-Type",
+              "X-Request-Id"
+            ]
+          },
+          "expose": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Expose-Headers (default includes Retry-After and X-Request-Id)",
+            "default": [
+              "Retry-After",
+              "X-Request-Id"
+            ]
+          }
+        }
+      },
+      "Ready": {
+        "description": "GET /ready body. 200 `{ok:true, service}` plus the same snapshot fields as GET /health when healthy. 503 `{ok:false, reason:\"shutting_down\"}` while draining SIGTERM/SIGINT. Snapshot/stateless — no circuit or queue. Compose/stack-demo healthchecks stay on `/health`.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Health"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "shutting_down"
+                ],
+                "description": "Present on 503 while draining SIGTERM/SIGINT."
+              }
+            }
+          }
+        ]
+      },
+      "BomExport": {
+        "description": "Union of internal AI-BOM (`format=json`), CycloneDX 1.5 JSON (`bomFormat`+`specVersion`), CycloneDX 1.5 XML (`format=cyclonedx-xml`), SPDX 2.3 JSON (`spdxVersion`+`packages`), SPDX 2.3 XML (`format=spdx-xml`), SARIF 2.1.0 (`version`+`runs`), Markdown summary (`format=md`), or GitHub Actions annotations (`format=gha`).",
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "bomFormat": {
+            "type": "string",
+            "example": "CycloneDX"
+          },
+          "specVersion": {
+            "type": "string",
+            "example": "1.5"
+          },
+          "spdxVersion": {
+            "type": "string",
+            "example": "SPDX-2.3"
+          },
+          "documentNamespace": {
+            "type": "string"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "packages": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/BomSummary"
+          },
+          "properties": {
+            "type": "array",
+            "description": "CycloneDX properties (e.g. aibom:policyHits)",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "$schema": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "example": "2.1.0"
+          },
+          "runs": {
+            "type": "array",
+            "description": "SARIF 2.1.0 runs (empty results still valid)",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "BomWaiver": {
+        "type": "object",
+        "properties": {
+          "component": {
+            "type": "string",
+            "example": "leftpad"
+          },
+          "license": {
+            "type": "string",
+            "example": "GPL-3.0"
+          },
+          "reason": {
+            "type": "string",
+            "example": "vendor approved 2026-Q3"
+          },
+          "expires": {
+            "type": "string",
+            "example": "2026-12-31",
+            "description": "YYYY-MM-DD UTC; omitted if unexpired/applied"
+          },
+          "path": {
+            "type": "string"
+          },
+          "purl": {
+            "type": "string"
+          }
+        }
+      },
+      "PolicyGate": {
+        "type": "object",
+        "description": "Active license/policy gate. Ids and counts only — never file contents, regexes, exception reasons, or secrets. 200 with empty lists when no policy is loaded.",
+        "required": [
+          "ok",
+          "forbiddenLicenseIds",
+          "exceptionsCount",
+          "ignoreFile"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "forbiddenLicenseIds": {
+            "type": "array",
+            "description": "SPDX ids from policy `forbiddenLicenseIds` (the license gate, not scan hits).",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "GPL-3.0",
+              "AGPL-3.0",
+              "SSPL-1.0"
+            ]
+          },
+          "forbiddenPatterns": {
+            "type": "array",
+            "description": "Forbidden-pattern **ids** only (not regex / message / file contents).",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "pickle.load",
+              "eval"
+            ]
+          },
+          "exceptionsCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Count of loaded license exceptions (sidecar). Reasons are not included."
+          },
+          "ignoreFile": {
+            "type": "boolean",
+            "description": "True when scan-root `.aibomignore` exists. File contents are not included."
+          }
+        }
+      },
+      "RuntimeConfig": {
+        "type": "object",
+        "description": "Public redacted runtime config (GET /v1/config). Allowlist only — never webhook URL, webhook secret, full policy JSON, exception file contents, or a full host scan path. Knobs, not the license gate (ids stay on GET /v1/policy). Mirrors C/E/F GET /v1/config; D has no admin token on this GET.",
+        "required": [
+          "ok",
+          "rateLimit",
+          "cors",
+          "watch",
+          "hasPolicyFile",
+          "webhooks"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "rateLimit": {
+            "type": "object",
+            "properties": {
+              "perMinute": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Sliding-window limit (null if unlimited / `--rate-limit 0`). Default 120.",
+                "example": 120
+              }
+            }
+          },
+          "cors": {
+            "type": "object",
+            "properties": {
+              "origins": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Allowed Origins (`[\"*\"]` = any). Empty = CORS disabled.",
+                "example": []
+              }
+            }
+          },
+          "watch": {
+            "type": "boolean",
+            "description": "True when `serve --watch` is polling scan-root mtime.",
+            "example": false
+          },
+          "scanPathBase": {
+            "type": "string",
+            "description": "Basename of `--path` only (never a full host path that might leak user dirs). Omitted when the basename is empty or `.`.",
+            "example": "sample-app"
+          },
+          "hasPolicyFile": {
+            "type": "boolean",
+            "description": "True when `--policy` loaded a pack. Full gate JSON stays on GET /v1/policy.",
+            "example": true
+          },
+          "webhooks": {
+            "type": "object",
+            "description": "Outbound policy-hit webhook presence (`scan --webhook-url` / env, or serve flags for this snapshot). Booleans only — never the URL (query tokens) or secret.",
+            "required": [
+              "hasUrl",
+              "hasSecret"
+            ],
+            "properties": {
+              "hasUrl": {
+                "type": "boolean",
+                "description": "True when `--webhook-url` / `AI_BOM_WEBHOOK_URL` is set. The URL itself is never returned.",
+                "example": false
+              },
+              "hasSecret": {
+                "type": "boolean",
+                "description": "True when `--webhook-secret` / `AI_BOM_WEBHOOK_SECRET` is set. The secret itself is never returned.",
+                "example": false
+              }
+            }
+          }
+        }
+      },
+      "InventoryComponent": {
+        "type": "object",
+        "description": "One inventory row. `path` is relative to the scan root or a basename — never an absolute host path.",
+        "required": [
+          "name",
+          "version",
+          "license",
+          "path"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "ai-bom-sample-app"
+          },
+          "version": {
+            "type": "string",
+            "description": "Empty string when the scan has no version.",
+            "example": "0.0.1"
+          },
+          "license": {
+            "type": "string",
+            "description": "SPDX id, expression, or name (`UNKNOWN` / `NOASSERTION` when unset).",
+            "example": "MIT"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative to scan root, or basename. Never an absolute host path.",
+            "example": "package.json"
+          }
+        }
+      },
+      "ComponentInventory": {
+        "type": "object",
+        "description": "Lightweight inventory (GET /v1/components). Not CycloneDX/SPDX. Empty scan is still 200 with count 0.",
+        "required": [
+          "ok",
+          "count",
+          "components"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of rows in `components` (after filter and cap)."
+          },
+          "components": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/components/schemas/InventoryComponent"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when more than 500 rows matched (list capped at 500). Omitted when not truncated."
+          }
+        }
+      },
+      "ExceptionRow": {
+        "type": "object",
+        "description": "One redacted waiver row. Never includes sidecar path, secrets, or a raw file dump.",
+        "required": [
+          "component",
+          "license",
+          "expiresAt",
+          "expired"
+        ],
+        "properties": {
+          "component": {
+            "type": "string",
+            "example": "leftpad"
+          },
+          "license": {
+            "type": "string",
+            "example": "GPL-3.0"
+          },
+          "expiresAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Stored expiry (YYYY-MM-DD) or null when the waiver has no expiry.",
+            "example": "2099-12-31"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "True when `expires` < today UTC (same rule as the scanner). Expired waivers still fail the license gate.",
+            "example": false
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional short human note already on the sidecar. Omitted when missing, long, or secret-like.",
+            "example": "vendor approved 2026-Q3"
+          }
+        }
+      },
+      "ExceptionInventory": {
+        "type": "object",
+        "description": "Redacted waiver inventory (GET /v1/exceptions). Empty / no sidecar is still 200 with count 0. Never dumps the exceptions file.",
+        "required": [
+          "ok",
+          "count",
+          "exceptions"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Full matching waiver count (after optional `?expired=` filter, before the 500 cap)."
+          },
+          "exceptions": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/components/schemas/ExceptionRow"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when more than 500 waivers matched (list capped at 500). Omitted when not truncated."
+          }
+        }
+      }
+    },
+    "responses": {
+      "CorsDenied": {
+        "description": "CORS preflight (OPTIONS) for an Origin not in `--cors-origins` / `AI_BOM_CORS_ORIGINS`. Body `{error:\"forbidden\",reason:\"cors_denied\"}`. No `Access-Control-Allow-Origin`. Does not apply when CORS is disabled (then OPTIONS is 404 without ACAO). GET from a disallowed Origin still execute (e.g. 200) but omit ACAO.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "forbidden",
+              "reason": "cors_denied"
+            }
+          }
+        },
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Sliding-window rate limit exceeded (client IP, X-Forwarded-For first hop). Retry after `Retry-After` seconds. `/health`, `/ready`, `/metrics` are not rate-limited.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "ok": false,
+              "reason": "rate_limited"
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "XRequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "description": "Optional correlation id. Echoed on every response as `X-Request-Id`. If omitted/empty, the server generates a UUID (max 128 chars; CR/LF stripped).",
+        "schema": {
+          "type": "string",
+          "maxLength": 128,
+          "example": "mvp-req-id-a1b2c3d4"
+        }
+      },
+      "BomFormat": {
+        "name": "format",
+        "in": "query",
+        "required": false,
+        "description": "Export format. `json` (default) is the internal AI-BOM with `summary`. `cyclonedx` is CycloneDX 1.5 JSON. `cyclonedx-xml` is CycloneDX 1.5 XML (`application/vnd.cyclonedx+xml`; alias `cdx-xml`; path alias `GET /v1/bom.xml`). `spdx` is SPDX 2.3 JSON. `spdx-xml` is SPDX 2.3 XML (`application/spdx+xml`; alias `spdxxml`; path alias `GET /v1/bom.spdx.xml`). `sarif` is SARIF 2.1.0 JSON (same as CLI `--sarif`; GitHub code scanning). `md` is a human/Slack Markdown summary (`text/markdown`; alias `markdown`; path alias `GET /v1/bom.md`; not an SBOM spec). `gha` is GitHub Actions workflow commands (`text/plain`; alias `annotations`; path alias `GET /v1/bom.gha.txt`; `::error` / waived `::notice`; clean → empty). `html` is a self-contained HTML BOM summary (`text/html`; path alias `GET /v1/bom.html`; no CDN; policy hits red; not an SBOM spec). Existing `GET /bom.json` is always internal json. Alias: `GET /v1/bom.sarif`.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "json",
+            "cyclonedx",
+            "cyclonedx-xml",
+            "spdx",
+            "spdx-xml",
+            "sarif",
+            "md",
+            "gha",
+            "html"
+          ],
+          "default": "json"
+        }
+      },
+      "ExceptionsSkip": {
+        "name": "exceptions",
+        "in": "query",
+        "required": false,
+        "description": "Skip applying license exceptions for this response. Empty / `skip` / `0` / `false` / `off` / `none` reconstructs un-waived forbidden-license hits. Omitted = apply scan-root `.aibom-exceptions.json`. Does not load a file path from the query.",
+        "schema": {
+          "type": "string",
+          "example": "skip"
+        }
+      },
+      "LicenseFilter": {
+        "name": "license",
+        "in": "query",
+        "required": false,
+        "description": "Case-insensitive exact match on the component license label (SPDX id or name, e.g. `MIT`). Omit to return all.",
+        "schema": {
+          "type": "string",
+          "example": "MIT"
+        }
+      },
+      "ExpiredFilter": {
+        "name": "expired",
+        "in": "query",
+        "required": false,
+        "description": "Filter by expiry. `true` / `false` only. Unknown value → empty list **200** (not 400). Omit to return all.",
+        "schema": {
+          "type": "string",
+          "example": "false"
+        }
+      }
+    }
+  }
+}

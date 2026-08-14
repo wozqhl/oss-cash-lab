@@ -1,0 +1,154 @@
+{
+  "adminToken": "admin-dev-token",
+  "allow": [
+    "echo",
+    "digest",
+    "listPets",
+    "getPet"
+  ],
+  "deny": [
+    "deletePet",
+    "shell"
+  ],
+  "rateLimitPerMinute": 60,
+  "maxBodyBytes": 1048576,
+  "tenants": [
+    {
+      "id": "acme",
+      "apiKey": "ten_acme_dev",
+      "allow": [
+        "echo",
+        "digest",
+        "listPets",
+        "getPet"
+      ],
+      "deny": [
+        "deletePet",
+        "shell"
+      ],
+      "rateLimitPerMinute": 120,
+      "ipAllowlist": [
+        "127.0.0.1",
+        "::1",
+        "10.0.0.0/8"
+      ]
+    },
+    {
+      "id": "restricted",
+      "apiKey": "ten_restricted_dev",
+      "allow": [
+        "echo"
+      ],
+      "deny": [
+        "digest",
+        "listPets",
+        "getPet",
+        "deletePet",
+        "shell"
+      ],
+      "rateLimitPerMinute": 30,
+      "maxBodyBytes": 65536
+    },
+    {
+      "id": "ip-locked",
+      "apiKey": "ten_iplock_dev",
+      "allow": [
+        "echo"
+      ],
+      "deny": [
+        "digest",
+        "listPets",
+        "getPet",
+        "deletePet",
+        "shell",
+        "upstreamPing",
+        "upstreamEcho"
+      ],
+      "rateLimitPerMinute": 30,
+      "ipAllowlist": [
+        "1.2.3.4"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo arguments back as JSON",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "digest",
+      "description": "Return a short digest of text",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "listPets",
+      "description": "List demo pets",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "getPet",
+      "description": "Get a demo pet by id",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "deletePet",
+      "description": "Delete a pet (denied by policy)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "shell",
+      "description": "Dangerous shell tool (denied)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "export": {
+    "redactDefault": false
+  },
+  "audit": {
+    "redactOnWrite": false
+  },
+  "webhooks": [],
+  "webhooksRedact": true,
+  "cors": {
+    "origins": []
+  }
+}

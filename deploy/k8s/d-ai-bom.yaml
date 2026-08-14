@@ -1,0 +1,89 @@
+# D ai-bom — placeholder image (not published yet).
+# Default serve port 8793 (CLI / docker-compose.yml).
+# Apply: kubectl apply -f deploy/k8s/d-ai-bom.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: d-ai-bom
+  labels:
+    app.oss-cash-lab.dev/d-ai-bom: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/d-ai-bom: "true"
+  template:
+    metadata:
+      labels:
+        app.oss-cash-lab.dev/d-ai-bom: "true"
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: d-ai-bom
+          image: ghcr.io/wozqhl/d-ai-bom:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8793
+          # Optional env names from serve/CLI (do not invent secrets):
+          # - name: AI_BOM_CORS_ORIGINS
+          # - name: AI_BOM_WEBHOOK_URL
+          # - name: AI_BOM_WEBHOOK_SECRET
+          # - name: SHUTDOWN_DRAIN_MS
+          #   value: "5000"
+          # - name: LOG_FORMAT
+          #   value: json
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8793
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8793
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: d-ai-bom
+  labels:
+    app.oss-cash-lab.dev/d-ai-bom: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.oss-cash-lab.dev/d-ai-bom: "true"
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8793

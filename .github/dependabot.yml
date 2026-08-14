@@ -1,0 +1,31 @@
+# weekly updates
+# keeps its own package.json / pyproject.toml
+# sample-app fixtures under bets/d-ai-bom/examples/ are not scanned
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/bets/a-sdk-mcp-gen"
+      - "/bets/b-mcp-gateway"
+      - "/bets/e-otel-ai-cost"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "pip"
+    directories:
+      - "/bets/c-agent-ci"
+      - "/bets/d-ai-bom"
+      - "/bets/f-cn-work-agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5

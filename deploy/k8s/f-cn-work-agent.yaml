@@ -1,0 +1,101 @@
+# F cn-work-agent — placeholder image (not published yet).
+# Default serve port 8790 (CLI / docker-compose.yml).
+# Apply: kubectl apply -f deploy/k8s/f-cn-work-agent.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: f-cn-work-agent
+  labels:
+    app.oss-cash-lab.dev/f-cn-work-agent: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/f-cn-work-agent: "true"
+  template:
+    metadata:
+      labels:
+        app.oss-cash-lab.dev/f-cn-work-agent: "true"
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: f-cn-work-agent
+          image: ghcr.io/wozqhl/f-cn-work-agent:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8790
+          # Env names from docker-compose.yml / Dockerfile (demo placeholders).
+          # Do not invent or commit real secrets — set via Secret in a real cluster:
+          # - name: FEISHU_VERIFY_TOKEN
+          # - name: FEISHU_ENCRYPT_KEY
+          # - name: DINGTALK_TOKEN
+          # - name: DINGTALK_SECRET
+          # - name: WECOM_TOKEN
+          # - name: CORS_ORIGINS
+          # - name: APPROVAL_TTL_SECONDS
+          # - name: RATE_LIMIT_PER_MINUTE
+          # - name: APPROVAL_WEBHOOK_URL
+          # - name: APPROVAL_WEBHOOK_SECRET
+          # - name: SHUTDOWN_DRAIN_MS
+          #   value: "5000"
+          # - name: LOG_FORMAT
+          #   value: json
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8790
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8790
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f-cn-work-agent
+  labels:
+    app.oss-cash-lab.dev/f-cn-work-agent: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.oss-cash-lab.dev/f-cn-work-agent: "true"
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8790

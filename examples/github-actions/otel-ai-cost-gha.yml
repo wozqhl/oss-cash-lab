@@ -1,0 +1,63 @@
+# Copy to .github/workflows/otel-ai-cost-gha.yml in a consumer repo.
+# Requires Node 18+ and otel-ai-cost CLI (src/cli.js or installed bin).
+# This portfolio: add working-directory: bets/e-otel-ai-cost
+#
+# Examples only — do not add this as a required push workflow on oss-cash-lab
+# (keep .github/workflows/ci.yml as the gate).
+# Happy path (this job): report --format gha with no --budget → empty stdout, exit 0.
+# Tight --budget policies/budget.json → ::error title=budget:: and exit 1.
+# Tight --tenant-budget acme=0.0001 → ::error title=tenant/acme:: (exit 0 unless --budget).
+name: OTel AI Cost (GHA annotations)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  otel-ai-cost-gha:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Workflow commands on stdout (::error title=budget:: / title=tenant/<id>::).
+      # No GitHub API. Empty when no budget is configured.
+      - name: Cost report (GHA annotations)
+        run: node src/cli.js report --in examples/spans.json --format gha
+
+      - name: Job summary
+        if: always()
+        run: node src/cli.js report --in examples/spans.json --format md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Markdown artifact
+        if: always()
+        run: node src/cli.js report --in examples/spans.json --format md --out costs.md
+
+      - name: Upload Markdown report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: otel-ai-cost-md
+          path: costs.md
+          if-no-files-found: error
+
+      # Optional global budget gate (prints ::error title=budget:: then exit 1 on breach):
+      # - name: Budget gate
+      #   run: node src/cli.js report --in examples/spans.json --budget policies/budget.json --format gha
+
+      # Optional tenant annotations (prints ::error title=tenant/acme::, still exit 0):
+      # - name: Tenant annotations
+      #   run: node src/cli.js report --in examples/spans.json --tenant-budget acme=0.0001 --format gha

@@ -1,0 +1,92 @@
+# Prometheus Operator ServiceMonitors for B–F GET /metrics.
+# Requires CRDs: monitoring.coreos.com/v1 (prometheus-operator).
+# Not applied in make smoke (parse-only YAML). Apply separately so
+# `kubectl apply -k deploy/k8s` still works without the CRDs:
+#   kubectl apply -f deploy/k8s/servicemonitor.yaml
+# Selector labels match each Service metadata.labels (not a common label).
+# Endpoint port name `http` matches Service spec.ports[].name.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: b-mcp-gateway
+  labels:
+    app.oss-cash-lab.dev/b-mcp-gateway: "true"
+spec:
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/b-mcp-gateway: "true"
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: c-agent-ci
+  labels:
+    app.oss-cash-lab.dev/c-agent-ci: "true"
+spec:
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/c-agent-ci: "true"
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: d-ai-bom
+  labels:
+    app.oss-cash-lab.dev/d-ai-bom: "true"
+spec:
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/d-ai-bom: "true"
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: e-otel-ai-cost
+  labels:
+    app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+spec:
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: f-cn-work-agent
+  labels:
+    app.oss-cash-lab.dev/f-cn-work-agent: "true"
+spec:
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/f-cn-work-agent: "true"
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

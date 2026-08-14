@@ -1,0 +1,7 @@
+{
+  "name": "ai-bom-sample-app",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Fixture app for ai-bom local MVP (license field demo)",
+  "license": "MIT"
+}

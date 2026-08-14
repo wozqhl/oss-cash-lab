@@ -1,0 +1,6 @@
+apiVersion: v2
+name: oss-cash-lab
+description: Thin chart for OSS Cash Lab HTTP bets B–F (same images/ports as deploy/k8s)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

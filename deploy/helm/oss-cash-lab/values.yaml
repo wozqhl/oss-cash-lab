@@ -1,0 +1,184 @@
+# Same images/ports as deploy/k8s/. Images are placeholders (not published).
+imageRegistry: ghcr.io/wozqhl
+imagePullPolicy: IfNotPresent
+
+# networking.k8s.io/v1 NetworkPolicy (built-in, not a CRD). Off by default so
+# helm install still works on CNIs that ignore NetworkPolicy.
+networkPolicy:
+  enabled: false
+
+# policy/v1 PodDisruptionBudget (built-in). Off by default so replicaCount 1
+# does not surprise-block node drain (minAvailable: 1 + 1 replica is a
+# "can't evict" trap). When enabled, templates use maxUnavailable: 1 so a
+# single replica can still drain. HA: replicaCount >= 2 + consider minAvailable: 1.
+pdb:
+  enabled: false
+
+# autoscaling/v2 HorizontalPodAutoscaler (built-in). Off by default so
+# helm install does not manage replicas without metrics-server.
+# When enabled: CPU averageUtilization 70%, minReplicas 1 / maxReplicas 4.
+# Does not change replicaCount (still 1). Needs metrics-server
+# (metrics.k8s.io) to actually scale; HPA objects sit idle without it.
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  cpu:
+    averageUtilization: 70
+
+# v1 LimitRange (built-in). On by default: fills omitted container
+# CPU/memory requests/limits so HPA has a request denominator and
+# noisy-neighbor pods cannot omit limits. Does not change Deployments
+# that already set resources (50m/64Mi request, 500m/256Mi limit).
+# Set enabled: false to skip the object.
+limitRange:
+  enabled: true
+  max:
+    cpu: "1"
+    memory: 512Mi
+  min:
+    cpu: 25m
+    memory: 32Mi
+  default:
+    cpu: 500m
+    memory: 256Mi
+  defaultRequest:
+    cpu: 50m
+    memory: 64Mi
+
+# v1 ResourceQuota (built-in). Off by default so a thin helm install into
+# a shared namespace does not fight existing quotas (unlike LimitRange).
+# When enabled: hard caps sized for 5 B–F × HPA maxReplicas 4 plus
+# headroom (pairs with LimitRange + HPA). Does not change Deployment
+# resource blocks. Floor is >= replica=1 requests so apply does not
+# block the demo. Set enabled: true to render the object.
+resourceQuota:
+  enabled: false
+  hard:
+    pods: "24"
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "12"
+    limits.memory: 6Gi
+    services: "10"
+
+# networking.k8s.io/v1 Ingress (built-in). Off by default so helm install
+# does not require an ingress controller. When enabled: one Ingress with
+# five host rules (Prefix /) so backends do not need path strip.
+# Needs ingress-nginx (or change className for Traefik/Contour/etc.).
+# Without a controller the object sits idle. TLS omitted for local
+# (no Secrets). Point /etc/hosts at the controller for *.oss-cash-lab.local.
+ingress:
+  enabled: false
+  className: nginx
+  hosts:
+    b-mcp-gateway: gateway.oss-cash-lab.local
+    c-agent-ci: ci.oss-cash-lab.local
+    d-ai-bom: bom.oss-cash-lab.local
+    e-otel-ai-cost: cost.oss-cash-lab.local
+    f-cn-work-agent: agent.oss-cash-lab.local
+
+# Restricted-ish pod+container securityContext (PSS). On by default so
+# enterprise/CIS questionnaires see non-root, no privilege escalation,
+# drop ALL, read-only root + emptyDir /tmp. runAsUser matches Dockerfile
+# USER (node:20-alpine `node` = 1000; python alpine adduser 65532).
+# B/C/F also mount emptyDir at /app/data (audit / runs). Set enabled: false
+# to omit (not recommended).
+securityContext:
+  enabled: true
+
+# Per-bet HTTP services. Disable with bets.<name>.enabled=false.
+bets:
+  b-mcp-gateway:
+    enabled: true
+    image:
+      repository: b-mcp-gateway
+      tag: dev
+    replicaCount: 1
+    runAsUser: 1000
+    runAsGroup: 1000
+    dataMount: /app/data
+    containerPort: 8787
+    service:
+      port: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  c-agent-ci:
+    enabled: true
+    image:
+      repository: c-agent-ci
+      tag: dev
+    replicaCount: 1
+    runAsUser: 65532
+    runAsGroup: 65532
+    dataMount: /app/data
+    containerPort: 8791
+    service:
+      port: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  d-ai-bom:
+    enabled: true
+    image:
+      repository: d-ai-bom
+      tag: dev
+    replicaCount: 1
+    runAsUser: 65532
+    runAsGroup: 65532
+    containerPort: 8793
+    service:
+      port: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  e-otel-ai-cost:
+    enabled: true
+    image:
+      repository: e-otel-ai-cost
+      tag: dev
+    replicaCount: 1
+    runAsUser: 1000
+    runAsGroup: 1000
+    containerPort: 8792
+    service:
+      port: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  f-cn-work-agent:
+    enabled: true
+    image:
+      repository: f-cn-work-agent
+      tag: dev
+    replicaCount: 1
+    runAsUser: 65532
+    runAsGroup: 65532
+    dataMount: /app/data
+    containerPort: 8790
+    service:
+      port: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi

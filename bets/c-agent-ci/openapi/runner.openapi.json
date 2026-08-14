@@ -1,0 +1,2725 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Agent CI Hosted Runner API",
+    "description": "Local hosted-runner stub (not a cloud product). Documents the paid-seat API sketch from docs/hosted-runner.md. OSS CLI remains free/offline; Bearer `demo` sketches paid seats. No `Authorization` is allowed unless `--require-key` (OSS local). `Authorization: Bearer demo` is allowed (paid-seat sketch). Any other Bearer token → 401 `{error}`. Local in-memory run queue (OSS): POST `/v1/runs` → **202** `{runId,status}` (`queued` or `running`); poll GET `/v1/runs/{id}` until `done`|`failed`|`error`. Optional POST body `failUnder` (number, typically 0–100): pass-rate `score` = passed/total×100 (0 if total=0). Completed run JSON always includes `score`. When `failUnder` is set, also `gate: {failUnder, passed}`. If `score < failUnder`, status is **`failed`** with `error: \"below_threshold\"` (JUnit `failures>=1`; synthetic `<failure message=\"below_threshold\">` if all cases passed). Omit `failUnder` = no gate (status `done` as today). Queue full → **429** `{error:\"queue_full\"}` + `Retry-After`. In-memory finished-run history cap (OSS): `--runs-max` / env `RUNS_MAX` default **1000** completed (`done`|`failed`|`error`) runs. Over cap, drop oldest finished. Does **not** cap the in-flight queue (`--max-queue`). `0` = unlimited. `GET /v1/runs`, `GET /v1/runs/junit.xml`, `GET /v1/runs/tap.txt`, `GET /v1/runs/report.md`, `GET /v1/runs/report.html`, and `GET /v1/runs/annotations.txt` only see retained history; `GET /v1/runs/{id}` → **404** if dropped. Webhook already fired at complete. `GET /ready` is readiness: **200** `{ok:true, queue}` when POST `/v1/runs` would still enqueue (queued < maxQueue or a running slot is free); **503** `{ok:false, reason:\"queue_full\"}` + `Retry-After` when at capacity (queued+running such that POST would 429). On SIGTERM/SIGINT, **503** `{ok:false, reason:\"shutting_down\"}` wins (liveness `GET /health` stays 200 with `shuttingDown: true` while draining; new queue jobs are not started). Snapshot only — does not consume a queue slot. Liveness `GET /health` stays **200** always (includes the queue snapshot). Compose/stack-demo healthchecks stay on `/health`. Hosted autoscaling / multi-node pools = paid later. Optional `X-Request-Id` request header: echoed on **every** response (including 4xx / OPTIONS). If omitted or empty, the stub generates a UUID (max 128 chars; CR/LF stripped). The same value is stored as `requestId` on POST `/v1/runs` records and returned by GET `/v1/runs/{id}` and list rows. Optional CORS: `--cors-origins` CSV or env `AGENT_CI_CORS_ORIGINS` (`*` allowed). Default omitted/empty = no extra CORS headers (deny). When enabled with an explicit list, OPTIONS preflight for a listed Origin → 204 with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin → 403 `{error:\"forbidden\",reason:\"cors_denied\"}`. Matching GET/POST include ACAO. Default allow/expose headers include `X-Request-Id`. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 429/503 `Retry-After`). **429 rate limit**: `--rate-limit` / env `RATE_LIMIT_PER_MINUTE` (alias `RATE_LIMIT_RPM`) default **120** requests/minute per client IP (`X-Forwarded-For` first hop, else socket). In-memory sliding window. Exceed → `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. `/health`, `/ready`, `/metrics` are **not** rate-limited (k8s probes / Prometheus). Distinct from queue-full 429 `{error:\"queue_full\"}`. Default 120 is generous so stack-demo / local-mvp queue curls never 429. 0 disables. `GET /openapi.json` serves this file. `GET /v1/runs/{id}/junit.xml` and `GET /v1/runs/junit.xml` return JUnit XML (`application/xml`) for one run or all completed runs (Actions/Jenkins/GitLab ingest; empty → tests=\"0\"; XML escaped). `GET /v1/runs/{id}/tap.txt` (alias `/tap`) and `GET /v1/runs/tap.txt` return TAP version 13 (`text/plain; charset=utf-8`) for one run or all completed runs (empty → `1..0`; `#` in names escaped; gate fail → `not ok`). `GET /v1/runs/{id}/report.md` (alias `/md`) and `GET /v1/runs/report.md` return a Markdown run report (`text/markdown; charset=utf-8`) for GitHub Actions `$GITHUB_STEP_SUMMARY` / humans (empty aggregate → heading + no rows; `|` in names escaped; gate fail → `fail`). `GET /v1/runs/{id}/report.html` (alias `/html`) and `GET /v1/runs/report.html` return a self-contained HTML run report (`text/html; charset=utf-8`) for the local 5-min demo (empty aggregate → heading + “no runs”; names escaped; fail rows visually distinct; no CDN). `GET /v1/runs/{id}/annotations.txt` (alias `/annotations`) and `GET /v1/runs/annotations.txt` return GitHub Actions workflow commands (`text/plain; charset=utf-8`; fail → `::error title=<suite>/<case>::<message>`; gate fail → `::error title=gate::score N < failUnder M`; pass-only / empty → empty body, no `::error`). Does not require GitHub. `GET /v1/runs/{id}/diff?against={otherId}` compares two **completed** runs (`done`|`failed`|`error`) by case identity `suite/name` → JSON `{ok,from,to,added,removed,regressed,fixed,unchanged}` (`regressed` = pass→fail, `fixed` = fail→pass; empty both → empty arrays and `unchanged` 0). Missing run → **404**. Incomplete (`queued`/`running`) → **409** `{error:\"run_not_done\"}`. CLI `diff --from a.json --to b.json` prints the same JSON. `GET /v1/runs/{id}/diff.md?against={otherId}` (alias `GET /v1/runs/{id}/diff?against=&format=md`) returns the same comparison as Markdown (`text/markdown; charset=utf-8`) for GitHub Actions `$GITHUB_STEP_SUMMARY` (heading + counts + GFM tables for added/removed/regressed/fixed; `|` escaped; empty → heading + “no changes”). CLI `diff --from/--to --format md` prints the same Markdown (default `--format json`). Same 404/409/400 as JSON. JSON path unchanged. `GET /v1/runs/{id}/diff.html?against={otherId}` (alias `GET /v1/runs/{id}/diff?against=&format=html`) returns the same comparison as self-contained HTML (`text/html; charset=utf-8`) for the local 5-min demo (heading + counts + tables for added/removed/regressed/fixed; names escaped; regressed rows red; empty → heading + “no changes”; no CDN). CLI `diff --from/--to --format html` prints the same HTML. Same 404/409/400 as JSON (error bodies stay JSON). Distinct from `--diff-baseline` (trajectory/score vs a saved snapshot). `GET /metrics` Prometheus text (gauges `agent_ci_queue_depth`, `agent_ci_running`; counters `agent_ci_runs_completed_total`, `agent_ci_runs_failed_total`; CORS matching GET includes ACAO, same as other GET). Optional run-complete webhook (OSS): `--webhook-url` or env `AGENT_CI_WEBHOOK_URL`. After a run reaches `done`|`failed`|`error`, fire-and-forget POST JSON `{runId,status,summary,requestId,conclusion}` plus `score` and `gate` when present (short timeout; webhook errors never fail the run). Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). Optional `--webhook-secret` or env `AGENT_CI_WEBHOOK_SECRET`: when set, POST includes `X-Webhook-Signature: sha256=<hex>` HMAC-SHA256 of the raw JSON body. On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. See `RunCompleteWebhook`. Optional `serve --watch`: poll `fixtures/` max mtime every ~400ms; `GET /v1/suites` still live-reads disk (picks up new dirs). On change, logs `regenerated` and bumps `GET /health` `watch.generation` (`WatchSnapshot`; omitted when `--watch` is off so stack-demo `/health` is unchanged). Main serve / stack-demo default off. **`GET /v1/config`** (redacted runtime config; public GET like `/v1/suites` — no Bearer): `{ok, queue:{max,queued,running}, failUnder, rateLimit:{perMinute}, cors:{origins}, runsMax, webhooks:{hasUrl,hasSecret}, suitesCount}`. **Never** webhook URL, webhook secret, Bearer tokens, or fixture file contents. CORS + `X-Request-Id`. See `getConfig` / `RuntimeConfig`. **`GET /v1/runs/{id}/cases`** (lightweight case inventory for CI dashboards: `{ok, runId, status, count, cases:[{suite, name, status, durationMs?}]}`; optional `?status=passed|failed|error|skipped`; unknown status → empty list **200**; cap **500** original suite order + `truncated:true`; empty / in-flight → **200** `cases:[]`; **never** prompts, expected/actual, output bodies, API keys, or webhook URLs). See `listRunCases` / `RunCases`. **`GET /v1/suites/{name}`** (suite detail; `name` is the suite id): `{ok, id, name, path, caseCount, cases:[{name}]}`. Cassette **names only** — **never** prompt, trajectory, expected/actual, or fixture file dumps. Empty suite → `cases:[]`. Unknown → **404** `{ok:false, error:suite_not_found}`. See `getSuite` / `SuiteDetail`.",
+    "version": "0.1.0",
+    "license": {
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8791",
+      "description": "Local MVP default"
+    }
+  ],
+  "tags": [
+    {
+      "name": "health",
+      "description": "Liveness (GET /health always 200; shuttingDown true while draining) and readiness (GET /ready; 503 when queue full or shutting down)"
+    },
+    {
+      "name": "runs",
+      "description": "Enqueue, list, poll, JUnit, TAP, Markdown, HTML, GitHub Actions annotation artifacts, and run-vs-run baseline diff, and lightweight case inventory (`GET /v1/runs/{id}/cases`)"
+    },
+    {
+      "name": "suites",
+      "description": "Fixture suite catalog under fixtures/"
+    },
+    {
+      "name": "checks",
+      "description": "Local mock GitHub Check Run receiver"
+    },
+    {
+      "name": "meta",
+      "description": "OpenAPI document and Prometheus metrics"
+    },
+    {
+      "name": "config",
+      "description": "Redacted public runtime config (GET /v1/config). Allowlist only — never secrets."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Liveness (always 200)",
+        "operationId": "getHealth",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stub is up (includes local queue snapshot)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        },
+        "description": "Liveness. Always **200** `{ok:true, …, queue}` while the process is up, even when the in-memory queue is full (POST `/v1/runs` would 429). While draining SIGTERM/SIGINT, includes `shuttingDown: true` (omitted otherwise). Readiness is `GET /ready`. When `serve --watch` is on, includes `watch: { generation }` (`WatchSnapshot`); omitted otherwise. Not rate-limited."
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readiness (503 when queue full or shutting down)",
+        "operationId": "getReady",
+        "security": [],
+        "description": "Readiness. **200** `{ok:true, queue}` when POST `/v1/runs` would still enqueue (a running slot is free, or `queued` < `maxQueue`). **503** `{ok:false, reason:\"queue_full\"}` + `Retry-After` when at capacity (queued+running such that POST would 429). On SIGTERM/SIGINT drain, **503** `{ok:false, reason:\"shutting_down\"}` wins over healthy 200. Snapshot only — does not consume a queue slot. Liveness remains `GET /health` (always 200; `shuttingDown: true` while draining). Compose/stack-demo healthchecks should stay on `/health`. Not rate-limited.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ready: POST /v1/runs would enqueue. Includes local queue snapshot.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": true,
+                  "queue": {
+                    "concurrency": 1,
+                    "maxQueue": 16,
+                    "queued": 0,
+                    "running": 0
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready: in-memory queue is at capacity (`reason: queue_full`, `Retry-After` same as POST 429) **or** process is shutting down (`reason: shutting_down`) after SIGTERM/SIGINT. GET /health stays 200 (`shuttingDown: true` while draining).",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": false,
+                  "reason": "queue_full",
+                  "queue": {
+                    "concurrency": 1,
+                    "maxQueue": 1,
+                    "queued": 1,
+                    "running": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Prometheus metrics",
+        "description": "Prometheus text exposition of the local in-memory run queue. Gauges: `agent_ci_queue_depth`, `agent_ci_running`. Counters: `agent_ci_runs_completed_total` (status=done), `agent_ci_runs_failed_total` (status=error). CORS: matching Origin GET includes ACAO (same as other GET). Unlisted Origin OPTIONS → **403** `cors_denied`. Not rate-limited.",
+        "operationId": "getMetrics",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# TYPE agent_ci_queue_depth gauge\nagent_ci_queue_depth 0\n# TYPE agent_ci_running gauge\nagent_ci_running 0\n# TYPE agent_ci_runs_completed_total counter\nagent_ci_runs_completed_total 1\n# TYPE agent_ci_runs_failed_total counter\nagent_ci_runs_failed_total 0\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "OpenAPI 3 document",
+        "operationId": "getOpenApi",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON served from openapi/runner.openapi.json",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "List recent runs",
+        "description": "Retained in-memory runs (in-flight + finished history), newest `createdAt` first. History cap `--runs-max` / `RUNS_MAX` (default 1000 finished; `0` = unlimited; drop oldest `done`|`failed`|`error`; queue depth is separate). Exact path only — does not shadow GET `/v1/runs/{id}`.",
+        "operationId": "listRuns",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max runs to return (default 20, max 1000)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run list",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Enqueue a suite run",
+        "description": "Enqueue suite path or embedded `cases`. Returns **202** `{runId,status}` (`queued` or `running`). Poll GET `/v1/runs/{id}`. Queue full → **429** `{error:\"queue_full\"}` + `Retry-After`. Sliding-window rate limit → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After` (see `RateLimited`; `/health` `/ready` `/metrics` skipped). Bad Bearer → **401**. Incoming `X-Request-Id` (or generated UUID) stored as `requestId` on the run record. Optional `--webhook-url` / `AGENT_CI_WEBHOOK_URL` fires a best-effort POST `RunCompleteWebhook` after the run reaches `done`|`failed`|`error` (never fails this 202). Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still body-only). Optional `--webhook-secret` / `AGENT_CI_WEBHOOK_SECRET` signs the POST with `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body). On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. Optional body `failUnder` (number): quality gate on pass-rate `score` (passed/total×100, or 0 if total=0). When set, completed JSON includes `score` and `gate: {failUnder, passed}`. `score < failUnder` → status `failed`, `error: below_threshold` (JUnit failures≥1). Omit = no gate (status `done` as today). Queue / rate-limit / watch / ready / junit.xml / tap.txt otherwise unchanged.",
+        "operationId": "createRun",
+        "security": [
+          {},
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted (queued or running)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRunAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get a run by id",
+        "description": "Load run (`status`: `queued` → `running` → `done` | `failed` | `error`; includes pass/fail/`score` when done or failed; `gate` when `failUnder` was set; includes `requestId`). **404** if the run was dropped from finished history (`--runs-max`).",
+        "operationId": "getRun",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run record",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunRecord"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/cases": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "List cases for one run",
+        "operationId": "listRunCases",
+        "security": [],
+        "description": "Lightweight case inventory for one run (finished or in-flight). Path `{id}` is the run id (same hex validation as `GET /v1/runs/{id}`). JSON `{ok:true, runId, status, count, cases:[{suite, name, status, durationMs?}]}`. Allowlist only — **never** prompts, expected/actual blobs, output bodies, API keys, Authorization, or webhook URLs. Optional short `error` when already a JUnit/Markdown token (not a secret). Optional `?status=` filter (`passed`/`failed`/`error`/`skipped`); unknown status → empty list **200** (not 400). `count` is the full matching size; array cap **500** in original suite order; `truncated: true` when more. Empty finished run or queued/running with no cases yet → **200** `{ok:true, count:0, cases:[]}`. Unknown id → **404** `{ok:false, error:run_not_found}`. Public like `GET /v1/runs/{id}` (no Bearer unless `--require-key`). CORS + `X-Request-Id` same as other GET.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Optional case-status filter (case-insensitive). Known values: `passed`, `failed`, `error`, `skipped`. Unknown value → empty list **200** (not 400).",
+            "schema": {
+              "type": "string",
+              "example": "failed"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Case inventory (empty arrays when the run has no cases yet)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCases"
+                },
+                "example": {
+                  "ok": true,
+                  "runId": "7809cd71a639",
+                  "status": "done",
+                  "count": 2,
+                  "cases": [
+                    {
+                      "suite": "demo",
+                      "name": "france-capital",
+                      "status": "passed"
+                    },
+                    {
+                      "suite": "demo",
+                      "name": "math-2plus2",
+                      "status": "passed"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/diff": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Diff two completed runs by case identity",
+        "operationId": "getRunDiff",
+        "security": [],
+        "description": "Compare this run (`id` = **to**) against another completed run (`against` = **from**) by case identity `suite/name`. Both must be `done`|`failed`|`error`. Default JSON `{ok,from,to,added,removed,regressed,fixed,unchanged}`: `regressed` is pass→fail, `fixed` is fail→pass, `added`/`removed` are cases only in to/from, `unchanged` is a count. Empty both → empty arrays and `unchanged` 0. `?format=md` returns Markdown (`text/markdown; charset=utf-8`) — same body as `GET /v1/runs/{id}/diff.md`. `?format=html` returns self-contained HTML (`text/html; charset=utf-8`) — same body as `GET /v1/runs/{id}/diff.html`. Missing run → **404**. Incomplete → **409** `{error:\"run_not_done\"}`. Missing `against` → **400**. CORS + `X-Request-Id` same as other GET. CLI `diff --from a.json --to b.json` prints JSON; `--format md` prints Markdown; `--format html` prints HTML. Distinct from POST `baseline` / `--diff-baseline` (trajectory/score vs a saved snapshot). Does not change fail-under scoring.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "To-run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "name": "against",
+            "in": "query",
+            "required": true,
+            "description": "From-run / last-green id to compare against (must be a completed run)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "4eb899f51ac0"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "Response format. Default `json`. `md` returns the same Markdown as `GET /v1/runs/{id}/diff.md` (`text/markdown; charset=utf-8`). `html` returns the same HTML as `GET /v1/runs/{id}/diff.html` (`text/html; charset=utf-8`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "md",
+                "html"
+              ],
+              "default": "json"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Case-identity diff (comparison succeeded; inspect `regressed`/`added`/`removed`/`fixed`)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDiff"
+                },
+                "example": {
+                  "ok": true,
+                  "from": "4eb899f51ac0",
+                  "to": "7809cd71a639",
+                  "added": [],
+                  "removed": [],
+                  "regressed": [
+                    "demo/flaky"
+                  ],
+                  "fixed": [],
+                  "unchanged": 1
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# agent-ci diff\n**from:** 4eb899f51ac0  **to:** 7809cd71a639\n**added:** 0  **removed:** 0  **regressed:** 1  **fixed:** 0  **unchanged:** 1\n\n## regressed\n\n| case |\n| --- |\n| demo/flaky |\n"
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>agent-ci diff</title>\n</head>\n<body>\n<h1>agent-ci diff</h1>\n<p class=\"meta\">from: 4eb899f51ac0  to: 7809cd71a639</p>\n<table>\n<thead><tr><th>case</th></tr></thead>\n<tbody>\n<tr class=\"fail\"><td>demo/flaky</td></tr>\n</tbody>\n</table>\n</body>\n</html>\n"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/RunNotDone"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/diff.md": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Diff two completed runs as Markdown",
+        "operationId": "getRunDiffMd",
+        "security": [],
+        "description": "Same comparison as `GET /v1/runs/{id}/diff?against=` rendered as GitHub-flavored Markdown for `$GITHUB_STEP_SUMMARY` / humans. Path `{id}` is **to**; `against` is **from**. Heading + counts + GFM tables for added/removed/regressed/fixed (`|` escaped). Empty diffs → heading + “no changes”. `Content-Type: text/markdown; charset=utf-8`. Same **404** / **409** `{error:\"run_not_done\"}` / **400** as JSON. CORS + `X-Request-Id` same as other GET. Alias: `GET /v1/runs/{id}/diff?against=&format=md`. CLI `diff --from/--to --format md`. JSON `GET /v1/runs/{id}/diff` unchanged.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "To-run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "name": "against",
+            "in": "query",
+            "required": true,
+            "description": "From-run / last-green id to compare against (must be a completed run)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "4eb899f51ac0"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown diff (heading + counts + tables, or heading + “no changes”)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# agent-ci diff\n**from:** 4eb899f51ac0  **to:** 7809cd71a639\n**added:** 0  **removed:** 0  **regressed:** 1  **fixed:** 0  **unchanged:** 1\n\n## regressed\n\n| case |\n| --- |\n| demo/flaky |\n"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/RunNotDone"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/diff.html": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Diff two completed runs as HTML",
+        "operationId": "getRunDiffHtml",
+        "security": [],
+        "description": "Same comparison as `GET /v1/runs/{id}/diff?against=` rendered as self-contained HTML for the local 5-min demo (open in a browser tab). Path `{id}` is **to**; `against` is **from**. Heading + counts + tables for added/removed/regressed/fixed (names escaped with `html.escape`). Regressed rows are red (inline CSS `class=\"fail\"`). Empty diffs → heading + “no changes”. No CDN. `Content-Type: text/html; charset=utf-8`. Same **404** / **409** `{error:\"run_not_done\"}` / **400** as JSON (error bodies stay JSON). CORS + `X-Request-Id` same as other GET. Alias: `GET /v1/runs/{id}/diff?against=&format=html`. CLI `diff --from/--to --format html`. JSON `GET /v1/runs/{id}/diff` and Markdown `GET /v1/runs/{id}/diff.md` unchanged.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "To-run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "name": "against",
+            "in": "query",
+            "required": true,
+            "description": "From-run / last-green id to compare against (must be a completed run)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "4eb899f51ac0"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML diff (heading + counts + tables, or heading + “no changes”)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>agent-ci diff</title>\n</head>\n<body>\n<h1>agent-ci diff</h1>\n<p class=\"meta\">from: 4eb899f51ac0  to: 7809cd71a639</p>\n<table>\n<thead><tr><th>case</th></tr></thead>\n<tbody>\n<tr class=\"fail\"><td>demo/flaky</td></tr>\n</tbody>\n</table>\n</body>\n</html>\n"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/RunNotDone"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/junit": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get JUnit XML for a run",
+        "operationId": "getRunJunit",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JUnit XML artifact (`{id}.junit.xml`)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "JUnit XML artifact for one completed run (`{id}.junit.xml`). Alias of `GET /v1/runs/{id}/junit.xml`. 404 if missing / not finished. `Content-Type: application/xml`. JSON GET `/v1/runs/{id}` unchanged."
+      }
+    },
+    "/v1/runs/{id}/junit.xml": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get JUnit XML for a run (.xml)",
+        "operationId": "getRunJunitXml",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JUnit XML (`<testsuite tests= failures= errors= time=>`; escaped `& < > \"`)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "JUnit XML for one completed run. Same body as `GET /v1/runs/{id}/junit`. Built from the run record (`summary.cases` / `status` error). 404 if missing / not finished. `Content-Type: application/xml`."
+      }
+    },
+    "/v1/runs/junit.xml": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "JUnit XML for all completed runs",
+        "description": "JUnit XML for retained completed runs with `status` `done`|`failed`|`error` (same window as GET `/v1/runs`; `--runs-max` / `RUNS_MAX`). Empty → valid `<testsuite tests=\"0\">`. `Content-Type: application/xml`. Does not shadow GET `/v1/runs` or `/v1/runs/{id}`.",
+        "operationId": "listRunsJunitXml",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JUnit XML (one suite per completed run; empty → tests=\"0\")",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<testsuite name=\"agent-ci\" tests=\"0\" failures=\"0\" errors=\"0\" time=\"0\">\n</testsuite>\n"
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/tap": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get TAP13 for a run",
+        "operationId": "getRunTap",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "TAP version 13 (`ok` / `not ok`; `#` diagnostics; empty → `1..0`)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "TAP version 13\n1..2\nok 1 - demo france-capital\nnot ok 2 - demo math-2plus2\n# failed\n"
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "TAP version 13 for one completed run. Alias of `GET /v1/runs/{id}/tap.txt`. 404 if missing / not finished. `Content-Type: text/plain; charset=utf-8`. JSON GET `/v1/runs/{id}` and JUnit paths unchanged."
+      }
+    },
+    "/v1/runs/{id}/tap.txt": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get TAP13 for a run (.txt)",
+        "operationId": "getRunTapTxt",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "TAP version 13 (`TAP version 13` / `1..N` / `ok` / `not ok`; `#` in names escaped)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "TAP version 13 for one completed run. Same body as `GET /v1/runs/{id}/tap`. Built from the run record (`summary.cases` / `status` error / quality gate). Gate fail → a `not ok` line (synthetic `below_threshold` if all cases passed). 404 if missing / not finished. `Content-Type: text/plain; charset=utf-8`."
+      }
+    },
+    "/v1/runs/tap.txt": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "TAP13 for all completed runs",
+        "description": "TAP version 13 for retained completed runs with `status` `done`|`failed`|`error` (same window as GET `/v1/runs`; `--runs-max` / `RUNS_MAX`). Empty → valid `1..0`. `Content-Type: text/plain; charset=utf-8`. Does not shadow GET `/v1/runs` or `/v1/runs/{id}`. JUnit `/v1/runs/junit.xml` unchanged.",
+        "operationId": "listRunsTapTxt",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "TAP version 13 (one stream for completed runs; empty → `1..0`)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "TAP version 13\n1..0\n"
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/md": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Markdown report for a run",
+        "operationId": "getRunReportMd",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown run report (`# agent-ci: <suite>`; Status/Score/Gate; case table; empty → heading + no rows)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# agent-ci: demo\n**Status:** done  **Score:** 100  **Gate:** none\n| case | status | time |\n| --- | --- | --- |\n| france-capital | pass | 0 |\n"
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "Markdown run report for one completed run. Alias of `GET /v1/runs/{id}/report.md`. Append to GitHub Actions `$GITHUB_STEP_SUMMARY`. 404 if missing / not finished. `Content-Type: text/markdown; charset=utf-8`. JSON GET `/v1/runs/{id}` and JUnit/TAP paths unchanged."
+      }
+    },
+    "/v1/runs/{id}/report.md": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Markdown report for a run (.md)",
+        "operationId": "getRunReportMdFile",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown (`# agent-ci: <suite>`; **Status:** done|failed **Score:** **Gate:** pass/fail/none; `|` escaped)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# agent-ci: demo\n**Status:** done  **Score:** 100  **Gate:** none\n| case | status | time |\n| --- | --- | --- |\n| france-capital | pass | 0 |\n"
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "Markdown run report for one completed run. Same body as `GET /v1/runs/{id}/md`. Built from the run record (`summary.cases` / `status` error / quality gate / score). `|` in names escaped. Gate fail → a `fail` row (synthetic `below_threshold` if all cases passed). 404 if missing / not finished. `Content-Type: text/markdown; charset=utf-8`. Append to GitHub Actions `$GITHUB_STEP_SUMMARY`."
+      }
+    },
+    "/v1/runs/report.md": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Markdown report for all completed runs",
+        "description": "Markdown for retained completed runs with `status` `done`|`failed`|`error` (same window as GET `/v1/runs`; `--runs-max` / `RUNS_MAX`). Empty → heading + no data rows. `Content-Type: text/markdown; charset=utf-8`. Does not shadow GET `/v1/runs` or `/v1/runs/{id}`. JUnit `/v1/runs/junit.xml` and TAP `/v1/runs/tap.txt` unchanged. For GitHub Actions `$GITHUB_STEP_SUMMARY`.",
+        "operationId": "listRunsReportMd",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown (one report per completed run; empty → heading + no rows)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# agent-ci: agent-ci\n**Status:** done  **Score:** 0  **Gate:** none\n| case | status | time |\n| --- | --- | --- |\n"
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/html": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get HTML report for a run",
+        "operationId": "getRunHtml",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Self-contained HTML (`<h1>agent-ci: <suite></h1>`; Status/Score/Gate; case table; empty → heading + no runs; fail rows red)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"/><title>agent-ci: demo</title></head><body><h1>agent-ci: demo</h1><p class=\"meta\">Status: done  Score: 100  Gate: none</p><table><thead><tr><th>suite</th><th>case</th><th>status</th><th>time</th><th>message</th></tr></thead><tbody><tr class=\"pass\"><td>demo</td><td>france-capital</td><td class=\"pass\">pass</td><td>0</td><td></td></tr></tbody></table></body></html>\n"
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "HTML run report for one completed run. Alias of `GET /v1/runs/{id}/report.html`. Self-contained (no CDN). Names escaped. Fail status is visually distinct. 404 if missing / not finished. `Content-Type: text/html; charset=utf-8`. JSON GET `/v1/runs/{id}` and JUnit/TAP/Markdown/GHA paths unchanged."
+      }
+    },
+    "/v1/runs/{id}/report.html": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get HTML report for a run (.html)",
+        "operationId": "getRunHtmlFile",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Self-contained HTML (`<h1>agent-ci: <suite></h1>`; Status/Score/Gate; names escaped; fail rows red; no CDN)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"/><title>agent-ci: demo</title></head><body><h1>agent-ci: demo</h1><p class=\"meta\">Status: done  Score: 100  Gate: none</p><table><thead><tr><th>suite</th><th>case</th><th>status</th><th>time</th><th>message</th></tr></thead><tbody><tr class=\"pass\"><td>demo</td><td>france-capital</td><td class=\"pass\">pass</td><td>0</td><td></td></tr></tbody></table></body></html>\n"
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "HTML run report for one completed run. Same body as `GET /v1/runs/{id}/html`. Built from the run record (`summary.cases` / `status` error / quality gate / score). Names escaped (`& < > \"`). Gate fail → a `fail` row (synthetic `below_threshold` if all cases passed). 404 if missing / not finished. `Content-Type: text/html; charset=utf-8`."
+      }
+    },
+    "/v1/runs/report.html": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "HTML report for all completed runs",
+        "description": "Self-contained HTML for retained completed runs with `status` `done`|`failed`|`error` (same window as GET `/v1/runs`; `--runs-max` / `RUNS_MAX`). Empty → heading + “no runs”. `Content-Type: text/html; charset=utf-8`. No CDN. Does not shadow GET `/v1/runs` or `/v1/runs/{id}`. JUnit / TAP / Markdown / GHA paths unchanged.",
+        "operationId": "listRunsReportHtml",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML (one report per completed run; empty → heading + no runs)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"/><title>agent-ci: agent-ci</title></head><body><h1>agent-ci: agent-ci</h1><p class=\"meta\">Status: done  Score: 0  Gate: none</p><p>no runs</p><table><thead><tr><th>suite</th><th>case</th><th>status</th><th>time</th><th>message</th></tr></thead><tbody></tbody></table></body></html>\n"
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/annotations": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get GitHub Actions annotations for a run",
+        "operationId": "getRunAnnotations",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GitHub Actions workflow commands (`::error title=<suite>/<case>::<message>`; pass-only → empty)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "::error title=demo/france-capital::failed\n::error title=gate::score 100 < failUnder 101\n"
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "GitHub Actions workflow commands for one completed run. Alias of `GET /v1/runs/{id}/annotations.txt`. 404 if missing / not finished. `Content-Type: text/plain; charset=utf-8`. JSON GET `/v1/runs/{id}` and JUnit/TAP/Markdown paths unchanged. Does not require GitHub."
+      }
+    },
+    "/v1/runs/{id}/annotations.txt": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get GitHub Actions annotations for a run (.txt)",
+        "operationId": "getRunAnnotationsTxt",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Run id (8–64 hex or hyphenated hex)",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{8,64}$",
+              "example": "7809cd71a639"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GitHub Actions workflow commands (`::error`; gate → `title=gate`; pass-only → empty body)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "GitHub Actions workflow commands for one completed run. Same body as `GET /v1/runs/{id}/annotations`. Built from the run record (`summary.cases` / `status` error / quality gate / score). Fail → `::error title=<suite>/<case>::<message>`. Gate fail → `::error title=gate::score N < failUnder M`. Pass-only → empty. 404 if missing / not finished. `Content-Type: text/plain; charset=utf-8`."
+      }
+    },
+    "/v1/runs/annotations.txt": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "GitHub Actions annotations for all completed runs",
+        "description": "GitHub Actions workflow commands for retained completed runs with `status` `done`|`failed`|`error` (same window as GET `/v1/runs`; `--runs-max` / `RUNS_MAX`). Empty / all-pass → empty body (no `::error`). `Content-Type: text/plain; charset=utf-8`. Does not shadow GET `/v1/runs` or `/v1/runs/{id}`. JUnit `/v1/runs/junit.xml`, TAP `/v1/runs/tap.txt`, and Markdown `/v1/runs/report.md` unchanged. Does not require GitHub.",
+        "operationId": "listRunsAnnotationsTxt",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "GitHub Actions workflow commands (empty → no `::error`)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": ""
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/check-runs": {
+      "post": {
+        "tags": [
+          "checks"
+        ],
+        "summary": "Local mock Check Run receiver",
+        "description": "Stores the posted GitHub Checks-shaped JSON to `data/check-run-posted.json`. OSS adapter proof — not GitHub. Real GitHub token posting = paid/hosted later.",
+        "operationId": "postCheckRuns",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "head_sha": {
+                    "type": "string"
+                  },
+                  "conclusion": {
+                    "type": "string"
+                  },
+                  "output": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted and stored locally",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckRunAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/suites": {
+      "get": {
+        "tags": [
+          "suites"
+        ],
+        "summary": "List fixture suites",
+        "description": "List available dirs under `fixtures/` as `{name,path,caseCount}` (`caseCount` = `*.json` cassettes). Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`.",
+        "operationId": "listSuites",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suite catalog",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuiteList"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/suites/{name}": {
+      "get": {
+        "tags": [
+          "suites"
+        ],
+        "summary": "Get one fixture suite (case names, no file dump)",
+        "operationId": "getSuite",
+        "security": [],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "Fixture suite directory name under fixtures/",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+              "example": "demo"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suite detail (case names only; no cassette bodies)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuiteDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "One fixture suite by directory name (`id` = dir name under `fixtures/`). JSON `{ok:true, id, name, path, caseCount, cases:[{name}]}`. Cassette **names only** (file stems) — **never** prompt, trajectory, expected/actual, output bodies, API keys, or fixture file dumps. Empty suite → **200** `cases:[]`. Unknown name → **404** `{ok:false, error:suite_not_found}`. Public like `GET /v1/suites` (no Bearer unless `--require-key`). CORS + `X-Request-Id`."
+      }
+    },
+    "/v1/config": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Redacted runtime config",
+        "description": "Public snapshot of non-secret runtime settings. Same auth as `GET /v1/suites` (no Bearer required). Allowlist only: `queue.max` / current `queued`+`running`, `failUnder` (null — no serve-level default), `rateLimit.perMinute` (null if unlimited), `cors.origins`, `runsMax`, `webhooks.hasUrl` / `webhooks.hasSecret` (booleans — **never** the webhook URL, which may contain query tokens, and **never** the secret), optional `suitesCount`. **Forbidden:** webhook URL, webhook secret, Bearer tokens, fixture file contents. CORS + `X-Request-Id` same as other GET. Rate-limited like `/v1/suites` (not a probe path).",
+        "operationId": "getConfig",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted runtime config (no secrets)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfig"
+                },
+                "example": {
+                  "ok": true,
+                  "queue": {
+                    "max": 16,
+                    "queued": 0,
+                    "running": 0
+                  },
+                  "failUnder": null,
+                  "rateLimit": {
+                    "perMinute": 120
+                  },
+                  "cors": {
+                    "origins": []
+                  },
+                  "runsMax": 1000,
+                  "webhooks": {
+                    "hasUrl": false,
+                    "hasSecret": false
+                  },
+                  "suitesCount": 1
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "APIKey",
+        "description": "Paid-seat sketch. `Bearer demo` allowed. No header allowed unless `--require-key`. Any other token → 401."
+      }
+    },
+    "parameters": {
+      "XRequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "description": "Optional correlation id. Echoed on every response as `X-Request-Id`. If omitted/empty, the stub generates a UUID (max 128 chars; CR/LF stripped). Also stored as `requestId` on POST `/v1/runs` records, GET `/v1/runs/{id}`, and list rows.",
+        "schema": {
+          "type": "string",
+          "maxLength": 128,
+          "example": "mvp-req-id-a1b2c3d4"
+        }
+      },
+      "RunId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Run id (8–64 hex or hyphenated hex)",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F-]{8,64}$",
+          "example": "7809cd71a639"
+        }
+      },
+      "SuiteName": {
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "description": "Fixture suite directory name under fixtures/",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+          "example": "demo"
+        }
+      },
+      "ListLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "description": "Max runs to return (default 20, max 1000)",
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "default": 20
+        }
+      }
+    },
+    "headers": {
+      "XRequestId": {
+        "description": "Echo of incoming `X-Request-Id`, or a generated UUID when the request header is omitted/empty. Present on every response.",
+        "schema": {
+          "type": "string",
+          "example": "mvp-req-id-a1b2c3d4"
+        }
+      },
+      "RetryAfter": {
+        "description": "Seconds to wait before retrying. Present on POST /v1/runs **429** queue_full, GET /ready **503** queue_full, and sliding-window **429** `rate_limited`.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "example": 1
+        }
+      },
+      "AccessControlAllowOrigin": {
+        "description": "Echoed when request Origin matches `--cors-origins` / `AGENT_CI_CORS_ORIGINS` (or `*` when configured). Absent when CORS disabled or origin not allowed.",
+        "schema": {
+          "type": "string",
+          "example": "http://localhost:3000"
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "retryAfter": {
+            "type": "integer"
+          },
+          "queue": {
+            "$ref": "#/components/schemas/QueueSnapshot"
+          },
+          "ok": {
+            "type": "boolean",
+            "example": false
+          }
+        }
+      },
+      "QueueSnapshot": {
+        "type": "object",
+        "properties": {
+          "concurrency": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxQueue": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "ok",
+          "service",
+          "version",
+          "mode"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "service": {
+            "type": "string",
+            "example": "agent-ci-hosted-stub"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.1.0"
+          },
+          "mode": {
+            "type": "string",
+            "example": "local"
+          },
+          "queue": {
+            "$ref": "#/components/schemas/QueueSnapshot"
+          },
+          "watch": {
+            "$ref": "#/components/schemas/WatchSnapshot",
+            "description": "Present when `serve --watch` is enabled. Omitted otherwise (stack-demo / default serve)."
+          },
+          "shuttingDown": {
+            "type": "boolean",
+            "description": "Present and true while draining SIGTERM/SIGINT. Omitted otherwise so stack-demo /health is unchanged."
+          }
+        }
+      },
+      "Ready": {
+        "type": "object",
+        "description": "GET /ready body. 200 `{ok:true, queue}` when POST /v1/runs would still enqueue. 503 `{ok:false, reason:\"queue_full\"}` when at capacity (POST would 429). 503 `{ok:false, reason:\"shutting_down\"}` while draining SIGTERM/SIGINT (wins over healthy 200). `queue` is the same snapshot as GET /health. Does not consume a queue slot.",
+        "required": [
+          "ok",
+          "queue"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "queue_full",
+              "shutting_down"
+            ],
+            "description": "Present on 503: `queue_full` when POST /v1/runs would 429; `shutting_down` while draining SIGTERM/SIGINT."
+          },
+          "queue": {
+            "$ref": "#/components/schemas/QueueSnapshot"
+          }
+        }
+      },
+      "CaseResult": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "score": {
+            "type": "number"
+          }
+        }
+      },
+      "RunSummary": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "passed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseResult"
+            }
+          }
+        }
+      },
+      "RunListSummary": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "RunListItem": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed",
+              "error"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RunListSummary"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        }
+      },
+      "RunList": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunListItem"
+            }
+          },
+          "count": {
+            "type": "integer"
+          }
+        }
+      },
+      "RunRecord": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed",
+              "error"
+            ]
+          },
+          "suite": {
+            "type": "string"
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RunSummary"
+          },
+          "baselineOk": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "baselineReport": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "stored": {
+            "type": "string"
+          },
+          "junit": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Pass-rate score 0–100 = passed/total×100 (0 if total=0). Present on completed runs."
+          },
+          "gate": {
+            "$ref": "#/components/schemas/QualityGate"
+          }
+        }
+      },
+      "CreateRunRequest": {
+        "type": "object",
+        "description": "Provide `suite` (path under bet root, e.g. fixtures/demo) or embedded `cases`.",
+        "properties": {
+          "suite": {
+            "type": "string",
+            "example": "fixtures/demo"
+          },
+          "suiteName": {
+            "type": "string"
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "expect": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "seed": {
+            "type": "integer",
+            "default": 42
+          },
+          "baseline": {
+            "description": "Baseline path (string) or inline object for diff after the run.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "delayMs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Local stub aid: sleep before work (capped). Not a product feature."
+          },
+          "failUnder": {
+            "type": "number",
+            "description": "Optional quality gate. Pass-rate `score` = passed/total×100 (0 if total=0). When set, completed JSON includes `score` and `gate: {failUnder, passed}`. If `score < failUnder`, status is `failed` with `error: below_threshold` (JUnit failures≥1; synthetic below_threshold case if all cases passed). Omit = no gate (status `done` as today). Typically 0–100; values above 100 fail a perfect suite."
+          }
+        }
+      },
+      "CreateRunAccepted": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running"
+            ]
+          },
+          "suite": {
+            "type": "string"
+          },
+          "stored": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        }
+      },
+      "SuiteEntry": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "demo"
+          },
+          "path": {
+            "type": "string",
+            "example": "fixtures/demo"
+          },
+          "caseCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "SuiteDetail": {
+        "type": "object",
+        "description": "GET /v1/suites/{name}. Allowlist only — never cassette prompt/trajectory/secrets. `id` equals the directory name. `cases` are `{name}` rows from `*.json` stems.",
+        "required": [
+          "ok",
+          "id",
+          "cases"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "id": {
+            "type": "string",
+            "example": "demo"
+          },
+          "name": {
+            "type": "string",
+            "example": "demo"
+          },
+          "path": {
+            "type": "string",
+            "example": "fixtures/demo"
+          },
+          "caseCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "example": "france-capital"
+                }
+              }
+            }
+          }
+        }
+      },
+      "SuiteList": {
+        "type": "object",
+        "properties": {
+          "suites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SuiteEntry"
+            }
+          },
+          "count": {
+            "type": "integer"
+          }
+        }
+      },
+      "CheckRunAccepted": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "received": {
+            "type": "boolean"
+          },
+          "stored": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "conclusion": {
+            "type": "string"
+          }
+        }
+      },
+      "CorsConfig": {
+        "type": "object",
+        "description": "Optional CORS. Default omitted or empty origins = no extra CORS headers (deny). `origins` may be `[\"*\"]` (any Origin) or an explicit list. When enabled with an explicit list, OPTIONS preflight for a non-listed Origin returns 403 `{error:\"forbidden\",reason:\"cors_denied\"}`; allowed Origin → 204 with ACAO/ACAM/ACAH. Matching GET/POST get Access-Control-Allow-Origin. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id`. local-mvp uses `[\"http://localhost:3000\"]`.",
+        "properties": {
+          "origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[\"*\"]` or explicit origins. Empty/omitted disables CORS.",
+            "example": [
+              "http://localhost:3000"
+            ]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Methods (default GET, POST, OPTIONS)",
+            "default": [
+              "GET",
+              "POST",
+              "OPTIONS"
+            ]
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Headers (default Content-Type, Authorization, X-Request-Id)",
+            "default": [
+              "Content-Type",
+              "Authorization",
+              "X-Request-Id"
+            ]
+          },
+          "exposeHeaders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Expose-Headers (default includes Retry-After and X-Request-Id)",
+            "default": [
+              "Retry-After",
+              "X-Request-Id"
+            ]
+          }
+        }
+      },
+      "RunCompleteWebhook": {
+        "type": "object",
+        "description": "Outbound fire-and-forget POST body when a run reaches done|failed|error. Configure `--webhook-url` or `AGENT_CI_WEBHOOK_URL`. Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). Optional `--webhook-secret` / `AGENT_CI_WEBHOOK_SECRET`: when set, POST includes `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw JSON body). Short timeout; errors never fail the run. On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. Not an inbound HTTP path.",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "error"
+            ]
+          },
+          "summary": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunListSummary"
+              }
+            ],
+            "nullable": true,
+            "description": "Compact pass/fail counts when available; null on error runs."
+          },
+          "requestId": {
+            "type": "string",
+            "nullable": true
+          },
+          "conclusion": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure",
+              "error"
+            ],
+            "description": "success when done+passed; failure when done and not passed or status=failed (quality gate); error when status=error."
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Pass-rate score when the run produced a summary (omitted on process errors)."
+          },
+          "gate": {
+            "$ref": "#/components/schemas/QualityGate",
+            "description": "Present when the run was created with `failUnder`."
+          }
+        }
+      },
+      "WatchSnapshot": {
+        "type": "object",
+        "description": "GET /health `watch` when `--watch` is on. `generation` starts at 0 and increments when `fixtures/` max mtime changes. `GET /v1/suites` still live-reads disk.",
+        "required": [
+          "generation"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 0,
+            "description": "Increments on each successful fixtures/ mtime change tick."
+          }
+        }
+      },
+      "QualityGate": {
+        "type": "object",
+        "description": "Present on a completed run when POST `failUnder` was set. `passed` is false when `score < failUnder` (status `failed`, `error: below_threshold`).",
+        "properties": {
+          "failUnder": {
+            "type": "number",
+            "description": "Threshold compared to pass-rate score (typically 0–100; values above 100 fail even a perfect suite)."
+          },
+          "passed": {
+            "type": "boolean",
+            "description": "false when score < failUnder."
+          }
+        }
+      },
+      "RunDiff": {
+        "type": "object",
+        "description": "GET /v1/runs/{id}/diff?against= and CLI `diff --from/--to` (JSON). Case identity is `suite/name`. `ok` is true when the comparison succeeded (not \"no regressions\"). `regressed` = pass→fail; `fixed` = fail→pass. Empty both → empty arrays, `unchanged` 0. Markdown: `GET /v1/runs/{id}/diff.md` / `?format=md` / CLI `--format md`. HTML: `GET /v1/runs/{id}/diff.html` / `?format=html` / CLI `--format html`.",
+        "required": [
+          "ok",
+          "from",
+          "to",
+          "added",
+          "removed",
+          "regressed",
+          "fixed",
+          "unchanged"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "from": {
+            "type": "string",
+            "description": "Baseline / last-green run id (`against`)"
+          },
+          "to": {
+            "type": "string",
+            "description": "Newer run id (path `{id}`)"
+          },
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cases in to but not from (`suite/name`)"
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cases in from but not to (`suite/name`)"
+          },
+          "regressed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cases that were pass in from and fail in to"
+          },
+          "fixed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cases that were fail in from and pass in to"
+          },
+          "unchanged": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Count of cases present in both with the same pass/fail"
+          }
+        }
+      },
+      "RuntimeConfig": {
+        "type": "object",
+        "description": "Public redacted runtime config (GET /v1/config). Allowlist only — never webhook URL, webhook secret, Bearer tokens, or fixture file contents. Mirrors B GET /admin/config and F GET /v1/config; C has no admin token on this GET (public like /v1/suites).",
+        "required": [
+          "ok",
+          "queue",
+          "rateLimit",
+          "cors",
+          "runsMax",
+          "webhooks"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "queue": {
+            "type": "object",
+            "description": "In-memory run queue cap and cheap current depth.",
+            "required": [
+              "max"
+            ],
+            "properties": {
+              "max": {
+                "type": "integer",
+                "description": "`--max-queue` waiting depth (default 16).",
+                "example": 16
+              },
+              "queued": {
+                "type": "integer",
+                "description": "Jobs waiting (not yet running).",
+                "example": 0
+              },
+              "running": {
+                "type": "integer",
+                "description": "Jobs currently executing.",
+                "example": 0
+              }
+            }
+          },
+          "failUnder": {
+            "type": "number",
+            "nullable": true,
+            "description": "Serve-level quality-gate default. Null — C has no server default (per-run POST `failUnder` only).",
+            "example": null
+          },
+          "rateLimit": {
+            "type": "object",
+            "properties": {
+              "perMinute": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Sliding-window limit (null if unlimited / `--rate-limit 0`). Default 120.",
+                "example": 120
+              }
+            }
+          },
+          "cors": {
+            "type": "object",
+            "properties": {
+              "origins": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Allowed Origins (`[\"*\"]` = any). Empty = CORS disabled.",
+                "example": []
+              }
+            }
+          },
+          "runsMax": {
+            "type": "integer",
+            "description": "Max finished runs retained (default 1000; 0 = unlimited).",
+            "example": 1000
+          },
+          "webhooks": {
+            "type": "object",
+            "description": "Outbound run-complete webhook presence. Booleans only — never the URL (query tokens) or secret.",
+            "required": [
+              "hasUrl",
+              "hasSecret"
+            ],
+            "properties": {
+              "hasUrl": {
+                "type": "boolean",
+                "description": "True when `--webhook-url` / `AGENT_CI_WEBHOOK_URL` is set. The URL itself is never returned.",
+                "example": false
+              },
+              "hasSecret": {
+                "type": "boolean",
+                "description": "True when `--webhook-secret` / `AGENT_CI_WEBHOOK_SECRET` is set. The secret itself is never returned.",
+                "example": false
+              }
+            }
+          },
+          "suitesCount": {
+            "type": "integer",
+            "description": "Number of fixture suite dirs (same catalog as GET /v1/suites). Optional.",
+            "example": 1
+          }
+        }
+      },
+      "RunCaseRow": {
+        "type": "object",
+        "description": "Allowlisted case row. Never includes prompt, expected, actual, output, API keys, Authorization, or webhook URLs.",
+        "required": [
+          "suite",
+          "name",
+          "status"
+        ],
+        "properties": {
+          "suite": {
+            "type": "string",
+            "example": "demo"
+          },
+          "name": {
+            "type": "string",
+            "example": "france-capital"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "error",
+              "skipped"
+            ],
+            "example": "passed"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Present only when already stored on the case record."
+          },
+          "error": {
+            "type": "string",
+            "description": "Optional short token already shown in JUnit/Markdown (e.g. `failed`, `below_threshold`). Omitted when missing or secret-like."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RunCases": {
+        "type": "object",
+        "description": "GET /v1/runs/{id}/cases. `count` is the full matching size (not the capped array length). `truncated` is true only when more than 500 cases match.",
+        "required": [
+          "ok",
+          "runId",
+          "status",
+          "count",
+          "cases"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "runId": {
+            "type": "string",
+            "example": "7809cd71a639"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed",
+              "error"
+            ],
+            "example": "done"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Full matching case count (not the capped array length)."
+          },
+          "cases": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/components/schemas/RunCaseRow"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when more than 500 cases match."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing (`--require-key`) or invalid Bearer token",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "invalid_api_key"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Unknown path, run, suite, JUnit artifact, or diff target",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "QueueFull": {
+        "description": "In-memory queue is full (running + waiting at capacity). Retry after `Retry-After` seconds.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "queue_full",
+              "detail": "max queue depth 1",
+              "retryAfter": 1
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Malformed JSON or invalid body/query",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Sliding-window rate limit exceeded (client IP, X-Forwarded-For first hop). Retry after `Retry-After` seconds. `/health`, `/ready`, `/metrics` are not rate-limited. Distinct from POST /v1/runs queue-full 429 `{error:\"queue_full\"}`.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "ok": false,
+              "reason": "rate_limited"
+            }
+          }
+        }
+      },
+      "RunNotDone": {
+        "description": "Run exists but is not completed (`queued` or `running`). Poll GET `/v1/runs/{id}` until `done`|`failed`|`error`. Distinct from **404** missing/dropped.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "run_not_done",
+              "runId": "7809cd71a639"
+            }
+          }
+        }
+      }
+    }
+  }
+}

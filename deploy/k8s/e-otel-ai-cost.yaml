@@ -1,0 +1,89 @@
+# E otel-ai-cost — placeholder image (not published yet).
+# Default serve port 8792 (CLI / docker-compose.yml).
+# Apply: kubectl apply -f deploy/k8s/e-otel-ai-cost.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e-otel-ai-cost
+  labels:
+    app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+  template:
+    metadata:
+      labels:
+        app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: e-otel-ai-cost
+          image: ghcr.io/wozqhl/e-otel-ai-cost:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8792
+          # Optional env names from serve/CLI (do not invent secrets):
+          # - name: OTEL_AI_COST_CORS_ORIGINS
+          # - name: OTEL_AI_COST_WEBHOOK_URL
+          # - name: OTEL_AI_COST_WEBHOOK_SECRET
+          # - name: SHUTDOWN_DRAIN_MS
+          #   value: "5000"
+          # - name: LOG_FORMAT
+          #   value: json
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8792
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8792
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: e-otel-ai-cost
+  labels:
+    app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.oss-cash-lab.dev/e-otel-ai-cost: "true"
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8792

@@ -1,0 +1,21 @@
+name: sdk-mcp-gen-check
+description: Generate SDK from OpenAPI and fail if tools were removed/renamed vs baseline
+inputs:
+  spec:
+    description: OpenAPI file path
+    required: false
+    default: examples/petstore.openapi.json
+  out:
+    description: Generate output directory (new tree)
+    required: false
+    default: sdk-new
+  baseline:
+    description: Committed SDK baseline directory
+    required: false
+    default: sdk
+runs:
+  using: composite
+  steps:
+    - name: Check OpenAPI drift
+      shell: bash
+      run: node src/cli.js generate "${{ inputs.spec }}" --out "${{ inputs.out }}" --check-baseline "${{ inputs.baseline }}"

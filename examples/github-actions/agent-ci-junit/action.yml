@@ -1,0 +1,27 @@
+name: agent-ci-junit
+description: Run agent-ci and write JUnit XML (thin CLI wrapper)
+inputs:
+  suite:
+    description: Cassette suite directory
+    required: false
+    default: fixtures/demo
+  junit:
+    description: JUnit XML output path
+    required: false
+    default: junit.xml
+  pythonpath:
+    description: PYTHONPATH for the CLI (src if vendoring)
+    required: false
+    default: src
+outputs:
+  junit-path:
+    description: Path to the JUnit XML file
+    value: "${{ inputs.junit }}"
+runs:
+  using: composite
+  steps:
+    - name: Run agent-ci
+      shell: bash
+      env:
+        PYTHONPATH: "${{ inputs.pythonpath }}"
+      run: python3 -m agent_ci run --suite "${{ inputs.suite }}" --junit "${{ inputs.junit }}"

@@ -1,0 +1,35 @@
+# Namespace LimitRange for B–F HTTP services (v1 — built-in, not a CRD).
+# Listed in kustomization.yaml so `kubectl apply -k deploy/k8s` applies this too.
+#
+# type: Container — if a container omits requests/limits, Kubernetes fills
+# defaultRequest / default. HPA CPU utilization needs a request denominator;
+# default limits cap noisy-neighbor burst. Existing Deployments already set
+# resources (50m/64Mi request, 500m/256Mi limit) so this object does not
+# change those pods — it only applies when resources are omitted.
+#
+# min is below current requests; max is above current limits (cpu 1 / 512Mi).
+# default matches current limits; defaultRequest matches current requests.
+#
+# Apply: kubectl apply -f deploy/k8s/limitrange.yaml
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: oss-cash-lab
+  labels:
+    app.kubernetes.io/name: oss-cash-lab
+spec:
+  limits:
+    - type: Container
+      max:
+        cpu: "1"
+        memory: 512Mi
+      min:
+        cpu: 25m
+        memory: 32Mi
+      default:
+        cpu: 500m
+        memory: 256Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi

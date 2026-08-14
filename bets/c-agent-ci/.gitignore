@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+.pytest_cache/
+fixtures/private-demo/
+out/
+fixtures/from-zip/
+data/
+# A→C dogfood output (regenerate via make dogfood-a-c)
+sdk/generated/

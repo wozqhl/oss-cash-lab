@@ -1,0 +1,2124 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "CN Work Agent API",
+    "description": "On-prem Feishu / DingTalk / WeCom webhook agent (local mock connectors; stdlib only). Documents `/health`, `/ready`, **`GET /v1/platforms`** (product inventory `{ok,count,platforms:[{id,enabled,hasCallbackSecret}]}`; never tokens / callbackSecret / encrypt keys; health still lists platform id strings), **`GET /v1/config`** (redacted runtime config `{ok,approvalTtlSec,rateLimit:{perMinute},cors:{origins},approvalsMax,webhooks:{hasUrl,hasSecret},platforms}`; public GET, no admin token; never callbackSecret / webhook URL / webhook secret / FEISHU_* tokens / Authorization), `GET /metrics`, `/webhook/feishu`, `/webhook/dingtalk`, `/webhook/wecom`, `GET /approvals`, `GET /approvals/{id}`, `POST /approvals/{id}/decide`, **`GET /v1/approvals.csv`** (audit CSV), **`GET /v1/approvals.md`** (Markdown list), **`GET /v1/approvals.html`** (HTML list; `format=html`), `GET /v1/approvals?format=csv|json|md|html`. `GET /ready` is **200** `{ok:true, service}` plus the same snapshot fields as `/health` when healthy (stateless; no circuit/queue). On SIGTERM/SIGINT, **503** `{ok:false, reason:\"shutting_down\"}` (liveness `GET /health` stays 200 with `shuttingDown: true` while draining). Compose/stack-demo healthchecks stay on `/health`. `GET /openapi.json` serves this file. Optional `serve --watch`: poll `--config` mtime (~300ms) and reload CORS origins, approval TTL, webhook url/secret, and rate limits from file (env still wins if already set; CLI flags still win when provided). Parse errors keep the previous settings. Prints `regenerated` on success. Main serve / stack-demo omit `--watch`. Optional `X-Request-Id` request header: echoed on **every** response (including 4xx / OPTIONS / 429). If omitted or empty, the server generates a UUID (max 128 chars; CR/LF stripped). The same value is stored as `requestId` on approval records and audit JSONL. **401**: webhook verify failure (`{error:\"unauthorized\",reason}`) when Feishu token/signature, DingTalk token/sign, or WeCom `msg_signature` is missing/wrong. **429**: webhook rate limit (`RATE_LIMIT_PER_MINUTE` default 60; in-memory sliding window by IP + platform). Exceed → `{error:\"rate_limited\",limit,retry_after}` + `Retry-After`. `/health`, `/ready`, `/metrics`, `/openapi.json`, `/v1/platforms`, `/v1/config`, `/approvals`, `/v1/approvals.csv`, `/v1/approvals.md`, and `/v1/approvals.html` are not rate-limited. **403 CORS**: optional `CORS_ORIGINS` CSV / config `cors.origins` / `--cors-origins` (`*` allowed). Default omitted/empty = no extra CORS headers (deny; OPTIONS **404**). When enabled with an explicit list, OPTIONS preflight for a listed Origin → **204** with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin (e.g. `http://evil.example`) → **403** `{error:\"forbidden\",reason:\"cors_denied\"}` (no ACAO). Matching GET/POST include ACAO. Default allow/expose headers include `X-Request-Id`. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 429 `Retry-After`). Approval TTL: `APPROVAL_TTL_SECONDS` (default 86400) auto-rejects pending older than TTL with `reason=expired`. Decided-approvals cap (OSS): `--approvals-max` / env `APPROVALS_MAX` (config `approvals_max`) default **2000** decided (`approved`/`rejected`/`expired`) JSONL rows. Over cap, drop oldest decided by `created_at`. Pending within TTL are never dropped. `0` = unlimited. `GET /approvals`, `GET /v1/approvals.csv`, `GET /v1/approvals.md`, `GET /v1/approvals.html`, and cards only see retained rows; `GET /approvals/{id}` → **404** if dropped. Webhook already fired at decide/expire. `GET /metrics` Prometheus text (gauge `cn_work_agent_approvals_pending` from JSONL; counters `cn_work_agent_approvals_decided_total`, `cn_work_agent_webhooks_total` process-lifetime; CORS matching GET includes ACAO, same as other GET). Optional approval-decision webhook (OSS): `--webhook-url` or env `APPROVAL_WEBHOOK_URL` (config `approval_webhook_url`). When an approval is decided (`approve`/`reject`) or TTL-expired, fire-and-forget POST JSON `{id,status,decision,reason,requestId}` (short timeout; webhook errors never fail decide/expire). Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). Optional `--webhook-secret` or env `APPROVAL_WEBHOOK_SECRET` (config `approval_webhook_secret`): when set, POST includes `X-Webhook-Signature: sha256=<hex>` HMAC-SHA256 of the raw JSON body. On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. **`GET /v1/approvals/{id}/card?platform=feishu|dingtalk|wecom`** returns the JSON body F would POST to that IM for an approval request (Feishu interactive card with `header`/`elements` and approve/reject buttons; DingTalk `msgtype=actionCard`; WeCom `msgtype=textcard`). Buttons point at existing `POST /approvals/{id}/decide` URLs when `base_url` is set, else `https://example.invalid/approve?id=`. No tokens/HMAC/`sk-` secrets in the card. Title/reason from approval `text`/`reason`. Unknown id → **404**. Unknown `platform` → **400** `bad_platform`. Not rate-limited. See `ImCard`. See `ApprovalDecisionWebhook`. Optional **inbound IM decide HMAC (OSS)**: per-platform `callbackSecret` (aliases `callback_secret`, `verificationToken`, `appSecret`; env `FEISHU_CALLBACK_SECRET` / `DINGTALK_CALLBACK_SECRET` / `WECOM_CALLBACK_SECRET` or `APPROVAL_CALLBACK_SECRET`). Default **off** — unsigned POST `/approvals/{id}/decide` still **200** (local-mvp). When set for the approval's platform, **POST** requires `X-Callback-Signature: sha256=<hex>` HMAC-SHA256 of the **raw JSON body** (same style as outbound `X-Webhook-Signature`; timing-safe compare). Optional `X-Callback-Timestamp: <unix-seconds>` — reject if |now-ts| > **300s** (`timestamp_skew`). Missing/bad signature → **401** `{error:\"unauthorized\",reason}` (never leaks the secret). **GET** `/approvals/{id}/decide?decision=approve|reject` stays **unsigned** (IM card button URLs cannot carry HMAC; OSS convenience). Production should use POST + signature; Feishu/DingTalk/WeCom adapters can copy `X-Callback-Signature` in production later. Does not reuse IM `verify_token` / `encrypt_key` / DingTalk `secret`.",
+    "version": "0.1.0",
+    "license": {
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8790",
+      "description": "Local MVP default"
+    }
+  ],
+  "tags": [
+    {
+      "name": "health",
+      "description": "Liveness (GET /health always 200; shuttingDown true while draining) and readiness (GET /ready 200 when healthy, 503 shutting_down while draining)"
+    },
+    {
+      "name": "webhooks",
+      "description": "Feishu / DingTalk / WeCom mock webhooks (verify + rate-limit)"
+    },
+    {
+      "name": "approvals",
+      "description": "Local JSONL approval list / get / decide (TTL auto-reject; decided cap `--approvals-max`) + audit CSV export + Markdown list (`GET /v1/approvals.md`) + HTML list (`GET /v1/approvals.html`) + native IM card payloads (`GET /v1/approvals/{id}/card`)"
+    },
+    {
+      "name": "meta",
+      "description": "OpenAPI document and Prometheus metrics"
+    },
+    {
+      "name": "platforms",
+      "description": "Configured IM connectors (feishu / dingtalk / wecom). GET /v1/platforms is the product list; /health still exposes id strings only. Never secrets."
+    },
+    {
+      "name": "config",
+      "description": "Redacted runtime config for intranet-pilot debugging (GET /v1/config). Public GET like /v1/platforms — no admin token — so the payload is strictly non-secret (TTL, rate-limit, CORS origins, approvals-max, webhook booleans, platforms). Never secrets."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health check",
+        "operationId": "getHealth",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent is up (platforms, rate-limit, approval TTL)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readiness (503 while shutting down)",
+        "description": "Readiness. **200** `{ok:true, service}` plus `platforms` / `enabled` / `rate_limit_per_minute` / `approval_ttl_seconds` / `approvals_max` (same as `/health`) when healthy. On SIGTERM/SIGINT, **503** `{ok:false, reason:\"shutting_down\"}` (liveness `GET /health` stays 200 with `shuttingDown: true`). Stateless HTTP — no circuit/queue. Not rate-limited. Compose/stack-demo healthchecks stay on `/health`.",
+        "operationId": "getReady",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ready (same snapshot fields as GET /health). 200 when healthy; 503 `{ok:false, reason:\"shutting_down\"}` while draining SIGTERM/SIGINT.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": true,
+                  "service": "cn-work-agent"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready: process is shutting down after SIGTERM/SIGINT. `{ok:false, reason:\"shutting_down\"}`. GET /health stays 200 with `shuttingDown: true` while draining.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                },
+                "example": {
+                  "ok": false,
+                  "reason": "shutting_down"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Prometheus metrics",
+        "description": "Prometheus text exposition of local approval/webhook gauges and counters. Gauge: `cn_work_agent_approvals_pending` (JSONL pending count; scrape does not run expire_due). Counters: `cn_work_agent_approvals_decided_total` (approve/reject/TTL expire, process lifetime), `cn_work_agent_webhooks_total` (outbound approval-decision webhook attempts, process lifetime). CORS: matching Origin GET includes ACAO (same as other GET). Unlisted Origin OPTIONS → **403** `cors_denied`.",
+        "operationId": "getMetrics",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# TYPE cn_work_agent_approvals_pending gauge\ncn_work_agent_approvals_pending 0\n# TYPE cn_work_agent_approvals_decided_total counter\ncn_work_agent_approvals_decided_total 1\n# TYPE cn_work_agent_webhooks_total counter\ncn_work_agent_webhooks_total 0\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "OpenAPI 3 document",
+        "operationId": "getOpenApi",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON served from openapi/agent.openapi.json",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/platforms": {
+      "get": {
+        "tags": [
+          "platforms"
+        ],
+        "summary": "List configured IM platforms",
+        "description": "Product inventory of configured IM connectors. Always includes the known three (`feishu`, `dingtalk`, `wecom`) plus any extra ids already present in config `platforms` (list items or object keys). Each row is `{id, enabled, hasCallbackSecret}`. **Never** returns `callbackSecret`, verify tokens, encrypt keys, DingTalk `secret`, or WeCom `token`. `/health` still lists platform id strings only — this path is the HTTP product list. CORS + `X-Request-Id` same as other GET. Not rate-limited (webhook limiter does not apply).",
+        "operationId": "getPlatforms",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platform inventory (no secrets)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformList"
+                },
+                "example": {
+                  "ok": true,
+                  "count": 3,
+                  "platforms": [
+                    {
+                      "id": "feishu",
+                      "enabled": true,
+                      "hasCallbackSecret": false
+                    },
+                    {
+                      "id": "dingtalk",
+                      "enabled": true,
+                      "hasCallbackSecret": false
+                    },
+                    {
+                      "id": "wecom",
+                      "enabled": true,
+                      "hasCallbackSecret": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        }
+      }
+    },
+    "/v1/config": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Redacted runtime config",
+        "description": "Public intranet-pilot snapshot of non-secret runtime settings. Same auth as `GET /v1/platforms` (no admin token). Allowlist only: `approvalTtlSec`, `rateLimit.perMinute`, `cors.origins`, `approvalsMax`, `webhooks.hasUrl` / `webhooks.hasSecret` (booleans — **never** the webhook URL, which may contain query tokens, and **never** the secret), plus `platforms` rows `{id,enabled,hasCallbackSecret}`. **Forbidden:** `callbackSecret`, webhook secret, `FEISHU_*` tokens, `Authorization`, verify tokens, encrypt keys. CORS + `X-Request-Id` same as other GET. Not rate-limited (webhook limiter does not apply).",
+        "operationId": "getConfig",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted runtime config (no secrets)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfig"
+                },
+                "example": {
+                  "ok": true,
+                  "approvalTtlSec": 86400,
+                  "rateLimit": {
+                    "perMinute": 60
+                  },
+                  "cors": {
+                    "origins": []
+                  },
+                  "approvalsMax": 2000,
+                  "webhooks": {
+                    "hasUrl": false,
+                    "hasSecret": false
+                  },
+                  "platforms": [
+                    {
+                      "id": "feishu",
+                      "enabled": true,
+                      "hasCallbackSecret": false
+                    },
+                    {
+                      "id": "dingtalk",
+                      "enabled": true,
+                      "hasCallbackSecret": false
+                    },
+                    {
+                      "id": "wecom",
+                      "enabled": true,
+                      "hasCallbackSecret": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        }
+      }
+    },
+    "/webhook/feishu": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Feishu webhook (URL verification + messages)",
+        "description": "Local Feishu mock. URL verification `type=url_verification` echoes `challenge`. Messages route through shared intents (ping/help/digest/approval/echo). Verify: `FEISHU_VERIFY_TOKEN` in JSON `token` and optional Lark signature headers (`X-Lark-Request-Timestamp` / `X-Lark-Request-Nonce` / `X-Lark-Signature`) with `FEISHU_ENCRYPT_KEY`. Bad verify → **401**. Rate limit (IP+platform) → **429** + `Retry-After`. CORS: OPTIONS unlisted Origin → **403** `cors_denied` (see info). Incoming `X-Request-Id` stored on created approvals.",
+        "operationId": "postWebhookFeishu",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "X-Lark-Request-Timestamp",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Lark-style timestamp used with encrypt_key signature"
+          },
+          {
+            "name": "X-Lark-Request-Nonce",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Lark-Signature",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required when FEISHU_ENCRYPT_KEY is set"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeishuWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Challenge echo or message ack (may include approval_id)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/webhook/dingtalk": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "DingTalk webhook",
+        "description": "Local DingTalk mock. Callback JSON often has `text.content`. Verify: `DINGTALK_TOKEN` in JSON `token` and optional `X-DingTalk-Timestamp` + `X-DingTalk-Sign` with `DINGTALK_SECRET`. Bad verify → **401**. Rate limit → **429** + `Retry-After`. CORS OPTIONS unlisted Origin → **403** `cors_denied`.",
+        "operationId": "postWebhookDingtalk",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "X-DingTalk-Timestamp",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-DingTalk-Sign",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required when DINGTALK_SECRET is set"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DingTalkWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Message ack (`msgtype=text`)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/webhook/wecom": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "WeCom URL verification (echostr)",
+        "description": "GET with `echostr` for URL verification. `msg_signature` = sha1(sort(token, timestamp, nonce, echostr)). Success returns **plain** echostr body. Bad signature → **401**. Rate limit → **429**. CORS OPTIONS unlisted Origin → **403** `cors_denied`.",
+        "operationId": "getWebhookWecom",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "msg_signature",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "echostr",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Plain echostr (text/plain)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "example": "echo-mvp-ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "WeCom webhook message",
+        "description": "POST message (`Content` / `text`). Query `msg_signature` / `timestamp` / `nonce` verified with `WECOM_TOKEN`. Bad verify → **401**. Rate limit → **429** + `Retry-After`. CORS OPTIONS unlisted Origin → **403** `cors_denied`.",
+        "operationId": "postWebhookWecom",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "msg_signature",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeComWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Message ack (`msgtype=text`, errcode=0)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/approvals": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "List approvals",
+        "description": "List pending first, then recent. Runs `expire_due` first (TTL auto-reject). `?status=pending|approved|rejected|expired` filters (unknown/empty → 200 empty list); `?limit=` default 50. `?format=csv` → same audit CSV as `GET /v1/approvals.csv`; `?format=md` → same Markdown as `GET /v1/approvals.md`; `?format=html` → same HTML as `GET /v1/approvals.html`; `?format=json` or omit → JSON. Unknown format → **400** `bad_format`. Not rate-limited. CORS notes in info.",
+        "operationId": "listApprovals",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ApprovalFormat"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter rows. Allowed: `pending`, `approved`, `rejected`, `expired` (`expired` matches TTL auto-rejects: store `status=rejected` + `reason=expired`). Unknown or empty → **200** empty list (JSON `{ok:true,count:0,approvals:[]}`; CSV/MD/HTML header-only). Omit → unfiltered.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "expired"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max rows (default 50)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Approval list (after TTL expiry)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalList"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "id,platform,status,createdAt,decidedAt,reason\n"
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# Approvals\n| id | platform | status | createdAt | decidedAt | reason |\n| --- | --- | --- | --- | --- | --- |\n"
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!DOCTYPE html>\\n<html lang=\"en\">\\n<head><meta charset=\"utf-8\"><title>Approvals · local list</title></head>\\n<body><h1>Approvals</h1>\\n<p>no approvals</p>\\n<table></table>\\n</body></html>\\n"
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "400": {
+            "description": "Unknown `format` query value. Body `{error:\"bad_format\"}`.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "bad_format",
+                  "allowed": [
+                    "csv",
+                    "json",
+                    "md",
+                    "html"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/approvals.csv": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Approval audit CSV export",
+        "description": "Spreadsheet archive of approval decisions (CN 内审). Header `id,platform,status,createdAt,decidedAt,reason` from JSONL (`created_at` → `createdAt`; `updated_at` → `decidedAt` when approved/rejected). Includes TTL auto-rejects (`status=rejected`, `reason=expired`). Does **not** include message `text`, `note`, tokens, or webhook HMAC. Empty store → header-only **200**. Runs `expire_due` first. `?status=pending|approved|rejected|expired` / `?limit=` optional (default all rows; unknown status → header-only 200). CORS + `X-Request-Id` same as other GET. Access-logged (not skipped like `/metrics`). Alias: `GET /v1/approvals?format=csv` (also `GET /approvals?format=csv`). Markdown: `GET /v1/approvals.md` / `?format=md`. HTML: `GET /v1/approvals.html` / `?format=html`.",
+        "operationId": "getApprovalsCsv",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter rows. Allowed: `pending`, `approved`, `rejected`, `expired` (`expired` matches TTL auto-rejects: store `status=rejected` + `reason=expired`). Unknown or empty → **200** empty list (JSON `{ok:true,count:0,approvals:[]}`; CSV/MD/HTML header-only). Omit → unfiltered.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "expired"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max rows (omit = all)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV audit export (header + rows; header only when empty)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "id,platform,status,createdAt,decidedAt,reason\nappr_1a2b3c4d5e6f,feishu,approved,2026-08-13T01:00:00+00:00,2026-08-13T01:05:00+00:00,\nappr_exp123exp123,wecom,rejected,2026-08-12T00:00:00+00:00,2026-08-13T00:00:00+00:00,expired\n"
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        }
+      }
+    },
+    "/v1/approvals.md": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Approval list Markdown (Feishu/WeCom docs)",
+        "description": "GitHub-flavored Markdown table for CN ops to paste into Feishu/WeCom docs. Heading `# Approvals` plus columns `id | platform | status | createdAt | decidedAt | reason` (same mapping as `GET /v1/approvals.csv`). `|` in cells is escaped. Does **not** include message `text`, `note`, tokens, or webhook HMAC. Empty store → heading + header row only, **200**. Runs `expire_due` first. `?status=pending|approved|rejected|expired` / `?limit=` optional (default all rows; unknown status → header-only 200). CORS + `X-Request-Id` same as other GET. Access-logged (not skipped like `/metrics`). Alias: `GET /v1/approvals?format=md` (also `GET /approvals?format=md`). HTML: `GET /v1/approvals.html` / `?format=html`.",
+        "operationId": "getApprovalsMd",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter rows. Allowed: `pending`, `approved`, `rejected`, `expired` (`expired` matches TTL auto-rejects: store `status=rejected` + `reason=expired`). Unknown or empty → **200** empty list (JSON `{ok:true,count:0,approvals:[]}`; CSV/MD/HTML header-only). Omit → unfiltered.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "expired"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max rows (omit = all)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown approval list (heading + GFM table; heading + header only when empty)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# Approvals\n| id | platform | status | createdAt | decidedAt | reason |\n| --- | --- | --- | --- | --- | --- |\n| appr_1a2b3c4d5e6f | feishu | approved | 2026-08-13T01:00:00+00:00 | 2026-08-13T01:05:00+00:00 |  |\n| appr_exp123exp123 | wecom | rejected | 2026-08-12T00:00:00+00:00 | 2026-08-13T00:00:00+00:00 | expired |\n"
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        }
+      }
+    },
+    "/v1/approvals.html": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Approval list HTML (local demo)",
+        "description": "Self-contained HTML approval list for the local 5-min demo (no CDN / external CSS/JS). Heading `Approvals` plus a table of `id`, `platform`, `status`, `title`, `created`, `decided`, `reason` (CSV/MD columns plus title/summary from approval `text`). All text escaped (`& < > \"`). Pending vs decided/expired rows are visually distinct (inline CSS). Empty store → heading + “no approvals”, **200**. Runs `expire_due` first. `?status=pending|approved|rejected|expired` / `?limit=` optional (default all rows; unknown status → header-only 200). CORS + `X-Request-Id` same as other GET. Access-logged (not skipped like `/metrics`). Alias: `GET /v1/approvals?format=html` (also `GET /approvals?format=html`).",
+        "operationId": "getApprovalsHtml",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter rows. Allowed: `pending`, `approved`, `rejected`, `expired` (`expired` matches TTL auto-rejects: store `status=rejected` + `reason=expired`). Unknown or empty → **200** empty list (JSON `{ok:true,count:0,approvals:[]}`; CSV/MD/HTML header-only). Omit → unfiltered.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "expired"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max rows (omit = all)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML approval list (heading + table; heading + “no approvals” when empty)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Approvals · local list</title></head><body><h1>Approvals</h1><p>no approvals</p><table></table></body></html>\n"
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        }
+      }
+    },
+    "/v1/approvals": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "List approvals (json | csv | md | html)",
+        "description": "Versioned approval list. Query `status=pending|approved|rejected|expired` filters (unknown/empty → 200 empty list; omit → unfiltered). Query `format=json` (default) is the same body as `GET /approvals`. `format=csv` is the same `text/csv` body as `GET /v1/approvals.csv`. `format=md` is the same `text/markdown` body as `GET /v1/approvals.md`. Unknown format → **400** `{error:\"bad_format\"}`. Existing `/approvals` clients are unchanged. Runs `expire_due` first. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Access-logged (not skipped like `/metrics`). `format=html` is the same `text/html` body as `GET /v1/approvals.html`.",
+        "operationId": "getApprovals",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ApprovalFormat"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter rows. Allowed: `pending`, `approved`, `rejected`, `expired` (`expired` matches TTL auto-rejects: store `status=rejected` + `reason=expired`). Unknown or empty → **200** empty list (JSON `{ok:true,count:0,approvals:[]}`; CSV/MD/HTML header-only). Omit → unfiltered.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "expired"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max rows (JSON default 50; CSV omit = all)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Approval list in the requested format",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalList"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "id,platform,status,createdAt,decidedAt,reason\n"
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# Approvals\n| id | platform | status | createdAt | decidedAt | reason |\n| --- | --- | --- | --- | --- | --- |\n"
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<!DOCTYPE html>\\n<html lang=\"en\">\\n<head><meta charset=\"utf-8\"><title>Approvals · local list</title></head>\\n<body><h1>Approvals</h1>\\n<p>no approvals</p>\\n<table></table>\\n</body></html>\\n"
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown `format` query value. Body `{error:\"bad_format\"}`.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "bad_format",
+                  "allowed": [
+                    "csv",
+                    "json",
+                    "md",
+                    "html"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          }
+        }
+      }
+    },
+    "/v1/approvals/{id}/card": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "IM card payload for an approval",
+        "description": "JSON body F would POST to Feishu / DingTalk / WeCom for this approval (native card, not a raw JSONL blob). Query `platform=feishu|dingtalk|wecom` (omit → use the approval's stored platform). Feishu: interactive card (`msg_type=interactive`, `header` + markdown `elements` + Approve/Reject URL buttons). DingTalk: `msgtype=actionCard`. WeCom: `msgtype=textcard`. Buttons use `{base}/approvals/{id}/decide?decision=approve|reject` when the server has a base URL, else `https://example.invalid/approve?id=`. **No tokens / HMAC / `sk-` secrets.** Title/reason from approval `text`/`reason`/`status`. Runs `expire_due` first. Unknown id → **404**. Unknown platform → **400** `{error:\"bad_platform\"}`. Not rate-limited. CORS + `X-Request-Id` same as other GET. Card button URLs are **GET** `/approvals/{id}/decide?decision=` and are **not signed** (OSS demo). Production IM adapters should POST with `X-Callback-Signature` when `callbackSecret` is set.",
+        "operationId": "getApprovalCard",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ApprovalId"
+          },
+          {
+            "$ref": "#/components/parameters/CardPlatform"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platform IM POST body (Feishu interactive / DingTalk actionCard / WeCom textcard)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImCard"
+                },
+                "example": {
+                  "msg_type": "interactive",
+                  "card": {
+                    "header": {
+                      "title": {
+                        "tag": "plain_text",
+                        "content": "请审批采购申请"
+                      },
+                      "template": "blue"
+                    },
+                    "elements": [
+                      {
+                        "tag": "markdown",
+                        "content": "**ID:** `appr_1a2b3c4d5e6f`"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/approvals/{id}": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Get one approval",
+        "description": "Runs `expire_due` first. Unknown id → **404**. CORS OPTIONS unlisted Origin → **403** `cors_denied`.",
+        "operationId": "getApproval",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ApprovalId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One approval record",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalGet"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/approvals/{id}/decide": {
+      "post": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Approve or reject",
+        "description": "Body `{\"decision\":\"approve\"|\"reject\",\"note\":\"...\"}`. Runs `expire_due` first; expired/not-pending → **400**. Unknown id → **404**. Audit JSONL `approval_decide`. Incoming `X-Request-Id` echoed (stored on create, not overwritten here). CORS OPTIONS unlisted Origin → **403** `cors_denied`. Optional **inbound HMAC**: when the approval's platform has `callbackSecret` (or env `FEISHU_CALLBACK_SECRET` / …), POST requires `X-Callback-Signature: sha256=<hex>` of the raw body; optional `X-Callback-Timestamp` (skew > 300s → 401 `timestamp_skew`). Missing/bad signature → **401**. Default off (unsigned POST 200). GET decide is unsigned (demo cards). Production: POST + signature. Optional outbound fire-and-forget POST `{id,status,decision,reason,requestId}` to `--webhook-url` / `APPROVAL_WEBHOOK_URL` after a successful decide (and on TTL expiry); optional HMAC `X-Webhook-Signature` when `--webhook-secret` / `APPROVAL_WEBHOOK_SECRET` is set. Every outbound POST includes `X-Webhook-Timestamp` (HMAC still body-only). On 5xx or network/timeout, OSS retries once after ~50ms (4xx/success no retry). Exponential backoff / queues, key rotation / timestamp replay window enforcement = paid later.",
+        "operationId": "decideApproval",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ApprovalId"
+          },
+          {
+            "name": "X-Callback-Signature",
+            "in": "header",
+            "required": false,
+            "description": "HMAC-SHA256 of the raw POST body as `sha256=<hex>` when `callbackSecret` is set for the approval platform. Required on POST only when that secret is configured. Timing-safe compare. Do not send the secret.",
+            "schema": {
+              "type": "string",
+              "example": "sha256=0123456789abcdef"
+            }
+          },
+          {
+            "name": "X-Callback-Timestamp",
+            "in": "header",
+            "required": false,
+            "description": "Optional unix-seconds. When present and |now-ts| > 300, POST decide → 401 `timestamp_skew`. Not part of the HMAC (body-only, like outbound webhooks).",
+            "schema": {
+              "type": "string",
+              "example": "1710000000"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated approval",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalGet"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Approve or reject (unsigned GET, demo IM cards)",
+        "description": "Query `decision=approve|reject` (optional `note`). **OSS convenience** for native IM card button URLs (those URLs cannot carry HMAC). Does **not** require `X-Callback-Signature` even when `callbackSecret` is set. Production should use **POST + signature**. Same 400/404 as POST. Not rate-limited.",
+        "operationId": "decideApprovalGet",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ApprovalId"
+          },
+          {
+            "name": "decision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "approve",
+                "reject"
+              ]
+            }
+          },
+          {
+            "name": "note",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated approval",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalGet"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "XRequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "description": "Optional correlation id. Echoed on every response as `X-Request-Id`. If omitted/empty, the server generates a UUID (max 128 chars; CR/LF stripped). Also stored as `requestId` on approval records and audit JSONL when the request creates them.",
+        "schema": {
+          "type": "string",
+          "maxLength": 128,
+          "example": "mvp-appr-rid-a1b2"
+        }
+      },
+      "ApprovalId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Approval id (`appr_` + 12 hex)",
+        "schema": {
+          "type": "string",
+          "example": "appr_1a2b3c4d5e6f"
+        }
+      },
+      "ApprovalFormat": {
+        "name": "format",
+        "in": "query",
+        "required": false,
+        "description": "Export format. `json` (default) = ApprovalList JSON (same as `GET /approvals`). `csv` = audit CSV (`id,platform,status,createdAt,decidedAt,reason`, same as `/v1/approvals.csv`). `md` = Markdown GFM table (same as `/v1/approvals.md`) for Feishu/WeCom docs. `html` = self-contained HTML list (same as `/v1/approvals.html`; no CDN; pending vs decided/expired styled).",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "json",
+            "csv",
+            "md",
+            "html"
+          ],
+          "default": "json",
+          "example": "csv"
+        }
+      },
+      "CardPlatform": {
+        "name": "platform",
+        "in": "query",
+        "required": false,
+        "description": "IM platform card shape. `feishu` (interactive), `dingtalk` (actionCard), `wecom` (textcard). Omit to use the approval record's `platform`.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "feishu",
+            "dingtalk",
+            "wecom"
+          ],
+          "example": "feishu"
+        }
+      }
+    },
+    "headers": {
+      "XRequestId": {
+        "description": "Echo of incoming `X-Request-Id`, or a generated UUID when omitted/empty. Present on every response (incl 4xx / OPTIONS / 429).",
+        "schema": {
+          "type": "string",
+          "example": "mvp-appr-rid-a1b2"
+        }
+      },
+      "RetryAfter": {
+        "description": "Seconds to wait before retrying a rate-limited webhook.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "example": 60
+        }
+      },
+      "AccessControlAllowOrigin": {
+        "description": "Echoed when request Origin matches `CORS_ORIGINS` / `cors.origins` / `--cors-origins` (or `*` when configured). Absent when CORS disabled or origin not allowed.",
+        "schema": {
+          "type": "string",
+          "example": "http://localhost:3000"
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "retry_after": {
+            "type": "integer"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "ok",
+          "service",
+          "version"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "service": {
+            "type": "string",
+            "example": "cn-work-agent"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.1.0"
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "feishu",
+                "dingtalk",
+                "wecom"
+              ]
+            }
+          },
+          "enabled": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rate_limit_per_minute": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Global webhook limit (null/omitted if unlimited)",
+            "example": 60
+          },
+          "approval_ttl_seconds": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Pending auto-reject TTL (null if disabled)",
+            "example": 86400
+          },
+          "approvals_max": {
+            "type": "integer",
+            "description": "Max decided approvals retained (default 2000; 0 = unlimited)",
+            "example": 2000
+          },
+          "shuttingDown": {
+            "type": "boolean",
+            "description": "Present and true while draining SIGTERM/SIGINT. Omitted otherwise so stack-demo /health is unchanged."
+          }
+        }
+      },
+      "FeishuWebhookRequest": {
+        "type": "object",
+        "description": "URL verification (`type`+`challenge`) or message (`text`). `token` checked against FEISHU_VERIFY_TOKEN.",
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "url_verification"
+          },
+          "challenge": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "text": {
+            "description": "Message text (string or nested)",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        }
+      },
+      "DingTalkWebhookRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "text": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "WeComWebhookRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "Content": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        }
+      },
+      "WebhookAck": {
+        "type": "object",
+        "description": "Platform-shaped ack plus shared intent fields. Feishu challenge returns `{challenge}`.",
+        "additionalProperties": true,
+        "properties": {
+          "ack": {
+            "type": "boolean"
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "feishu",
+              "dingtalk",
+              "wecom"
+            ]
+          },
+          "intent": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string",
+            "nullable": true
+          },
+          "tool_result": {
+            "nullable": true
+          },
+          "approval_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "example": "pending"
+          },
+          "decide_hint": {
+            "type": "string"
+          },
+          "challenge": {
+            "type": "string"
+          },
+          "echostr": {
+            "type": "string"
+          },
+          "msg_type": {
+            "type": "string",
+            "example": "text"
+          },
+          "msgtype": {
+            "type": "string",
+            "example": "text"
+          },
+          "content": {
+            "type": "object"
+          },
+          "text": {
+            "type": "object"
+          },
+          "errcode": {
+            "type": "integer"
+          },
+          "errmsg": {
+            "type": "string"
+          }
+        }
+      },
+      "Approval": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "appr_1a2b3c4d5e6f"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "approve",
+              "reject"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "description": "`expired` after TTL auto-reject"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "X-Request-Id from the creating webhook"
+          }
+        }
+      },
+      "ApprovalList": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "approvals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Approval"
+            }
+          },
+          "approval_ttl_seconds": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "ApprovalGet": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "approval": {
+            "$ref": "#/components/schemas/Approval"
+          }
+        }
+      },
+      "DecideRequest": {
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "reject"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "example": "ok"
+          }
+        }
+      },
+      "CorsConfig": {
+        "type": "object",
+        "description": "Optional CORS. Default omitted or empty origins = no extra CORS headers (deny). `origins` may be `[\"*\"]` (any Origin) or an explicit list. When enabled with an explicit list, OPTIONS preflight for a non-listed Origin returns **403** `{error:\"forbidden\",reason:\"cors_denied\"}`; allowed Origin → **204** with ACAO/ACAM/ACAH. Matching GET/POST get Access-Control-Allow-Origin. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id`. local-mvp uses `[\"http://localhost:3000\"]`.",
+        "properties": {
+          "origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[\"*\"]` or explicit origins. Empty/omitted disables CORS.",
+            "example": [
+              "http://localhost:3000"
+            ]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Methods (default GET, POST, OPTIONS)",
+            "default": [
+              "GET",
+              "POST",
+              "OPTIONS"
+            ]
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Allow-Headers (includes X-Request-Id and IM signature headers)",
+            "default": [
+              "Content-Type",
+              "Authorization",
+              "X-Lark-Signature",
+              "X-Lark-Request-Timestamp",
+              "X-Lark-Request-Nonce",
+              "X-DingTalk-Timestamp",
+              "X-DingTalk-Sign",
+              "X-Request-Id"
+            ]
+          },
+          "exposeHeaders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Access-Control-Expose-Headers (default includes Retry-After and X-Request-Id)",
+            "default": [
+              "Retry-After",
+              "X-Request-Id"
+            ]
+          }
+        }
+      },
+      "ApprovalDecisionWebhook": {
+        "type": "object",
+        "description": "Outbound fire-and-forget POST body when an approval is decided (approve/reject) or TTL-expired (`status=rejected`, `reason=expired`). Configure `--webhook-url` or `APPROVAL_WEBHOOK_URL` (config `approval_webhook_url`). Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). Optional `--webhook-secret` / `APPROVAL_WEBHOOK_SECRET` (config `approval_webhook_secret`): when set, POST includes `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw JSON body). Short timeout; errors never fail decide/expire. On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. Not an inbound HTTP path.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "appr_1a2b3c4d5e6f"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "decision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "approve",
+              "reject"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "description": "`expired` after TTL auto-reject; otherwise null"
+          },
+          "requestId": {
+            "type": "string",
+            "nullable": true,
+            "description": "X-Request-Id from the creating webhook, when stored"
+          }
+        }
+      },
+      "Ready": {
+        "description": "GET /ready body. 200 `{ok:true, service}` plus the same snapshot fields as GET /health when healthy. 503 `{ok:false, reason:\"shutting_down\"}` while draining SIGTERM/SIGINT. Snapshot/stateless — no circuit or queue. Compose/stack-demo healthchecks stay on `/health`.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Health"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "shutting_down"
+                ],
+                "description": "Present on 503 while draining SIGTERM/SIGINT."
+              }
+            }
+          }
+        ]
+      },
+      "ImCard": {
+        "type": "object",
+        "description": "JSON body F would POST to the IM for an approval request. Feishu: `msg_type=interactive` plus `card.header` / `card.elements` (markdown + buttons). DingTalk: `msgtype=actionCard`. WeCom: `msgtype=textcard`. Never includes tokens, HMAC secrets, or `sk-` keys. additionalProperties for platform fields.",
+        "additionalProperties": true,
+        "properties": {
+          "msg_type": {
+            "type": "string",
+            "example": "interactive"
+          },
+          "msgtype": {
+            "type": "string",
+            "example": "actionCard"
+          },
+          "card": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "actionCard": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "textcard": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "Platform": {
+        "type": "object",
+        "description": "One configured IM connector. Booleans only for secrets — never the secret values.",
+        "required": [
+          "id",
+          "enabled",
+          "hasCallbackSecret"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Connector id (`feishu` / `dingtalk` / `wecom`, plus extras from config if present)",
+            "example": "feishu"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether this connector is currently serving `/webhook/{id}`",
+            "example": true
+          },
+          "hasCallbackSecret": {
+            "type": "boolean",
+            "description": "True when inbound decide HMAC `callbackSecret` (or platform env) is set. The secret itself is never returned.",
+            "example": false
+          }
+        }
+      },
+      "PlatformList": {
+        "type": "object",
+        "required": [
+          "ok",
+          "platforms"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "count": {
+            "type": "integer",
+            "example": 3
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Platform"
+            }
+          }
+        }
+      },
+      "RuntimeConfig": {
+        "type": "object",
+        "description": "Public redacted runtime config (GET /v1/config). Allowlist only — never tokens, callbackSecret, webhook URL/secret, FEISHU_* env, or Authorization. Mirrors B GET /admin/config but F has no admin token on this GET.",
+        "required": [
+          "ok",
+          "approvalTtlSec",
+          "rateLimit",
+          "cors",
+          "approvalsMax",
+          "webhooks",
+          "platforms"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "approvalTtlSec": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Pending auto-reject TTL in seconds (null if disabled)",
+            "example": 86400
+          },
+          "rateLimit": {
+            "type": "object",
+            "properties": {
+              "perMinute": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Global webhook limit (null if unlimited)",
+                "example": 60
+              }
+            }
+          },
+          "cors": {
+            "type": "object",
+            "properties": {
+              "origins": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Allowed Origins (`[\"*\"]` = any). Empty = CORS disabled.",
+                "example": []
+              }
+            }
+          },
+          "approvalsMax": {
+            "type": "integer",
+            "description": "Max decided approvals retained (default 2000; 0 = unlimited)",
+            "example": 2000
+          },
+          "webhooks": {
+            "type": "object",
+            "description": "Outbound approval-decision webhook presence. Booleans only — never the URL (query tokens) or secret.",
+            "required": [
+              "hasUrl",
+              "hasSecret"
+            ],
+            "properties": {
+              "hasUrl": {
+                "type": "boolean",
+                "description": "True when APPROVAL_WEBHOOK_URL / --webhook-url is set. The URL itself is never returned.",
+                "example": false
+              },
+              "hasSecret": {
+                "type": "boolean",
+                "description": "True when APPROVAL_WEBHOOK_SECRET / --webhook-secret is set. The secret itself is never returned.",
+                "example": false
+              }
+            }
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Platform"
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Verify failed (webhook token/signature/msg_signature, or POST decide inbound callback HMAC `X-Callback-Signature` / timestamp skew). Body never includes secrets.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "unauthorized",
+              "reason": "bad_verify_token"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Webhook sliding-window rate limit exceeded (IP + platform). Retry after `Retry-After` seconds.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "rate_limited",
+              "platform": "feishu",
+              "limit": 2,
+              "retry_after": 58
+            }
+          }
+        }
+      },
+      "CorsDenied": {
+        "description": "CORS preflight (OPTIONS) for an Origin not in `CORS_ORIGINS` / `cors.origins` / `--cors-origins`. Body `{error:\"forbidden\",reason:\"cors_denied\"}`. No `Access-Control-Allow-Origin`. Does not apply when CORS is disabled (then OPTIONS is 404 without ACAO). GET/POST from a disallowed Origin still execute (e.g. 200/401) but omit ACAO.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "forbidden",
+              "reason": "cors_denied"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Unknown path or approval id",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Malformed JSON, invalid decision, or approval not pending / expired",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          },
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}

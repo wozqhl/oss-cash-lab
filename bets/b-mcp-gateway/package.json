@@ -1,0 +1,20 @@
+{
+  "name": "@oss-cash-lab/mcp-gateway",
+  "version": "0.1.0",
+  "description": "Enterprise MCP gateway with policy and audit",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "mcp-gateway": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js serve --port 8787 --config config/policy.json",
+    "smoke": "node src/cli.js smoke",
+    "local-mvp": "bash scripts/local-mvp.sh",
+    "prove-stdio": "node scripts/stdio-mvp.mjs",
+    "version": "node src/cli.js --version"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

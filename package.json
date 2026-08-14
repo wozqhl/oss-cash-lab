@@ -1,0 +1,22 @@
+{
+  "name": "oss-cash-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portfolio monorepo of six monetizable OSS bets (wozqhl)",
+  "license": "Apache-2.0",
+  "scripts": {
+    "list": "make list",
+    "smoke": "make smoke",
+    "local-mvp": "make local-mvp",
+    "demo-f": "make demo-f",
+    "stack-demo": "make stack-demo",
+    "compose-smoke": "make compose-smoke",
+    "dogfood-a-b": "make dogfood-a-b",
+    "dogfood-a-c": "make dogfood-a-c",
+    "dogfood-a-e": "make dogfood-a-e",
+    "dogfood-a-f": "make dogfood-a-f"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

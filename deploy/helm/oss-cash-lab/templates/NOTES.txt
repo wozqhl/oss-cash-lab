@@ -1,0 +1,34 @@
+oss-cash-lab {{ .Chart.Version }} (release {{ .Release.Name }})
+
+Images are placeholders ghcr.io/wozqhl/<bet>:dev (not published).
+Build/load locally (same tags as deploy/k8s) or pods will ImagePullBackOff:
+{{- range $name := keys .Values.bets | sortAlpha }}
+{{- $bet := index $.Values.bets $name }}
+  {{ $.Values.imageRegistry }}/{{ $bet.image.repository }}:{{ $bet.image.tag }}
+{{- end }}
+
+Port-forward each ClusterIP Service (port 80) then curl /health and /ready:
+{{- range $name := keys .Values.bets | sortAlpha }}
+{{- $bet := index $.Values.bets $name }}
+{{- if $bet.enabled }}
+
+  kubectl --namespace {{ $.Release.Namespace }} port-forward svc/{{ $name }} {{ $bet.containerPort }}:{{ $bet.service.port }}
+  curl -sS http://127.0.0.1:{{ $bet.containerPort }}/health
+  curl -sS http://127.0.0.1:{{ $bet.containerPort }}/ready
+{{- end }}
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+Ingress is enabled. Add hosts to /etc/hosts (point at the ingress controller), then curl:
+{{- range $name := keys .Values.bets | sortAlpha }}
+{{- $host := index $.Values.ingress.hosts $name }}
+{{- if and $host (index $.Values.bets $name).enabled }}
+  http://{{ $host }}/health   (svc/{{ $name }})
+{{- end }}
+{{- end }}
+
+  127.0.0.1 gateway.oss-cash-lab.local ci.oss-cash-lab.local bom.oss-cash-lab.local cost.oss-cash-lab.local agent.oss-cash-lab.local
+{{- end }}
+
+Optional: NetworkPolicy={{ .Values.networkPolicy.enabled }} PDB={{ .Values.pdb.enabled }} HPA={{ .Values.hpa.enabled }} LimitRange={{ .Values.limitRange.enabled }} ResourceQuota={{ .Values.resourceQuota.enabled }} SecurityContext={{ .Values.securityContext.enabled }}

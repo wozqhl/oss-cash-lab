@@ -1,0 +1,34 @@
+# Namespace ResourceQuota for B–F HTTP services (v1 — built-in, not a CRD).
+# Listed in kustomization.yaml so `kubectl apply -k deploy/k8s` applies this too.
+#
+# Pairs with LimitRange (per-container min/max/default) and HPA maxReplicas 4
+# so the demo namespace cannot unbounded-scale.
+#
+# Hard caps sized for 5 B–F services × HPA maxReplicas 4, plus headroom:
+#   pods:            5 × 4 = 20          →  24  (Jobs/hooks/rollouts)
+#   requests.cpu:    5 × 50m  × 4 = 1    →  2
+#   requests.memory: 5 × 64Mi × 4 = 1280Mi →  2Gi
+#   limits.cpu:      5 × 500m × 4 = 10   →  12
+#   limits.memory:   5 × 256Mi × 4 = 5Gi →  6Gi
+#   services:        5 ClusterIP         →  10
+#
+# Floor: caps are >= current explicit Deployment requests × replica 1
+#   (5 × 50m/64Mi requests, 5 × 500m/256Mi limits, 5 pods, 5 services)
+# so apply does not block the replica=1 demo.
+#
+# Apply: kubectl apply -f deploy/k8s/resourcequota.yaml
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: oss-cash-lab
+  labels:
+    app.kubernetes.io/name: oss-cash-lab
+spec:
+  hard:
+    pods: "24"
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "12"
+    limits.memory: 6Gi
+    services: "10"

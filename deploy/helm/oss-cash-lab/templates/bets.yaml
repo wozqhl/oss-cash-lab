@@ -1,0 +1,112 @@
+{{- /*
+  Deployment + Service for each enabled HTTP bet (B-F).
+  Images from .Values.imageRegistry plus per-bet repository and tag.
+  Service port 80 to named port http. No ServiceMonitor / PrometheusRule.
+  Optional securityContext (default on via .Values.securityContext.enabled):
+  restricted-ish PSS — non-root, no privilege escalation, drop ALL,
+  read-only root + emptyDir /tmp (B/C/F also emptyDir /app/data).
+*/ -}}
+{{- $registry := .Values.imageRegistry }}
+{{- $pull := .Values.imagePullPolicy }}
+{{- $sc := .Values.securityContext }}
+{{- range $name, $bet := .Values.bets }}
+{{- if $bet.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app.oss-cash-lab.dev/{{ $name }}: "true"
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  replicas: {{ $bet.replicaCount }}
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/{{ $name }}: "true"
+  template:
+    metadata:
+      labels:
+        app.oss-cash-lab.dev/{{ $name }}: "true"
+        app.kubernetes.io/name: oss-cash-lab
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      terminationGracePeriodSeconds: 10
+      {{- if $sc.enabled }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $bet.runAsUser }}
+        runAsGroup: {{ $bet.runAsGroup }}
+        fsGroup: {{ $bet.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ $registry }}/{{ $bet.image.repository }}:{{ $bet.image.tag }}"
+          imagePullPolicy: {{ $pull }}
+          ports:
+            - name: http
+              containerPort: {{ $bet.containerPort }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml $bet.resources | nindent 12 }}
+          {{- if $sc.enabled }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if $bet.dataMount }}
+            - name: data
+              mountPath: {{ $bet.dataMount }}
+            {{- end }}
+          {{- end }}
+      {{- if $sc.enabled }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $bet.dataMount }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    app.oss-cash-lab.dev/{{ $name }}: "true"
+    app.kubernetes.io/name: oss-cash-lab
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  type: ClusterIP
+  selector:
+    app.oss-cash-lab.dev/{{ $name }}: "true"
+  ports:
+    - name: http
+      port: {{ $bet.service.port }}
+      targetPort: http
+{{- end }}
+{{- end }}

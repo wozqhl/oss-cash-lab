@@ -1,0 +1,82 @@
+# Prometheus Operator PrometheusRule for B–F GET /metrics alerts.
+# Requires CRDs: monitoring.coreos.com/v1 (prometheus-operator).
+# Not applied in make smoke (parse-only YAML). Apply separately so
+# `kubectl apply -k deploy/k8s` still works without the CRDs:
+#   kubectl apply -f deploy/k8s/prometheusrule.yaml
+# Same groups as deploy/prometheus/rules.yaml (plain Prometheus / Mimir).
+# Metric names match bet source (and deploy/grafana) — do not invent clones.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: oss-cash-lab
+  labels:
+    app.oss-cash-lab.dev/prometheus: "true"
+spec:
+  groups:
+    - name: oss-cash-lab.mcp-gateway
+      rules:
+        - alert: McpGatewayCircuitOpen
+          expr: 'increase(circuit_open_total[5m]) > 0'
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: MCP gateway circuit breaker opened in the last 5 minutes
+        - alert: McpGatewayRateLimited
+          expr: 'rate(rate_limited_total[5m]) > 0.1'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: MCP gateway rate-limit denials exceed 0.1 per second (raise to 1 if noisy)
+    - name: oss-cash-lab.agent-ci
+      rules:
+        - alert: AgentCiQueueBacklog
+          expr: 'agent_ci_queue_depth > 5'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Agent CI in-memory queue depth is above 5
+        - alert: AgentCiRunFailures
+          expr: 'rate(agent_ci_runs_failed_total[5m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Agent CI runs are failing
+    - name: oss-cash-lab.ai-bom
+      rules:
+        - alert: AiBomForbiddenLicense
+          expr: 'ai_bom_forbidden_licenses > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: AI BOM scan found forbidden licenses
+        - alert: AiBomPolicyHits
+          expr: 'ai_bom_policy_hits > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: AI BOM policy hits are non-zero
+    - name: oss-cash-lab.otel-ai-cost
+      rules:
+        - alert: OtelAiCostHigh
+          expr: 'otel_ai_cost_total_usd > 50'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: OTel AI snapshot cost exceeds example threshold of 50 USD (tune for your budget)
+    - name: oss-cash-lab.cn-work-agent
+      rules:
+        - alert: CnWorkApprovalsStuck
+          expr: 'cn_work_agent_approvals_pending > 10'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: CN work agent has more than 10 pending approvals

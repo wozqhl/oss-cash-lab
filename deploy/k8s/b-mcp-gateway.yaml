@@ -1,0 +1,90 @@
+# B mcp-gateway — placeholder image (not published yet).
+# Default serve port 8787 (CLI / docker-compose.yml).
+# Apply: kubectl apply -f deploy/k8s/b-mcp-gateway.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: b-mcp-gateway
+  labels:
+    app.oss-cash-lab.dev/b-mcp-gateway: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.oss-cash-lab.dev/b-mcp-gateway: "true"
+  template:
+    metadata:
+      labels:
+        app.oss-cash-lab.dev/b-mcp-gateway: "true"
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: b-mcp-gateway
+          image: ghcr.io/wozqhl/b-mcp-gateway:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+          # Optional env names from serve/CLI (do not invent secrets):
+          # - name: SHUTDOWN_DRAIN_MS
+          #   value: "5000"
+          # - name: LOG_FORMAT
+          #   value: json
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8787
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8787
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: b-mcp-gateway
+  labels:
+    app.oss-cash-lab.dev/b-mcp-gateway: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.oss-cash-lab.dev/b-mcp-gateway: "true"
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8787

@@ -1,0 +1,134 @@
+# Portfolio local demo stack (B gateway + mock upstream + C agent-ci + D ai-bom + E otel-ai-cost + F cn-work-agent)
+# Additive: does not replace make smoke / make local-mvp.
+services:
+  mock-upstream:
+    build:
+      context: ./bets/b-mcp-gateway
+      dockerfile: Dockerfile.mock-upstream
+    # Internal-only port on the compose network (no host publish required).
+    expose:
+      - "8788"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  mcp-gateway:
+    build:
+      context: ./bets/b-mcp-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8787:8787"
+    depends_on:
+      - mock-upstream
+    volumes:
+      - gateway-audit:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  agent-ci:
+    build:
+      context: ./bets/c-agent-ci
+      dockerfile: Dockerfile
+    ports:
+      - "8791:8791"
+    volumes:
+      - agent-ci-runs:/app/data/runs
+    healthcheck:
+      # Liveness: stay on /health (GET /ready is 503 when the run queue is full).
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8791/health')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  cn-work-agent:
+    build:
+      context: ./bets/f-cn-work-agent
+      dockerfile: Dockerfile
+    ports:
+      - "8790:8790"
+    environment:
+      FEISHU_VERIFY_TOKEN: mvp-token
+      FEISHU_ENCRYPT_KEY: mvp-encrypt
+      DINGTALK_TOKEN: mvp-dt-token
+      DINGTALK_SECRET: mvp-dt-secret
+      WECOM_TOKEN: mvp-wc-token
+    volumes:
+      - cn-work-audit:/app/data
+    healthcheck:
+      # Liveness: stay on /health (GET /ready is always 200 here; keep same probe path as B/C).
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/health')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  otel-ai-cost:
+    build:
+      context: ./bets/e-otel-ai-cost
+      dockerfile: Dockerfile
+    ports:
+      - "8792:8792"
+    healthcheck:
+      # Liveness: stay on /health (GET /ready is always 200 here; keep same probe path as B/C).
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8792/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  ai-bom:
+    build:
+      context: ./bets/d-ai-bom
+      dockerfile: Dockerfile
+    ports:
+      - "8793:8793"
+    healthcheck:
+      # Liveness: stay on /health (GET /ready is always 200 here; keep same probe path as B/C).
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8793/health')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+volumes:
+  gateway-audit:
+  agent-ci-runs:
+  cn-work-audit:

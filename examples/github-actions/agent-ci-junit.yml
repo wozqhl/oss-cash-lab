@@ -1,0 +1,75 @@
+# Copy to .github/workflows/agent-ci-junit.yml in a consumer repo.
+# Requires Python 3.12+ and agent-ci on PYTHONPATH (src/) or installed.
+# This portfolio: add working-directory: bets/c-agent-ci and artifact
+# path: bets/c-agent-ci/junit.xml
+#
+# Examples only — do not add this as a required push workflow on oss-cash-lab
+# (keep .github/workflows/ci.yml as the gate).
+name: Agent CI (JUnit)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  agent-ci-junit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Optional merge-queue gate: add --fail-under 80 (score = passed/total*100).
+      - name: Run agent-ci
+        run: PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --junit junit.xml
+
+      - name: Upload JUnit XML
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-ci-junit
+          path: junit.xml
+          if-no-files-found: error
+
+      # Optional Markdown job summary (GITHUB_STEP_SUMMARY):
+      # - name: Job summary
+      #   if: always()
+      #   run: PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --format md >> "$GITHUB_STEP_SUMMARY"
+
+      # Optional GitHub Actions log annotations (workflow commands; no GitHub API):
+      # - name: Annotate
+      #   if: always()
+      #   run: PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --format gha
+
+      # Optional run-vs-run Markdown job summary (GITHUB_STEP_SUMMARY).
+      # Persist two completed-run JSON dumps (same shape as GET /v1/runs/{id}),
+      # then append the Markdown diff. Happy path: two identical demo dumps →
+      # "no changes" (exit 0). Do not add a second failing suite here (would
+      # fail this job).
+      # To compare vs last green: download a previous artifact as run-a.json
+      # (actions/download-artifact) and dump the current run as run-b.json.
+      # - name: Run-vs-run dumps
+      #   if: always()
+      #   run: |
+      #     PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo
+      #     # write run-a.json / run-b.json from GET /v1/runs/{id} or a committed dump
+      # - name: Run-vs-run diff summary
+      #   if: always()
+      #   run: PYTHONPATH=src python3 -m agent_ci diff --from run-a.json --to run-b.json --format md >> "$GITHUB_STEP_SUMMARY"
+
+      # Optional (supply-chain review first; not required for a green path):
+      # - uses: EnricoMi/publish-unit-test-results@v2
+      #   if: always()
+      #   with:
+      #     files: junit.xml

@@ -1,0 +1,52 @@
+# Copy to .github/workflows/ai-bom-sarif.yml in a consumer repo.
+# Requires Python 3.12+, ai-bom on PYTHONPATH (src/) or installed, and
+# GitHub code scanning enabled (Settings → Code security → Code scanning).
+# This portfolio: add working-directory: bets/d-ai-bom and sarif_file:
+# bets/d-ai-bom/ai-bom.sarif
+#
+# Examples only — do not enable this job on oss-cash-lab (upload-sarif
+# fails unless code scanning is on; do not turn that on from here).
+# This workflow uses --sarif PATH for github/codeql-action/upload-sarif@v3.
+# Optional elsewhere (serve / stack-demo, not this job): GET /v1/bom?format=sarif
+# Optional log annotations (no GitHub API): scan --format gha  (or GET /v1/bom?format=gha)
+name: AI-BOM SARIF
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  ai-bom-sarif:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan (SARIF)
+        run: PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --sarif ai-bom.sarif
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ai-bom.sarif
+          category: ai-bom
+
+      # Optional GitHub Actions log annotations (workflow commands; no GitHub API):
+      # - name: Annotate
+      #   if: always()
+      #   run: PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --format gha

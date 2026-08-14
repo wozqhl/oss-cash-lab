@@ -1,0 +1,29 @@
+{
+  "bot_name": "cn-work-bot",
+  "platforms": [
+    "feishu",
+    "dingtalk",
+    "wecom"
+  ],
+  "rate_limit_per_minute": 60,
+  "feishu": {
+    "verify_token": "change-me-feishu-token",
+    "encrypt_key": "change-me-feishu-encrypt",
+    "callbackSecret": ""
+  },
+  "dingtalk": {
+    "token": "change-me-dingtalk-token",
+    "secret": "change-me-dingtalk-secret",
+    "callbackSecret": ""
+  },
+  "wecom": {
+    "token": "change-me-wecom-token",
+    "callbackSecret": ""
+  },
+  "approval_ttl_seconds": 86400,
+  "approvals_max": 2000,
+  "cors": {
+    "origins": []
+  },
+  "approval_webhook_url": ""
+}

@@ -1,0 +1,33 @@
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+out/
+coverage/
+*.log
+.cache/
+tmp/
+.DS_Store
+.idea/
+.vscode/
+
+# A→B dogfood: regenerate via make dogfood-a-b / scripts/generate-gateway-sdk.sh
+bets/b-mcp-gateway/sdk/generated/
+
+# A→C dogfood: regenerate via make dogfood-a-c / scripts/generate-runner-sdk.sh
+bets/c-agent-ci/sdk/generated/
+
+# A->F dogfood: regenerate via make dogfood-a-f / scripts/generate-agent-sdk.sh
+bets/f-cn-work-agent/sdk/generated/
+
+# A→E dogfood: regenerate via make dogfood-a-e / scripts/generate-cost-sdk.sh
+bets/e-otel-ai-cost/sdk/generated/
+
+.env
+.env.*
+!.env.example
+bets/d-ai-bom/sdk/generated/
