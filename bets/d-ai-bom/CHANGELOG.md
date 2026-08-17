@@ -4,6 +4,12 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### Advisory-match gate (Article 14 inventory+match)
+
+- `scan --advisories <file> --gate-vulns` matches scanned component name/purl/version against a **local** JSON fixture and exits **1** on hits. Offline only — no NVD/OSV/GitHub Advisory fetch.
+- Fixtures: `examples/advisories/sample.json` (planted `ADV-FIXTURE-*` hits on sample-app → exit 1) and `examples/advisories/clean.json` (no match → exit 0). IDs are placeholders, not real CVEs.
+- Honest later path: convert an OSV/GHSA export into the same schema and point `--advisories` at it. Not a CVE database; not NVD completeness.
+
 ### SPDX 3.0.1 JSON
 
 - `--format spdx3` / `GET /v1/bom?format=spdx3` (alias `spdx-3`) emits compact **SPDX 3.0.1** JSON (`creationInfo.specVersion=3.0.1`, `spdxId`, `name`, `element` of `software_Package` + license expressions). Existing `spdx` / `spdx-xml` stay **SPDX 2.3**.
@@ -23,4 +29,4 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ### Docs
 
-- `docs/cra.md` — Article 14 (11 Sep 2026) vs essential requirements (11 Dec 2027); what is emitted; what is **not** claimed. Official CRA + CycloneDX ML-BOM guide links. No certification language.
+- `docs/cra.md` — Article 14 (11 Sep 2026, 24h reporting) needs inventory+match; full SBOM 11 Dec 2027; fixture now / OSV-GHSA feed later. Official CRA + CycloneDX ML-BOM guide links. No certification language.

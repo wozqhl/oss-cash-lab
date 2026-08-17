@@ -1,0 +1,35 @@
+{
+  "schema": "ai-bom-advisories/v1",
+  "source": "fixture",
+  "note": "Local fixture only. Not NVD, OSV, or GitHub Advisory. IDs are ADV-FIXTURE-* placeholders.",
+  "advisories": [
+    {
+      "id": "ADV-FIXTURE-1",
+      "severity": "high",
+      "component": {
+        "name": "ai-bom-sample-app",
+        "version": "0.0.1",
+        "purl": "pkg:npm/ai-bom-sample-app@0.0.1"
+      },
+      "summary": "Planted fixture hit for sample-app package.json."
+    },
+    {
+      "id": "ADV-FIXTURE-2",
+      "component": {
+        "name": "openai",
+        "purl": "pkg:pypi/openai"
+      },
+      "severity": "medium",
+      "summary": "Planted fixture hit for requirements.txt openai."
+    },
+    {
+      "id": "ADV-FIXTURE-3",
+      "component": {
+        "name": "httpx",
+        "purl": "pkg:pypi/httpx"
+      },
+      "severity": "low",
+      "summary": "Planted fixture hit for requirements.txt httpx."
+    }
+  ]
+}

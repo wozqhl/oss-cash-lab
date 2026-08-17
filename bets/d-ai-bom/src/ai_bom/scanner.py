@@ -1086,6 +1086,7 @@ def render_evidence(bom: dict[str, Any]) -> str:
     forbidden_licenses = summary.get("forbiddenLicenses") or []
     waived = summary.get("waived") or []
     expired_exceptions = summary.get("expiredExceptions") or []
+    advisory_hits = summary.get("advisoryHits") or []
     by_type: dict[str, list[str]] = {}
     for c in components:
         by_type.setdefault(c.get("type") or "unknown", []).append(c.get("name") or "?")
@@ -1206,13 +1207,28 @@ def render_evidence(bom: dict[str, Any]) -> str:
     else:
         lines.append("_No expired exceptions. / 无过期例外。_")
         lines.append("")
+    if advisory_hits:
+        lines.append("## Advisory hits / 本地咨询命中")
+        lines.append("")
+        lines.append(
+            f"- Local advisory fixture hits / 本地清单命中: **{len(advisory_hits)}**"
+        )
+        lines.append("")
+        for h in advisory_hits:
+            lines.append(
+                f"- `{h.get('id')}` on `{h.get('component')}`"
+                f" @ `{h.get('path')}` [{h.get('severity', '')}] — {h.get('summary', '')}"
+            )
+        lines.append("")
+        lines.append("_Fixture IDs only. Not NVD completeness. / 仅为本地清单，非 NVD 全量。_")
+        lines.append("")
 
     lines.append("## Exit guidance / 退出码说明")
     lines.append("")
     lines.append("| Code | Meaning |")
     lines.append("|------|---------|")
     lines.append("| 0 | Scan OK (no `--strict` violations) |")
-    lines.append("| 1 | `--strict`: forbidden hits, disclosure gaps, and/or forbidden licenses |")
+    lines.append("| 1 | `--strict`: forbidden hits, disclosure gaps, and/or forbidden licenses; `--gate-licenses`: forbidden licenses; `--gate-vulns`: local advisory fixture hits |")
     lines.append("| 2 | Usage / IO / policy parse error |")
     lines.append("")
     lines.append("---")

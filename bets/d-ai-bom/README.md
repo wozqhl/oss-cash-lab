@@ -25,6 +25,7 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 | `--format html` / `GET /v1/bom?format=html` self-contained HTML BOM summary (no CDN; policy hits red) | Hosted inventory dashboard |
 | SPDX license fields on package components (`package.json` / `pyproject` / `requirements.txt`) | License inventory DB / enrichment |
 | Policy `forbiddenLicenseIds` (GPL/AGPL/SSPL) + `--strict` / `--gate-licenses` | Managed license allow/deny packs |
+| Local advisory fixture match (`--advisories` + `--gate-vulns`; `ADV-FIXTURE-*`; offline) | Hosted OSV/GHSA feed / NVD completeness |
 | `.aibomignore` / `--ignore` path filters | Managed path policies / inventory scopes |
 | `.aibom-exceptions.json` / `--exceptions` license waivers (reason + optional expiry) | Managed exception workflow / approval trail |
 | Local `serve` HTTP (`/health` `/ready` `/bom.json` `/v1/bom?format=json\|cyclonedx\|cyclonedx-xml\|spdx\|spdx-xml\|spdx3\|sarif\|md\|gha\|html` `/v1/bom.xml` `/v1/bom.spdx.xml` `/v1/bom.sarif` `/v1/bom.md` `/v1/bom.gha.txt` `/v1/bom.html` **`/v1/policy`** **`/v1/config`** **`/v1/components`** **`/v1/exceptions`** `/evidence.md` `/` `/openapi.json` `/metrics`; optional `--cors-origins` / `AI_BOM_CORS_ORIGINS`; HTTP rate-limit `--rate-limit` / `RATE_LIMIT_PER_MINUTE`; `X-Request-Id` echo; optional `--watch` dir mtime poll rescan) | **Hosted inventory** / fleet dashboard |
@@ -39,7 +40,7 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 | Code | Meaning |
 |------|---------|
 | 0 | Scan OK (no `--strict` violations) |
-| 1 | `--strict`: forbidden hits, disclosure gaps, and/or forbidden licenses; `--gate-licenses`: forbidden licenses only |
+| 1 | `--strict`: forbidden hits, disclosure gaps, and/or forbidden licenses; `--gate-licenses`: forbidden licenses only; `--gate-vulns`: local advisory fixture hits |
 | 2 | Usage / IO / policy parse error |
 
 ## 2-week MVP checklist / 2周MVP清单
@@ -51,7 +52,8 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 - [x] CycloneDX 1.7 XML export (`scan --format cyclonedx-xml`; `GET /v1/bom?format=cyclonedx-xml` / `GET /v1/bom.xml`; same component/license/policy-hit model; `cyclonedx` stays JSON)
 - [x] CycloneDX 1.7 ML-BOM fields from existing scan data (`machine-learning-model` + `modelCard` format/path; prompts as `data`; licenses; no invented schema)
 - [x] `--gate-licenses` CI license-policy gate (exit 1 on `forbiddenLicenseIds` only) + `examples/cra-fixtures/license-pass` / `license-fail`
-- [x] CRA orientation [`docs/cra.md`](./docs/cra.md) (Article 14 vs Dec 2027; no certification claim)
+- [x] `--advisories` / `--gate-vulns` offline advisory-match gate (Article 14 inventory+match; fixture now, OSV/GHSA feed later) + `examples/advisories/sample.json` / `clean.json`
+- [x] CRA orientation [`docs/cra.md`](./docs/cra.md) (Article 14 11 Sep 2026 reporting vs Dec 2027 SBOM; no certification claim)
 - [x] SPDX 2.3 XML export (`scan --format spdx-xml`; `GET /v1/bom?format=spdx-xml` / `GET /v1/bom.spdx.xml`; same packages/`licenseConcluded` as JSON; `spdx` stays JSON)
 - [x] Markdown BOM summary (`scan --format md`; `GET /v1/bom?format=md` / `GET /v1/bom.md`; `text/markdown`; human/Slack; not an SBOM spec)
 - [x] GitHub Actions workflow-command annotations (`scan --format gha`; `GET /v1/bom?format=gha` / `GET /v1/bom.gha.txt`; `text/plain`; `::error` / waived `::notice`; clean empty)
@@ -106,6 +108,9 @@ PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/defa
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --gate-licenses; echo exit=$?
 PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-pass --policy policies/default.json --gate-licenses; echo exit=$?
 PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-fail --policy policies/default.json --gate-licenses; echo exit=$?
+# Article 14 inventory+match (local fixture; not NVD — planted hit → 1, clean file → 0):
+PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/sample.json --gate-vulns; echo exit=$?
+PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/clean.json --gate-vulns; echo exit=$?
 # active license/policy gate (ids/counts only):
 PYTHONPATH=src python3 -m ai_bom policy examples/sample-app --policy policies/default.json
 # optional policy-hit webhook (OSS 1 retry; exponential backoff / queues / key rotation / timestamp replay = paid later):
@@ -290,6 +295,18 @@ CycloneDX 1.7 keeps component `name` / `version` / `purl` or `type` and `license
 MIT (and other non-forbidden ids) on the sample-app stay clean for this license gate (`--gate-licenses` exit 0; `--strict` still fails sample-app on `pickle.load`). Committed fixtures: [`examples/cra-fixtures/license-pass`](./examples/cra-fixtures/license-pass) (MIT, exit 0) and [`examples/cra-fixtures/license-fail`](./examples/cra-fixtures/license-fail) (planted `GPL-3.0`, exit 1). A matching `.aibom-exceptions.json` waiver (component+license+reason, unexpired) removes that hit (`summary.waived`); an expired waiver still fails and is listed in `summary.expiredExceptions`.
 
 CRA dates / honesty limits: [`docs/cra.md`](./docs/cra.md). How to run the fixtures: [`examples/cra-fixtures/README.md`](./examples/cra-fixtures/README.md).
+
+### Advisory match gate / 本地咨询对照门禁
+
+Article 14 (11 Sep 2026) is a **24h reporting clock**. It needs inventory + a match against issues you already know — not a full NVD mirror (that remains out of scope). `scan --advisories FILE --gate-vulns`:
+
+- FILE is a local JSON fixture (`examples/advisories/sample.json`). IDs are `ADV-FIXTURE-*` placeholders, not real CVE matches against the internet.
+- Match is **AND** of the identity fields the advisory specifies (component `name` / `purl` / `version`). Versioned advisory does not match an unversioned component. No ranges, no CPE, no network.
+- Planted hit on sample-app → exit **1**. `examples/advisories/clean.json` (wrong name, or same name + other version) → exit **0**.
+- `--gate-vulns` without `--advisories` is a usage error (exit 2).
+- Hits land on `summary.advisoryHits` / `advisoryHitCount` (does not change `policyHits`). `--evidence` lists them when present.
+
+Buyer later: export OSV or GitHub Advisory offline, convert into this schema, point `--advisories` at the file. This CLI does not fetch osv.dev or api.github.com. See [`examples/advisories/README.md`](./examples/advisories/README.md).
 
 `GET /v1/policy` (and CLI `ai-bom policy`) returns the **active gate**, not scan hits: `{ok, forbiddenLicenseIds, forbiddenPatterns, exceptionsCount, ignoreFile}`. Pattern field is **ids** only (no regex). Exception field is a **count** (no reasons). Missing policy file → **200** with empty lists. Does not dump policy / ignore / exceptions file contents or secrets.
 

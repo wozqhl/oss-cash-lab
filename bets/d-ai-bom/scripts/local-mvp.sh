@@ -404,6 +404,46 @@ assert any(r.get("ruleId") == "license/GPL-3.0" for r in results), [r.get("ruleI
 print("CRA fixtures ok: pass gate 0, fail gate 1, GPL-3.0 in BOM/SARIF")
 PYCRA
 
+echo "==> advisory fixtures: planted hit gate 1; clean file gate 0"
+set +e
+python3 -m ai_bom scan examples/sample-app \
+  --advisories examples/advisories/sample.json --gate-vulns >/tmp/d-adv-hit.out 2>&1
+hit_gate=$?
+python3 -m ai_bom scan examples/sample-app \
+  --advisories examples/advisories/clean.json --gate-vulns >/tmp/d-adv-clean.out 2>&1
+clean_gate=$?
+python3 -m ai_bom scan examples/sample-app --gate-vulns >/tmp/d-adv-miss.out 2>&1
+miss_gate=$?
+set -e
+if [ "$hit_gate" -ne 1 ]; then
+  echo "expected exit 1 for sample.json --gate-vulns, got $hit_gate"
+  cat /tmp/d-adv-hit.out
+  exit 1
+fi
+if [ "$clean_gate" -ne 0 ]; then
+  echo "expected exit 0 for clean.json --gate-vulns, got $clean_gate"
+  cat /tmp/d-adv-clean.out
+  exit 1
+fi
+if [ "$miss_gate" -ne 2 ]; then
+  echo "expected exit 2 for --gate-vulns without --advisories, got $miss_gate"
+  cat /tmp/d-adv-miss.out
+  exit 1
+fi
+grep -q "ADV-FIXTURE-1" /tmp/d-adv-hit.out
+grep -Eqi "gate-vulns|advisory" /tmp/d-adv-hit.out
+python3 -m ai_bom scan examples/sample-app \
+  --advisories examples/advisories/sample.json \
+  --out /tmp/d-adv-hit-bom.json >/tmp/d-adv-hit-scan.out
+python3 - <<"PYADV"
+import json
+from pathlib import Path
+bom = json.loads(Path("/tmp/d-adv-hit-bom.json").read_text())
+hits = (bom.get("summary") or {}).get("advisoryHits") or []
+assert any(h.get("id") == "ADV-FIXTURE-1" for h in hits), hits
+assert (bom.get("summary") or {}).get("advisoryHitCount", 0) >= 1
+print("advisory fixtures ok: planted hit 1, clean 0, missing-file-flag 2")
+PYADV
 
 echo "==> temp package.json GPL-3.0 -> strict fails + evidence/sarif license hits"
 LIC_TMP="$(mktemp -d)"
@@ -1776,4 +1816,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories)"

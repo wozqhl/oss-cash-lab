@@ -1,0 +1,27 @@
+{
+  "schema": "ai-bom-advisories/v1",
+  "source": "fixture",
+  "note": "Clean fixture: identities that do not appear in sample-app. Used to prove --gate-vulns exit 0.",
+  "advisories": [
+    {
+      "id": "ADV-FIXTURE-CLEAN-1",
+      "component": {
+        "name": "does-not-exist-in-sample-app",
+        "purl": "pkg:pypi/does-not-exist-in-sample-app@9.9.9",
+        "version": "9.9.9"
+      },
+      "severity": "high",
+      "summary": "Non-matching fixture entry."
+    },
+    {
+      "id": "ADV-FIXTURE-CLEAN-2",
+      "component": {
+        "name": "ai-bom-sample-app",
+        "purl": "pkg:npm/ai-bom-sample-app@9.9.9",
+        "version": "9.9.9"
+      },
+      "severity": "medium",
+      "summary": "Same name as sample-app but a different version."
+    }
+  ]
+}

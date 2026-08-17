@@ -1,9 +1,10 @@
 """CLI for ai-bom.
 
 Exit codes:
-  0  success (no --strict / --gate-licenses violations)
+  0  success (no --strict / --gate-licenses / --gate-vulns violations)
   1  --strict: forbidden pattern hits, disclosure gaps, and/or forbidden licenses
      --gate-licenses: forbidden licenses only (CI license-policy gate)
+     --gate-vulns: local advisory fixture hits (offline; not NVD)
   2  usage / IO / policy parse error
 """
 from __future__ import annotations
@@ -14,6 +15,13 @@ import tempfile
 from pathlib import Path
 
 from ai_bom import __version__
+from ai_bom.advisories import (
+    attach_advisory_hits,
+    load_advisories,
+    match_advisories,
+    parse_purl,
+    purl_identity_matches,
+)
 from ai_bom.scanner import (
     COMPONENTS_LIST_CAP,
     ENV_EXCEPTIONS,
@@ -140,7 +148,7 @@ def _load_policy_arg(policy_path: str | None):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ai-bom",
-        epilog="Exit codes: 0=ok  1=strict policy violation  2=usage/IO error",
+        epilog="Exit codes: 0=ok  1=strict/gate-licenses/gate-vulns  2=usage/IO error",
     )
     parser.add_argument("--version", action="store_true")
     sub = parser.add_subparsers(dest="cmd")
@@ -175,6 +183,22 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "CI license-policy gate: exit 1 if forbiddenLicenseIds match "
             "(existing policy). Does not fail on pickle/disclosure (use --strict)."
+        ),
+    )
+    p_scan.add_argument(
+        "--advisories",
+        default=None,
+        help=(
+            "Local advisory JSON (offline fixture). Match scanned components "
+            "by name/purl/version. Not an NVD/OSV/GitHub Advisory fetch."
+        ),
+    )
+    p_scan.add_argument(
+        "--gate-vulns",
+        action="store_true",
+        help=(
+            "CI advisory-match gate: exit 1 if --advisories hits scanned "
+            "components. Offline only; requires --advisories."
         ),
     )
     p_scan.add_argument(
@@ -644,6 +668,44 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if not any(h.get("licenseId") == "GPL-3.0" for h in fail_fl):
             print("smoke failed license-fail fixture missing GPL-3.0", fail_fl)
+            return 1
+
+        adv_dir = Path(__file__).resolve().parents[2] / "examples" / "advisories"
+        try:
+            sample_adv = load_advisories(adv_dir / "sample.json")
+            clean_adv = load_advisories(adv_dir / "clean.json")
+        except Exception as e:
+            print("smoke failed load advisories", e)
+            return 1
+        sample_hits = match_advisories(sample_bom.get("components") or [], sample_adv)
+        clean_hits = match_advisories(sample_bom.get("components") or [], clean_adv)
+        sample_ids = [h.get("id") for h in sample_hits]
+        if "ADV-FIXTURE-1" not in sample_ids or "ADV-FIXTURE-2" not in sample_ids:
+            print("smoke failed planted advisory match", sample_ids)
+            return 1
+        if clean_hits:
+            print("smoke failed clean advisory had hits", clean_hits)
+            return 1
+        parsed = parse_purl("pkg:pypi/openai")
+        if parsed.get("type") != "pypi" or parsed.get("name") != "openai":
+            print("smoke failed parse_purl", parsed)
+            return 1
+        if not purl_identity_matches("pkg:pypi/openai", "pkg:pypi/openai"):
+            print("smoke failed purl identity")
+            return 1
+        versioned_miss = match_advisories(
+            [{"name": "openai", "purl": "pkg:pypi/openai"}],
+            [{
+                "id": "ADV-FIXTURE-X",
+                "name": "openai",
+                "purl": "pkg:pypi/openai@9.9.9",
+                "version": "9.9.9",
+                "severity": "high",
+                "summary": "",
+            }],
+        )
+        if versioned_miss:
+            print("smoke failed versioned advisory matched unversioned component", versioned_miss)
             return 1
 
         sarif_doc = to_sarif(bom, tool_version=__version__)
@@ -2530,7 +2592,7 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories")
         return 0
     if args.cmd == "policy":
         target = Path(args.path)
@@ -2602,6 +2664,22 @@ def main(argv: list[str] | None = None) -> int:
             ignore=ignore or None,
             exceptions_path=exceptions_path,
         )
+        advisories_path = getattr(args, "advisories", None)
+        gate_vulns = bool(getattr(args, "gate_vulns", False))
+        if gate_vulns and not advisories_path:
+            print("gate-vulns requires --advisories <file> (offline fixture; no NVD fetch)")
+            return 2
+        if advisories_path:
+            try:
+                advisories = load_advisories(Path(advisories_path))
+            except OSError as e:
+                print(f"advisories IO error: {e}")
+                return 2
+            except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                print(f"advisories parse error: {e}")
+                return 2
+            hits = match_advisories(bom.get("components") or [], advisories)
+            bom = attach_advisory_hits(bom, hits)
         fmt = getattr(args, "format", None) or DEFAULT_FORMAT
         if normalize_format(fmt) is None:
             print(f"unsupported --format (use {FORMATS_HELP})")
@@ -2650,6 +2728,11 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "gate_licenses", False) and forbidden_licenses:
             print(f"gate-licenses: forbidden licenses: {forbidden_licenses}")
             return 1
+        if gate_vulns:
+            advisory_hits = (bom.get("summary") or {}).get("advisoryHits") or []
+            if advisory_hits:
+                print(f"gate-vulns: advisory hits: {advisory_hits}")
+                return 1
         return 0
     parser.print_help()
     return 0
