@@ -2,6 +2,12 @@
 
 > Enterprise MCP gateway (policy / audit / multi-tenant) · **Status: local-mvp** · **Phase 1**
 
+> **Not [microsoft/mcp-gateway](https://github.com/microsoft/mcp-gateway).**
+> This is the oss-cash-lab Node policy/audit gateway (`@oss-cash-lab/mcp-gateway`).
+> Microsoft's repo is a Kubernetes + Entra reverse proxy (~785 stars). Same short name; different product.
+> Comparison: [`docs/vs-gateways.md`](./docs/vs-gateways.md).
+> If this bet is extracted, prefer a public name like `oss-mcp-gateway` (or `cash-mcp-gateway`). Do not rename this directory.
+
 ## Who pays / 谁付钱
 
 - Platform / Security / AI platform teams
@@ -68,7 +74,7 @@ Metrics: `GET /metrics` — Prometheus text (`tool_calls_total{tool,decision,ten
 JSON access logs (opt-in): `--log-json` or env `LOG_FORMAT=json` (env wins if CLI omitted) — one stdout JSON line per completed app request `{ts,level:info,msg:http,service,method,path,status,durationMs,requestId}` (optional `bytesOut`/`remote`); skips `/health` `/ready` `/metrics` and OPTIONS; `requestId` matches `X-Request-Id`. Default **off**.  
 Audit query: `GET /audit?tenant=&limit=&tool=&since=&until=&redact=` (events include `requestId`; live window = in-memory ring)  
 Export (paid wedge): `GET /audit/export?tenant=&format=json|csv&redact=1&since=ISO&until=ISO&gzip=1` (tenant key **or** admin token; JSON events + CSV column `requestId`; optional gzip; same retained window)  
-Admin SIEM CSV/Markdown/HTML: `GET /admin/audit.csv` + `GET /admin/audit.md` + `GET /admin/audit.html` + `GET /admin/audit?format=csv|json|md|html` (admin token **only**; **not public**; CSV `text/csv` / Markdown `text/markdown` / HTML `text/html`; columns `ts,tenantId,tool,allow,reason,via,requestId`; **no** args/headers/tokens/bodies; empty CSV → header only 200; empty Markdown → `# Audit` + header 200; empty HTML → heading + “no events” 200; gzip JSON stays on `/audit/export`; counts match the ring)  
+Admin SIEM CSV/Markdown/HTML: `GET /admin/audit.csv` + `GET /admin/audit.md` + `GET /admin/audit.html` + `GET /admin/audit?format=csv|json|md|html` (admin token **only**; **not public**; CSV `text/csv` / Markdown `text/markdown` / HTML `text/html`; columns `ts,tenantId,tool,allow,reason,via,requestId`; **no** args/headers/tokens/bodies; empty CSV → header only 200; empty Markdown → `# Audit` + header 200; empty HTML → heading + “no events” 200; optional `?tenant=` filters the retained window (unknown tenant → empty 200); gzip JSON stays on `/audit/export`; counts match the ring)  
 In-memory audit cap: default **10000** (`--audit-max` / `AUDIT_MAX_EVENTS`). Over cap, drop oldest. `0` = unlimited (**dangerous**, process can grow forever). Webhook fan-out still posts every new event. JSONL on disk still appends; live HTTP/export reads the ring.
 Offline pack: `node src/cli.js export-audit --config config/policy.json --out out/audit.json --format json|csv|md|html [--redact] [--since ISO] [--until ISO] [--gzip]` (reads JSONL file, not the live ring; `--format md` / `--format html` are SIEM-safe admin columns, no args/tokens; HTML prints to stdout when `--out` is omitted)  
 Reload: SIGHUP or POST `/admin/reload`; optional **`serve --watch`** polls config mtime every **300ms** (same reload path; logs `regenerated`)  
@@ -268,6 +274,8 @@ SIEM / spreadsheet / ops-doc archive of MCP tool-call audit (admin token require
 - **CSV**: `Content-Type: text/csv; charset=utf-8`. Columns `ts,tenantId,tool,allow,reason,via,requestId`. **Never** includes raw args, headers, tokens, or bodies. Empty log → header only, **200**.
 - **Markdown**: `Content-Type: text/markdown; charset=utf-8`. Heading `# Audit` plus a GFM table with the **same columns** (`|` escaped). Empty log → heading + header row only, **200**. Paste into Feishu/WeCom/Slack docs.
 - **HTML**: `Content-Type: text/html; charset=utf-8`. Self-contained local demo page (inline CSS, no CDN). Same columns; all text escaped (`& < > " '`). Deny vs allow rows are visually distinct. Empty log → heading + “no events” + header row, **200**. **Never** includes API keys, `Authorization`, args, or bodies.
+- **Tenant filter**: `?tenant=` on `GET /admin/audit` (and `.csv` / `.md` / `.html`) keeps events whose `tenantId` equals the value. Omit to list all retained events. Unknown tenant → empty **200** (JSON `count: 0`; CSV header only; Markdown heading + header; HTML “no events”). Same admin gate. Tenant API keys still **401**.
+- **Secrets**: admin token and tenant API keys never appear in the body. CSV/MD/HTML never include args/tokens. Proven in smoke (401 unauth, empty unknown tenant, no key leakage).
 - **Alias**: `GET /admin/audit?format=csv` (same CSV body). `GET /admin/audit?format=md` (same Markdown body). `GET /admin/audit?format=html` (same HTML body). `GET /admin/audit?format=json` (default) returns an uncompressed JSON pack — gzip stays on `GET /audit/export` (`?gzip=1` / `Accept-Encoding: gzip`).
 - CORS + `X-Request-Id` same as other admin GET.
 - Proven in `scripts/local-mvp.sh` (401 unauthenticated + 200 `text/html` after a tool call + secret/token not present). Stack-demo checks the OpenAPI path (`getAdminAuditHtml` / `format=html`) and unauth 401 (does not send an admin token).

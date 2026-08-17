@@ -1586,7 +1586,8 @@
             "in": "query",
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "When set, return only events whose tenantId equals this value. Unknown tenant yields empty 200 (JSON count 0; CSV header only; Markdown heading+header; HTML no events). Omit to list all retained events. Admin token required (same gate as other /admin/audit* routes)."
           },
           {
             "name": "tool",
@@ -1685,7 +1686,8 @@
             "in": "query",
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "When set, return only events whose tenantId equals this value. Unknown tenant yields empty 200 (JSON count 0; CSV header only; Markdown heading+header; HTML no events). Omit to list all retained events. Admin token required (same gate as other /admin/audit* routes)."
           },
           {
             "name": "tool",
@@ -1784,7 +1786,8 @@
             "in": "query",
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "When set, return only events whose tenantId equals this value. Unknown tenant yields empty 200 (JSON count 0; CSV header only; Markdown heading+header; HTML no events). Omit to list all retained events. Admin token required (same gate as other /admin/audit* routes)."
           },
           {
             "name": "tool",
@@ -1864,7 +1867,7 @@
           "audit"
         ],
         "summary": "Admin audit snapshot (json | csv | md | html)",
-        "description": "Admin-token-protected audit snapshot. Query `format=json` (default) is an uncompressed JSON pack (`ok`, `format`, `count`, `events`) — does **not** use `Accept-Encoding: gzip` (gzip stays on `GET /audit/export`). `format=csv` is the same SIEM-safe `text/csv` body as `GET /admin/audit.csv` (no args/tokens). `format=md` is the same `text/markdown` body as `GET /admin/audit.md` (`# Audit` GFM table; no args/tokens). `format=html` is the same `text/html` body as `GET /admin/audit.html` (self-contained table; no CDN; no args/tokens). Unknown format → **400** `unsupported_format`. Unauthenticated → **401** `unauthorized_admin`.",
+        "description": "Admin-token-protected audit snapshot. Query `format=json` (default) is an uncompressed JSON pack (`ok`, `format`, `count`, `events`) — does **not** use `Accept-Encoding: gzip` (gzip stays on `GET /audit/export`). `format=csv` is the same SIEM-safe `text/csv` body as `GET /admin/audit.csv` (no args/tokens). `format=md` is the same `text/markdown` body as `GET /admin/audit.md` (`# Audit` GFM table; no args/tokens). `format=html` is the same `text/html` body as `GET /admin/audit.html` (self-contained table; no CDN; no args/tokens). Unknown format → **400** `unsupported_format`. Unauthenticated → **401** `unauthorized_admin`. Query `tenant=` filters the retained window to that tenantId. Unknown tenant → empty **200**.",
         "operationId": "getAdminAudit",
         "security": [
           {
@@ -1897,7 +1900,8 @@
             "in": "query",
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "When set, return only events whose tenantId equals this value. Unknown tenant yields empty 200 (JSON count 0; CSV header only; Markdown heading+header; HTML no events). Omit to list all retained events. Admin token required (same gate as other /admin/audit* routes)."
           },
           {
             "name": "tool",

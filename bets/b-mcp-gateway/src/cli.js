@@ -839,6 +839,119 @@ if (cmd === "--version" || cmd === "-V") {
     try { await gwAdminHtml.close(); } catch { /* ignore */ }
     try { fs.unlinkSync(adminHtmlTmp); } catch { /* ignore */ }
   }
+  const adminTenantTmp = path.join("/tmp", "b-admin-audit-tenant-smoke.jsonl");
+  try { fs.unlinkSync(adminTenantTmp); } catch { /* ignore */ }
+  fs.writeFileSync(
+    adminTenantTmp,
+    JSON.stringify({
+      ts: "2026-08-13T00:00:00.000Z",
+      tenantId: "acme",
+      tool: "echo",
+      allow: true,
+      reason: "ok",
+      via: "builtin",
+      arguments: { token: "sk-secret-smoke" },
+      result: { Authorization: "Bearer sk-secret-smoke" },
+      requestId: "rid-acme",
+    }) + "\n" + JSON.stringify({
+      ts: "2026-08-13T00:00:01.000Z",
+      tenantId: "restricted",
+      tool: "echo",
+      allow: true,
+      reason: "ok",
+      via: "builtin",
+      arguments: { token: "sk-secret-smoke" },
+      requestId: "rid-restricted",
+    }) + "\n",
+    "utf8"
+  );
+  const gwAdminTenant = createServer({
+    policy: {
+      adminToken: "admin-dev-token",
+      allow: [],
+      deny: [],
+      tools: [],
+      tenants: [
+        { id: "acme", apiKey: "ten_acme_dev" },
+        { id: "restricted", apiKey: "ten_restricted_dev" },
+      ],
+    },
+    auditPath: adminTenantTmp,
+  });
+  await new Promise((resolve, reject) => {
+    gwAdminTenant.server.once("error", reject);
+    gwAdminTenant.server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const tenantPort = gwAdminTenant.server.address().port;
+    const tenantBase = "http://127.0.0.1:" + tenantPort;
+    const unauth = await fetch(tenantBase + "/admin/audit?tenant=acme");
+    const unauthBody = await unauth.json();
+    if (unauth.status !== 401 || unauthBody.error !== "unauthorized_admin") {
+      console.error("smoke failed admin audit?tenant= unauth", unauth.status, unauthBody);
+      process.exit(1);
+    }
+    const tenantKey = await fetch(tenantBase + "/admin/audit?tenant=acme", {
+      headers: { authorization: "Bearer ten_acme_dev" },
+    });
+    const tenantKeyBody = await tenantKey.json();
+    if (tenantKey.status !== 401 || tenantKeyBody.error !== "unauthorized_admin") {
+      console.error("smoke failed admin audit?tenant= tenant key", tenantKey.status, tenantKeyBody);
+      process.exit(1);
+    }
+    const unknown = await fetch(tenantBase + "/admin/audit?tenant=no-such-tenant", {
+      headers: { "x-admin-token": "admin-dev-token" },
+    });
+    const unknownBody = await unknown.json();
+    const unknownDump = JSON.stringify(unknownBody);
+    if (
+      unknown.status !== 200 ||
+      unknownBody.count !== 0 ||
+      !Array.isArray(unknownBody.events) ||
+      unknownBody.events.length !== 0 ||
+      unknownDump.includes("sk-secret-smoke") ||
+      unknownDump.includes("admin-dev-token") ||
+      unknownDump.includes("ten_acme_dev")
+    ) {
+      console.error("smoke failed admin audit?tenant= unknown empty 200", unknown.status, unknownBody);
+      process.exit(1);
+    }
+    const acme = await fetch(tenantBase + "/admin/audit?tenant=acme", {
+      headers: { "x-admin-token": "admin-dev-token" },
+    });
+    const acmeBody = await acme.json();
+    const acmeDump = JSON.stringify(acmeBody);
+    const acmeTenants = (acmeBody.events || []).map((e) => e.tenantId);
+    if (
+      acme.status !== 200 ||
+      acmeBody.count !== 1 ||
+      acmeTenants.join(",") !== "acme" ||
+      acmeDump.includes("rid-restricted") ||
+      acmeDump.includes("admin-dev-token") ||
+      acmeDump.includes("ten_acme_dev")
+    ) {
+      console.error("smoke failed admin audit?tenant=acme", acme.status, acmeBody);
+      process.exit(1);
+    }
+    const acmeCsv = await fetch(tenantBase + "/admin/audit.csv?tenant=acme", {
+      headers: { "x-admin-token": "admin-dev-token" },
+    });
+    const acmeCsvText = await acmeCsv.text();
+    if (
+      acmeCsv.status !== 200 ||
+      !acmeCsvText.includes("rid-acme") ||
+      acmeCsvText.includes("rid-restricted") ||
+      acmeCsvText.includes("sk-secret-smoke") ||
+      acmeCsvText.includes("admin-dev-token") ||
+      acmeCsvText.includes("ten_acme_dev")
+    ) {
+      console.error("smoke failed admin audit.csv?tenant=acme", acmeCsv.status, acmeCsvText);
+      process.exit(1);
+    }
+  } finally {
+    try { await gwAdminTenant.close(); } catch { /* ignore */ }
+    try { fs.unlinkSync(adminTenantTmp); } catch { /* ignore */ }
+  }
   const unlim = [];
   for (let i = 0; i < 5; i++) pushAuditEvent(unlim, { i }, 0);
   if (unlim.length !== 5) {
