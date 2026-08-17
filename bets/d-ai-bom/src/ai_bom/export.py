@@ -1,10 +1,11 @@
-"""BOM exporters: internal JSON (default), CycloneDX 1.7 JSON/XML, SPDX 2.3 JSON/XML, SARIF 2.1.0, Markdown summary, GHA annotations, HTML summary.
+"""BOM exporters: internal JSON (default), CycloneDX 1.7 JSON/XML, SPDX 2.3 JSON/XML, SPDX 3.0.1 JSON, SARIF 2.1.0, Markdown summary, GHA annotations, HTML summary.
 
-No extra deps. Valid enough that jq can read .bomFormat / .spdxVersion / .version.
+No extra deps. Valid enough that jq can read .bomFormat / .spdxVersion / .creationInfo.specVersion / .version.
 The scan result (custom AI-BOM with summary) stays the internal model.
 SARIF reuses scanner.to_sarif (same builder as CLI --sarif).
 CycloneDX XML reuses to_cyclonedx (same components/licenses/properties).
 SPDX XML reuses to_spdx (same packages/licenseConcluded).
+SPDX 3 (`spdx3`) is a compact 3.0.1 JSON document from the same scan fields (not a full graph).
 Markdown (`md`) is a human/Slack summary of summary counts — not another SBOM spec.
 GHA (`gha` / `annotations`) is GitHub Actions workflow commands (`::error` / `::notice`) — not an SBOM spec.
 HTML (`html`) is a self-contained BOM summary (stdlib `html.escape`, inline CSS, no CDN) — not an SBOM spec.
@@ -21,10 +22,10 @@ from urllib.parse import quote
 
 from ai_bom import __version__
 
-FORMATS = ("json", "cyclonedx", "spdx", "sarif", "cyclonedx-xml", "spdx-xml", "md", "gha", "html")
+FORMATS = ("json", "cyclonedx", "spdx", "sarif", "cyclonedx-xml", "spdx-xml", "spdx3", "md", "gha", "html")
 DEFAULT_FORMAT = "json"
-FORMAT_ALIASES = {"cdx-xml": "cyclonedx-xml", "spdxxml": "spdx-xml", "markdown": "md", "annotations": "gha"}
-FORMATS_HELP = "json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|sarif|md|gha|html"
+FORMAT_ALIASES = {"cdx-xml": "cyclonedx-xml", "spdxxml": "spdx-xml", "spdx-3": "spdx3", "markdown": "md", "annotations": "gha"}
+FORMATS_HELP = "json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html"
 FORMAT_CHOICES = (*FORMATS, *FORMAT_ALIASES)
 
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
@@ -38,6 +39,8 @@ CDX_XMLNS = "http://cyclonedx.org/schema/bom/1.7"
 
 CDX_SPEC_VERSION = "1.7"
 SPDX_VERSION = "SPDX-2.3"
+SPDX3_SPEC_VERSION = "3.0.1"
+SPDX3_CONTEXT = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 
 _SPDX_REF_SAFE = re.compile(r"[^A-Za-z0-9.-]+")
 
@@ -58,7 +61,7 @@ _CDX_TYPE = {
 
 
 def normalize_format(raw: str | None) -> str | None:
-    """Return json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|sarif|md|gha|html. Empty/None → json. Unknown → None."""
+    """Return json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html. Empty/None → json. Unknown → None."""
     if raw is None:
         return DEFAULT_FORMAT
     s = str(raw).strip().lower()
@@ -371,6 +374,156 @@ def to_spdx(bom: dict[str, Any]) -> dict[str, Any]:
     if extracted:
         doc["hasExtractedLicensingInfos"] = extracted
     return doc
+
+
+def _spdx3_local_id(kind: str, name: str, idx: int) -> str:
+    raw = _SPDX_REF_SAFE.sub("-", str(name or "component")).strip("-") or "component"
+    return f"SPDXRef-{kind}-{idx}-{raw[:64]}"
+
+
+def to_spdx3(bom: dict[str, Any]) -> dict[str, Any]:
+    """SPDX 3.0.1 JSON from the internal AI-BOM.
+
+    Compact SpdxDocument: spdxId, name, creationInfo (specVersion 3.0.1),
+    element[] of software_Package + simplelicensing_LicenseExpression.
+    Licenses reuse the same concluded values as SPDX 2.3.
+    Not a full SPDX 3 graph — omitted fields are listed on `comment`.
+    """
+    summary = bom.get("summary") or {}
+    name = _root_name(bom)
+    ns_uuid = _stable_uuid(bom, "spdx3")
+    namespace = (
+        "https://github.com/wozqhl/oss-cash-lab/spdxdocs/"
+        f"ai-bom-{quote(name, safe='')}-{ns_uuid}"
+    )
+    agent_id = f"{namespace}#SPDXRef-Agent-ai-bom"
+    tool_id = f"{namespace}#SPDXRef-Tool-ai-bom"
+    creation_info: dict[str, Any] = {
+        "type": "CreationInfo",
+        "specVersion": SPDX3_SPEC_VERSION,
+        "created": _utc_now(),
+        "createdBy": [agent_id],
+        "createdUsing": [tool_id],
+    }
+    agent = {
+        "type": "Agent",
+        "spdxId": agent_id,
+        "name": "ai-bom",
+        "creationInfo": creation_info,
+    }
+    tool = {
+        "type": "Tool",
+        "spdxId": tool_id,
+        "name": "ai-bom",
+        "creationInfo": creation_info,
+        "comment": f"version {__version__}",
+    }
+
+    root_pkg_id = f"{namespace}#SPDXRef-Package-root"
+    packages: list[dict[str, Any]] = [
+        {
+            "type": "software_Package",
+            "spdxId": root_pkg_id,
+            "name": name,
+            "creationInfo": creation_info,
+            "software_downloadLocation": "NOASSERTION",
+            "software_copyrightText": "NOASSERTION",
+            "comment": f"ai-bom scan root path={_root_path(bom) or '.'}",
+        }
+    ]
+    license_elems: list[dict[str, Any]] = []
+    relationships: list[dict[str, Any]] = []
+    license_ids: dict[str, str] = {}
+
+    def _license_id(expr: str) -> str:
+        if expr in license_ids:
+            return license_ids[expr]
+        idx = len(license_ids)
+        safe = _SPDX_REF_SAFE.sub("-", expr).strip("-") or "unknown"
+        lid = f"{namespace}#SPDXRef-License-{idx}-{safe[:48]}"
+        license_ids[expr] = lid
+        license_elems.append(
+            {
+                "type": "simplelicensing_LicenseExpression",
+                "spdxId": lid,
+                "name": expr,
+                "creationInfo": creation_info,
+                "simplelicensing_licenseExpression": expr,
+            }
+        )
+        return lid
+
+    def _license_rels(pkg_id: str, expr: str, tag: str) -> None:
+        lic_id = _license_id(expr)
+        for rel_type in ("hasConcludedLicense", "hasDeclaredLicense"):
+            relationships.append(
+                {
+                    "type": "Relationship",
+                    "spdxId": f"{namespace}#SPDXRef-Relationship-{tag}-{rel_type}",
+                    "name": rel_type,
+                    "creationInfo": creation_info,
+                    "from": pkg_id,
+                    "relationshipType": rel_type,
+                    "to": [lic_id],
+                }
+            )
+
+    _license_rels(root_pkg_id, "NOASSERTION", "root")
+
+    for i, src in enumerate(bom.get("components") or []):
+        if not isinstance(src, dict):
+            continue
+        cname = str(src.get("name") or f"component-{i}")
+        licenses = src.get("licenses") if isinstance(src.get("licenses"), list) else []
+        concluded = _license_concluded(licenses)
+        pkg_id = f"{namespace}#{_spdx3_local_id('Package', cname, i)}"
+        pkg: dict[str, Any] = {
+            "type": "software_Package",
+            "spdxId": pkg_id,
+            "name": cname,
+            "creationInfo": creation_info,
+            "software_downloadLocation": "NOASSERTION",
+            "software_copyrightText": "NOASSERTION",
+        }
+        version = src.get("version")
+        if version not in (None, ""):
+            pkg["software_packageVersion"] = str(version)
+        purl = src.get("purl")
+        if purl:
+            pkg["software_packageUrl"] = str(purl)
+        ctype = src.get("type")
+        if ctype:
+            pkg["comment"] = f"ai-bom component type={ctype}"
+        packages.append(pkg)
+        _license_rels(pkg_id, concluded, str(i))
+
+    policy_hits = int(summary.get("policyHits") or 0)
+    waived_n = len(summary.get("waived") or [])
+    comment = (
+        f"Generated by ai-bom {__version__}. SPDX 3.0.1 compact JSON from scan data. "
+        "Filled: SpdxDocument (spdxId, name, creationInfo.specVersion=3.0.1), "
+        "software_Package elements, simplelicensing_LicenseExpression, "
+        "hasConcludedLicense/hasDeclaredLicense from scanned manifests "
+        f"(summary.policyHits={policy_hits}"
+        + (f" waived={waived_n}" if waived_n else "")
+        + "). "
+        "Omitted (scanner lacks data — not invented): software_File, Hash/verifiedUsing, "
+        "contains/dependsOn graph, SPDX 3 AI profile / model cards, security/CVE profile, "
+        "ExpandedLicensing parse trees, CBOM/crypto assets, copyright text beyond NOASSERTION, "
+        "external document map. Policy hits are not CVEs."
+    )
+
+    return {
+        "@context": SPDX3_CONTEXT,
+        "type": "SpdxDocument",
+        "spdxId": namespace,
+        "name": f"ai-bom-{name}",
+        "creationInfo": creation_info,
+        "profileConformance": ["core", "software", "simpleLicensing"],
+        "rootElement": [root_pkg_id],
+        "element": [agent, tool, *packages, *license_elems, *relationships],
+        "comment": comment,
+    }
 
 
 def content_type_for(fmt: str | None = DEFAULT_FORMAT) -> str:
@@ -928,6 +1081,7 @@ def to_html(bom: dict[str, Any], *, watch: bool = False, include_nav: bool = Fal
   <a href="/v1/bom?format=cyclonedx-xml">cyclonedx-xml</a>
   <a href="/v1/bom?format=spdx">spdx</a>
   <a href="/v1/bom?format=spdx-xml">spdx-xml</a>
+  <a href="/v1/bom?format=spdx3">spdx3</a>
   <a href="/v1/bom?format=sarif">sarif</a>
   <a href="/v1/bom.md">md</a>
   <a href="/v1/bom.gha.txt">gha</a>
@@ -985,7 +1139,7 @@ Policy: <code>{policy_label}</code></p>
 
 
 def dumps_export(bom: dict[str, Any], fmt: str | None = DEFAULT_FORMAT) -> str:
-    """Serialize BOM as json (internal), cyclonedx, cyclonedx-xml, spdx, spdx-xml, sarif, md, gha, or html. Raises ValueError on bad fmt."""
+    """Serialize BOM as json (internal), cyclonedx, cyclonedx-xml, spdx, spdx-xml, spdx3, sarif, md, gha, or html. Raises ValueError on bad fmt."""
     kind = normalize_format(fmt)
     if kind is None:
         raise ValueError(f"unsupported format (use {FORMATS_HELP})")
@@ -997,6 +1151,8 @@ def dumps_export(bom: dict[str, Any], fmt: str | None = DEFAULT_FORMAT) -> str:
         return json.dumps(to_spdx(bom), indent=2, ensure_ascii=False) + "\n"
     if kind == "spdx-xml":
         return to_spdx_xml(bom)
+    if kind == "spdx3":
+        return json.dumps(to_spdx3(bom), indent=2, ensure_ascii=False) + "\n"
     if kind == "sarif":
         from ai_bom.scanner import dumps_sarif, to_sarif
 

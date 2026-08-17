@@ -4,6 +4,11 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### SPDX 3.0.1 JSON
+
+- `--format spdx3` / `GET /v1/bom?format=spdx3` (alias `spdx-3`) emits compact **SPDX 3.0.1** JSON (`creationInfo.specVersion=3.0.1`, `spdxId`, `name`, `element` of `software_Package` + license expressions). Existing `spdx` / `spdx-xml` stay **SPDX 2.3**.
+- Filled from scan data only. Omitted (not invented): files, hashes, contains/dependsOn graph, SPDX 3 AI/security profiles, ExpandedLicensing, CBOM.
+
 ### CycloneDX 1.7 + ML-BOM
 
 - `--format cyclonedx` / `cyclonedx-xml` (and `GET /v1/bom?format=`) now emit **CycloneDX 1.7** (`specVersion=1.7`, XML xmlns `bom/1.7`).

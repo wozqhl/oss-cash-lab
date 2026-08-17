@@ -71,6 +71,29 @@ assert "summary" not in doc
 print("cli --format spdx ok", doc["spdxVersion"], "packages=", len(doc["packages"]))
 PYSPDX
 
+echo "==> scan --format spdx3 (SPDX 3.0.1 JSON)"
+python3 -m ai_bom scan examples/sample-app \
+  --policy policies/default.json \
+  --format spdx3 \
+  --out out/bom.spdx3.json
+test -f out/bom.spdx3.json
+python3 - <<"PYSPDX3"
+import json
+from pathlib import Path
+doc = json.loads(Path("out/bom.spdx3.json").read_text())
+ci = doc.get("creationInfo") or {}
+assert ci.get("specVersion") == "3.0.1", ci
+assert doc.get("type") == "SpdxDocument", doc.get("type")
+assert isinstance(doc.get("spdxId"), str) and doc["spdxId"]
+assert isinstance(doc.get("name"), str) and doc["name"]
+elems = [e for e in (doc.get("element") or []) if isinstance(e, dict)]
+pkgs = [e for e in elems if str(e.get("type") or "").endswith("Package")]
+assert pkgs, "expected software_Package elements"
+assert any("LicenseExpression" in str(e.get("type") or "") for e in elems)
+assert "summary" not in doc
+print("cli --format spdx3 ok", ci["specVersion"], "packages=", len(pkgs))
+PYSPDX3
+
 echo "==> scan --format cyclonedx (CycloneDX 1.7 JSON)"
 python3 -m ai_bom scan examples/sample-app \
   --policy policies/default.json \
@@ -957,6 +980,21 @@ assert any(
 ), "cyclonedx components need MIT"
 print("http cyclonedx ok", cdx["bomFormat"], cdx["specVersion"], "components=", len(cdx.get("components") or []))
 PYCDX
+
+echo "==> GET /v1/bom?format=spdx3 (SPDX 3.0.1)"
+curl -sf "http://127.0.0.1:$PORT/v1/bom?format=spdx3" -o out/serve-bom-spdx3.json
+test -s out/serve-bom-spdx3.json
+python3 - <<"PYSPDX3HTTP"
+import json
+from pathlib import Path
+doc = json.loads(Path("out/serve-bom-spdx3.json").read_text())
+ci = doc.get("creationInfo") or {}
+assert ci.get("specVersion") == "3.0.1", ci
+assert doc.get("type") == "SpdxDocument"
+assert doc.get("spdxId")
+assert isinstance(doc.get("element"), list) and doc["element"]
+print("http ?format=spdx3 ok", ci["specVersion"], "elements=", len(doc["element"]))
+PYSPDX3HTTP
 curl -sf "http://127.0.0.1:$PORT/v1/bom" -o out/serve-bom-v1.json
 python3 - <<"PYV1"
 import json
@@ -1272,7 +1310,7 @@ assert "ExceptionInventory" in ((spec.get("components") or {}).get("schemas") or
 params = (spec.get("components") or {}).get("parameters") or {}
 assert "BomFormat" in params, params
 enum = ((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or []
-assert "sarif" in enum and "json" in enum and "cyclonedx" in enum and "cyclonedx-xml" in enum and "spdx" in enum and "spdx-xml" in enum and "md" in enum and "gha" in enum and "html" in enum, enum
+assert "sarif" in enum and "json" in enum and "cyclonedx" in enum and "cyclonedx-xml" in enum and "spdx" in enum and "spdx-xml" in enum and "spdx3" in enum and "md" in enum and "gha" in enum and "html" in enum, enum
 assert "get" in (paths.get("/evidence.md") or {})
 assert "get" in (paths.get("/") or {})
 assert "get" in (paths.get("/metrics") or {})
@@ -1738,4 +1776,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList)"

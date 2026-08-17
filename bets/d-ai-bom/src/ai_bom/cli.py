@@ -48,6 +48,7 @@ from ai_bom.export import (
     to_html,
     to_markdown,
     to_spdx,
+    to_spdx3,
     to_spdx_xml,
 )
 from ai_bom.cors import (
@@ -151,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         "--format",
         default=DEFAULT_FORMAT,
         choices=list(FORMAT_CHOICES),
-        help="BOM export: json (default internal model), cyclonedx (CycloneDX 1.7 JSON), cyclonedx-xml (CycloneDX 1.7 XML; alias cdx-xml), spdx (SPDX 2.3 JSON), spdx-xml (SPDX 2.3 XML; alias spdxxml), sarif (SARIF 2.1.0; same builder as --sarif PATH), md (human/Slack Markdown summary; alias markdown), gha (GitHub Actions ::error/::notice workflow commands; alias annotations), html (self-contained HTML BOM summary; no CDN)",
+        help="BOM export: json (default internal model), cyclonedx (CycloneDX 1.7 JSON), cyclonedx-xml (CycloneDX 1.7 XML; alias cdx-xml), spdx (SPDX 2.3 JSON), spdx-xml (SPDX 2.3 XML; alias spdxxml), spdx3 (SPDX 3.0.1 JSON; alias spdx-3), sarif (SARIF 2.1.0; same builder as --sarif PATH), md (human/Slack Markdown summary; alias markdown), gha (GitHub Actions ::error/::notice workflow commands; alias annotations), html (self-contained HTML BOM summary; no CDN)",
     )
     p_scan.add_argument(
         "--evidence",
@@ -568,12 +569,16 @@ def main(argv: list[str] | None = None) -> int:
             and normalize_format("spdx-xml") == "spdx-xml"
             and normalize_format("SPDX-XML") == "spdx-xml"
             and normalize_format("spdxxml") == "spdx-xml"
+            and normalize_format("spdx3") == "spdx3"
+            and normalize_format("SPDX3") == "spdx3"
+            and normalize_format("spdx-3") == "spdx3"
             and "json" in FORMATS
             and "cyclonedx" in FORMATS
             and "spdx" in FORMATS
             and "sarif" in FORMATS
             and "cyclonedx-xml" in FORMATS
             and "spdx-xml" in FORMATS
+            and "spdx3" in FORMATS
             and "md" in FORMATS
             and "gha" in FORMATS
             and "html" in FORMATS
@@ -747,6 +752,46 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not spdx_xml_ok:
             print("smoke failed spdx-xml export")
+            return 1
+
+        spdx3_doc = to_spdx3(bom)
+        spdx3_dump = dumps_export(bom, "spdx3")
+        empty_spdx3 = dumps_export(
+            {"summary": {}, "components": [], "metadata": {"component": {"name": "empty"}}}
+        , "spdx3")
+        try:
+            spdx3_obj = json.loads(spdx3_dump)
+            empty_spdx3_obj = json.loads(empty_spdx3)
+        except Exception:
+            spdx3_obj = {}
+            empty_spdx3_obj = {}
+        spdx3_elems = [e for e in (spdx3_doc.get("element") or []) if isinstance(e, dict)]
+        spdx3_pkgs = [e for e in spdx3_elems if str(e.get("type") or "").endswith("Package")]
+        spdx3_lics = [
+            e for e in spdx3_elems if "LicenseExpression" in str(e.get("type") or "")
+        ]
+        ci = spdx3_doc.get("creationInfo") if isinstance(spdx3_doc.get("creationInfo"), dict) else {}
+        empty_ci = empty_spdx3_obj.get("creationInfo") if isinstance(empty_spdx3_obj.get("creationInfo"), dict) else {}
+        spdx3_ok = (
+            spdx3_doc.get("type") == "SpdxDocument"
+            and isinstance(spdx3_doc.get("spdxId"), str)
+            and spdx3_doc.get("spdxId")
+            and isinstance(spdx3_doc.get("name"), str)
+            and spdx3_doc.get("name")
+            and ci.get("specVersion") == "3.0.1"
+            and bool(spdx3_pkgs)
+            and bool(spdx3_lics)
+            and any(e.get("simplelicensing_licenseExpression") for e in spdx3_lics)
+            and spdx3_obj.get("creationInfo", {}).get("specVersion") == "3.0.1"
+            and dumps_export(bom, "spdx-3") == spdx3_dump
+            and empty_ci.get("specVersion") == "3.0.1"
+            and empty_spdx3_obj.get("type") == "SpdxDocument"
+            and isinstance(empty_spdx3_obj.get("element"), list)
+            and fixture_name is not None
+            and fixture_name in spdx3_dump
+        )
+        if not spdx3_ok:
+            print("smoke failed spdx3 export", ci.get("specVersion"), len(spdx3_pkgs), len(spdx3_lics))
             return 1
 
         md_text = to_markdown(bom)
@@ -1686,6 +1731,7 @@ def main(argv: list[str] | None = None) -> int:
             and "json" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and "cyclonedx-xml" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and "spdx-xml" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
+            and "spdx3" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and "md" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and "gha" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and "html" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
@@ -1896,6 +1942,22 @@ def main(argv: list[str] | None = None) -> int:
                     alias_spdx_xml = resp.read().decode("utf-8")
                     if not alias_spdx_xml.lstrip().startswith("<SpdxDocument") or "SPDX-2.3" not in alias_spdx_xml:
                         print(f"smoke failed HTTP /v1/bom.spdx.xml {alias_spdx_xml[:80]!r}")
+                        return 1
+                with urllib.request.urlopen(base + "/v1/bom?format=spdx3") as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    spdx3_http = json.loads(resp.read().decode("utf-8"))
+                    if resp.status != 200:
+                        print(f"smoke failed HTTP spdx3 status {resp.status}")
+                        return 1
+                    http_ci = spdx3_http.get("creationInfo") if isinstance(spdx3_http.get("creationInfo"), dict) else {}
+                    if http_ci.get("specVersion") != "3.0.1":
+                        print(f"smoke failed HTTP spdx3 specVersion {http_ci}")
+                        return 1
+                    if not spdx3_http.get("spdxId") or not isinstance(spdx3_http.get("element"), list):
+                        print(f"smoke failed HTTP spdx3 body keys {list(spdx3_http)}")
+                        return 1
+                    if "json" not in ctype:
+                        print(f"smoke failed HTTP spdx3 content-type {ctype}")
                         return 1
                 with urllib.request.urlopen(base + "/v1/bom?format=md") as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
@@ -2468,7 +2530,7 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList")
         return 0
     if args.cmd == "policy":
         target = Path(args.path)

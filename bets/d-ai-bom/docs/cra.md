@@ -19,13 +19,14 @@ Two dates people mix up:
 
 Until December 2027, an SBOM export from this tool is a **preparation / inventory aid**, not proof that a product meets CRA essential requirements. After that date, manufacturers still need their own legal assessment of scope, product class, and residual risk. This scanner does not decide whether your product is in scope.
 
-BSI **TR-03183-2** (German interpretation of CRA SBOM practice) treats **CycloneDX 1.6+** or **SPDX 3.0.1+** as the expected machine-readable forms. This tool emits **CycloneDX 1.7** (JSON and XML) and **SPDX 2.3** (JSON and XML). CycloneDX 1.7 satisfies the CycloneDX 1.6+ reading; SPDX 2.3 does **not** claim SPDX 3.0.1 compatibility.
+BSI **TR-03183-2** (German interpretation of CRA SBOM practice) treats **CycloneDX 1.6+** or **SPDX 3.0.1+** as the expected machine-readable forms. This tool emits **CycloneDX 1.7** (JSON and XML), **SPDX 2.3** (JSON and XML, existing consumers), and **SPDX 3.0.1** JSON (`--format spdx3`). CycloneDX 1.7 satisfies the CycloneDX 1.6+ reading; SPDX 3.0.1 satisfies the SPDX 3.0.1+ reading. The “either format” claim is therefore honest. SPDX 2.3 remains available and does **not** itself claim SPDX 3 compatibility.
 
 ## What this tool emits
 
 - **Internal AI-BOM JSON** (default): CycloneDX-like `bomFormat` + `specVersion` plus a custom `summary` (policy hits, license counts). Not a conformance document.
 - **CycloneDX 1.7** (`--format cyclonedx` / `cyclonedx-xml`): `bomFormat=CycloneDX`, `specVersion=1.7`, XML `xmlns` `http://cyclonedx.org/schema/bom/1.7`. Components keep `type` / `name` / `version` / `purl` / `licenses[]`. Models map to `machine-learning-model` with a `modelCard` filled **only** from scan data the scanner already has (`aibom:format` such as `gguf`, `aibom:sourcePath` basename). Prompts map to `data` + a `data[]` configuration entry (name only — **no file contents**). Policy hits are BOM `properties` (`aibom:policyHits`, optional `aibom:forbiddenLicenses`), **not** `vulnerabilities`.
-- **SPDX 2.3** (`--format spdx` / `spdx-xml`): packages + `licenseConcluded` from scanned manifests.
+- **SPDX 2.3** (`--format spdx` / `spdx-xml`): packages + `licenseConcluded` from scanned manifests (existing consumers unchanged).
+- **SPDX 3.0.1** (`--format spdx3`): compact JSON with `spdxId`, `name`, `creationInfo.specVersion=3.0.1`, and `element` packages/licenses from the same scan. Not a full SPDX 3 graph (no invented files, hashes, AI/security profiles, or CBOM).
 - **SARIF 2.1.0** / Markdown / GHA annotations / HTML: review formats, not SBOMs.
 - **License-policy gate**: `policies/default.json` `forbiddenLicenseIds` (GPL-3.0 / AGPL-3.0 / SSPL-1.0 + variants). `--gate-licenses` exits **1** on a match; `--strict` also fails on pickle / disclosure gaps.
 
@@ -37,7 +38,7 @@ CycloneDX has supported **ML-BOM** since **1.5**. Spec **1.7** was published **2
 - CRA, EU AI Act, or any other **certification**, attestation, or CE mark.
 - Completeness of the component inventory (heuristic directory scan; caps; no registry enrichment).
 - Vulnerability intelligence, exploitability, or Article 14 incident reporting.
-- SPDX 3.x, cryptographic-asset (CBOM) completeness, or model-card fields the scan did not observe (no invented architecture, datasets, or metrics).
+- A full SPDX 3 relationship graph, cryptographic-asset (CBOM) completeness, or model-card fields the scan did not observe (no invented architecture, datasets, or metrics). SPDX 3.0.1 export is compact (document + packages/licenses only).
 - That emitting CycloneDX 1.7 **equals** CRA essential-requirement compliance.
 
 Use the license fixtures to see the gate, not a regulator:
@@ -53,4 +54,4 @@ python3 -m ai_bom scan examples/cra-fixtures/license-fail --policy policies/defa
 
 《网络弹性法案》Regulation (EU) 2024/2847 于 **2024-12-10** 生效。**第 14 条**报告义务自 **2026-09-11** 起；含 SBOM 在内的完整基本要求自 **2027-12-11** 起适用。二者不是同一天。
 
-本工具导出 **CycloneDX 1.7**（JSON/XML）与 **SPDX 2.3**，并带许可证策略门禁（`--gate-licenses`）。这是库存/准备辅助，**不是** CRA 合格评定、CE 标志或 BSI 认证。BSI TR-03183-2 的解读是 CycloneDX 1.6+ 或 SPDX 3.0.1+；本工具的 SPDX 2.3 **不**声称兼容 SPDX 3。未观察到的模型卡字段不会编造。正式页面：<https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act>；ML-BOM 指南：<https://cyclonedx.org/guides/OWASP_CycloneDX-Authoritative-Guide-to-AI-ML-BOM-en.pdf>。
+本工具导出 **CycloneDX 1.7**（JSON/XML）、**SPDX 2.3**（兼容旧消费者）与 **SPDX 3.0.1** JSON（`--format spdx3`），并带许可证策略门禁（`--gate-licenses`）。这是库存/准备辅助，**不是** CRA 合格评定、CE 标志或 BSI 认证。BSI TR-03183-2 的解读是 CycloneDX 1.6+ **或** SPDX 3.0.1+；二者现均可导出，故“任一格式”的说法是诚实的。未观察到的 SPDX 3 图/模型卡字段不会编造。正式页面：<https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act>；ML-BOM 指南：<https://cyclonedx.org/guides/OWASP_CycloneDX-Authoritative-Guide-to-AI-ML-BOM-en.pdf>。
