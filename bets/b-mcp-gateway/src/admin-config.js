@@ -11,6 +11,7 @@ import {
   DEFAULT_SESSION_MAX_IDS,
 } from "./mcp-http.js";
 import { resolveRotateGraceSec, DEFAULT_TOKEN_ROTATE_GRACE_SEC } from "./policy.js";
+import { resolveRedactConfig } from "./redact.js";
 
 /** Keys that must never appear on GET /admin/config (case-insensitive). */
 export const FORBIDDEN_ADMIN_CONFIG_KEYS = [
@@ -119,6 +120,7 @@ export function summarizeConfigForAdmin({
   } else if (up && (up.baseUrl || up.url)) {
     upstream.type = "http";
   }
+  const redact = resolveRedactConfig(pol);
   return {
     ok: true,
     sessionTtlSec: finiteNonNeg(sessionTtlSec, resolveSessionTtlSec()),
@@ -130,6 +132,11 @@ export function summarizeConfigForAdmin({
     upstream,
     tenants: { count: tenantCount(pol) },
     webhooks: { count: dests.length, destinations: dests },
+    redact: {
+      enabled: Boolean(redact.enabled),
+      upstream: Boolean(redact.upstream),
+      fields: Array.isArray(redact.fields) ? redact.fields.slice() : ["*"],
+    },
   };
 }
 

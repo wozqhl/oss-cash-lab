@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "MCP Gateway API",
-    "description": "Enterprise MCP gateway: health, tools list/call, audit query/export, admin reload, admin tenants list, admin tenant API token rotation (`POST /admin/tenants/{tenantId}/rotate`). Auth via API key (X-Api-Key or Bearer) for tenants; admin token for reload, tenant inventory (`GET /admin/tenants`), redacted runtime config (`GET /admin/config` / `adminGetConfig`; **no** secrets), SIEM audit CSV (`GET /admin/audit.csv`), Markdown (`GET /admin/audit.md`), and HTML (`GET /admin/audit.html` / `GET /admin/audit?format=csv|json|md|html`; columns `ts,tenantId,tool,allow,reason,via,requestId`; **no** args/headers/tokens/bodies; empty CSV → header only; empty Markdown → heading + header; empty HTML → heading + “no events”), and cross-tenant audit. In-memory audit ring buffer: default max **10000** events (`--audit-max` / `AUDIT_MAX_EVENTS`; `0` = unlimited, dangerous). Over cap, drop oldest. Live `GET /audit`, `GET /audit/export`, and `GET /admin/audit` (CSV/JSON/Markdown/HTML) see only the retained window; webhook fan-out still posts every new event. Prometheus gauges `audit_events` and `audit_retained`. Optional per-tenant `ipAllowlist` (exact IPv4/IPv6 or IPv4 CIDR /8,/16,/24): client IP from X-Forwarded-For first hop or socket remoteAddress; mismatch → 403 `{error:\"forbidden\",reason:\"ip_denied\"}`. Prometheus `GET /metrics` includes `tool_calls_total`, `rate_limited_total`, optional `ip_denied_total`, `http_requests_total`. Optional `maxBodyBytes` (default 1048576; per-tenant override): POST body over limit → 413 `{error:\"payload_too_large\"}` before JSON parse (Content-Length early or stream count). Prometheus `body_too_large_total`. Optional `cors: { origins: [\"*\"] or explicit list, methods, headers }`. Default omitted/empty `origins` = no CORS headers (deny). When enabled with an explicit list, OPTIONS preflight for a listed Origin → 204 with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin → 403 `{error:\"forbidden\",reason:\"cors_denied\"}`. Matching GET/POST include ACAO. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 503 `Retry-After`). Optional `upstream.timeoutMs` (default 5000): HTTP and stdio upstream calls abort after the timeout. `POST /tools/call` timeout → 504 `{error:\"upstream_timeout\"}`; Prometheus `upstream_timeout_total`; audit `reason=upstream_timeout`. Optional `X-Request-Id` request header: echoed on **every** response. If omitted or empty, the gateway generates a UUID. The same value is stored as `requestId` on audit JSONL events (`GET /audit`, `GET /audit/export`, CLI `export-audit`) and webhook payloads. Optional gzip on audit export: query `gzip=1|true` or request header `Accept-Encoding: gzip` returns a gzipped body with `Content-Encoding: gzip` and `Content-Disposition` filename ending in `.json.gz` / `.csv.gz`. Explicit `gzip=0` disables compression even if Accept-Encoding includes gzip. Uncompressed JSON/CSV remains the default. CLI: `export-audit --gzip --out out/audit.json.gz`. Optional `upstream.breaker: { failureThreshold: 3, openMs: 2000 }` (omitted/`enabled:false`/threshold 0 = disabled). Consecutive `upstream_timeout` and 5xx/connect errors open the circuit: further `POST /tools/call` to that upstream return **503** `{error:\"circuit_open\"}` without calling upstream until `openMs` elapses (half-open: one probe). **503** includes `Retry-After` (remaining seconds until `openUntil`, minimum 1). Audit `reason=circuit_open`; Prometheus `circuit_open_total`. When the breaker is enabled, `GET /health` includes `breaker: { state: closed|open|half_open, failures, openUntil }` (ISO-8601 or null; **no secrets**). The `breaker` field is omitted when disabled so liveness stays `{ok:true}`. `GET /health` is liveness: always 200 `{ok:true}` even if the circuit is open. `GET /ready` is readiness: 200 `{ok:true}` when the breaker is disabled or `closed`/`half_open`; 503 `{ok:false, reason:\"circuit_open\"}` when `state` is `open`. On SIGTERM/SIGINT, 503 `{ok:false, reason:\"shutting_down\"}` wins (liveness `GET /health` stays 200 with `shuttingDown: true` while draining). When enabled, `/ready` includes the same `breaker` snapshot (no secrets). Compose/stack-demo healthchecks stay on `/health`. Optional outbound audit webhooks (`policy.webhooks[]`): fire-and-forget POST JSON after audit write (`type`, `source`, `redacted`, `requestId`, `event`). Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). Optional per-hook `secret`: when set, POST includes `X-Webhook-Signature: sha256=<hex>` HMAC-SHA256 of the **raw JSON body**. On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Optional Prometheus `webhook_retries_total`. Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. See `AuditWebhook`. Admin tenant API token rotation: `POST /admin/tenants/{tenantId}/rotate` (alias `POST /admin/tenants/rotate` body `{tenantId}`) requires the same admin token as `GET /admin/tenants`. Response `{ok:true, tenantId, token, previousTokenExpiresAt?}` — new key shown once. Previous key remains valid for a grace window (default **60s**, env `TOKEN_ROTATE_GRACE_SEC` / `--rotate-grace-sec`) then is rejected. During grace both keys work. Audit event `type=token_rotated` (**no** raw tokens in JSONL/CSV/logs/metrics labels). Unknown tenant → **404**; unauthenticated → **401**. File-backed policies persist the new `apiKey` (and `previousApiKey` / `previousApiKeyExpiresAt` during grace) the same way existing keys are stored; in-memory-only (no `--config`) keeps rotation in process until restart. Streamable HTTP MVP: `POST /mcp` (alias `POST /`) accepts JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`) with the same tenant API key as `/tools/*`. Echoes `MCP-Protocol-Version` (default `2025-03-26`). Assigns `Mcp-Session-Id` UUID on `initialize` if omitted; later calls may omit the session (backward compatible). **Not** full spec SSE: `GET /mcp` returns **405** `Allow: POST, DELETE`. `DELETE /mcp` with `Mcp-Session-Id` terminates that session (**204**; missing header **400** `{error:\"session_id_required\"}`; unknown/expired/already gone **404** `{error:\"session_not_found\"}`). Session id is the capability (no admin token). Idempotent: second DELETE → 404. REST `/tools/*` unchanged. Existing REST `POST /tools/list` and `POST /tools/call` are unchanged. Session TTL default **3600s** (`--session-ttl` / `MCP_SESSION_TTL_SEC`; `0` = no expiry). Unused sessions expire: POST with an expired `Mcp-Session-Id` → **404** `{error:\"session_expired\"}` (clients should re-initialize). Missing session still allowed; unknown (fresh) ids are accepted and tracked (in-memory last-seen cap **10000**, drop oldest).  REST `/tools/*` ignores session. Admin session inventory: `GET /admin/sessions` (same admin token as `GET /admin/tenants`) lists live in-memory Streamable HTTP sessions `{ok, ttlSec, cap, count, sessions[{id, ageMs, ttlRemainingMs, lastSeen}]}` (newest **100** by lastSeen; `count` is the full live size; `truncated: true` when capped; tombstones/expired omitted; optional `dropped` tombstone count; **no** secrets/API keys/Authorization). `ttlSec` is the configured TTL (`0` = no expiry → `ttlRemainingMs` may be `null`). Unauthenticated → **401**. CORS + `X-Request-Id` like other admin GET. Admin force-drop: `DELETE /admin/sessions/{id}` (`adminDeleteSession`; same admin token; **204**; unknown/expired/already gone **404** `{error:\"session_not_found\"}`; unauth **401**; id in the path, **no** `Mcp-Session-Id` header). Client `DELETE /mcp` unchanged. GET /admin/config (`adminGetConfig`) redacted runtime config (no secrets). Admin single-tenant GET: `GET /admin/tenants/{tenantId}` (`adminGetTenant`) returns one tenant with `hasApiKey` / `hasPreviousApiKey` / `previousApiKeyExpiresAt` / `allow` / `deny` / `rateLimit` — **never** `apiKey` or `previousApiKey` values. Unknown id → **404** `{error:\"tenant_not_found\"}`. Admin webhook inventory: `GET /admin/webhooks` (`adminListWebhooks`) returns `{ok, count, webhooks[{id, events, hasUrl, hasSecret}]}` — **never** `url` / `secret` / apiKey / admin token. Empty config → `{ok:true, count:0, webhooks:[]}`. Unauthenticated → **401**.",
+    "description": "Enterprise MCP gateway: health, tools list/call, audit query/export, admin reload, admin tenants list, admin tenant API token rotation (`POST /admin/tenants/{tenantId}/rotate`). Auth via API key (X-Api-Key or Bearer) for tenants; admin token for reload, tenant inventory (`GET /admin/tenants`), redacted runtime config (`GET /admin/config` / `adminGetConfig`; **no** secrets), SIEM audit CSV (`GET /admin/audit.csv`), Markdown (`GET /admin/audit.md`), and HTML (`GET /admin/audit.html` / `GET /admin/audit?format=csv|json|md|html`; columns `ts,tenantId,tool,allow,reason,via,requestId`; **no** args/headers/tokens/bodies; empty CSV \u2192 header only; empty Markdown \u2192 heading + header; empty HTML \u2192 heading + \u201cno events\u201d), and cross-tenant audit. In-memory audit ring buffer: default max **10000** events (`--audit-max` / `AUDIT_MAX_EVENTS`; `0` = unlimited, dangerous). Over cap, drop oldest. Live `GET /audit`, `GET /audit/export`, and `GET /admin/audit` (CSV/JSON/Markdown/HTML) see only the retained window; webhook fan-out still posts every new event. Prometheus gauges `audit_events` and `audit_retained`. Optional per-tenant `ipAllowlist` (exact IPv4/IPv6 or IPv4 CIDR /8,/16,/24): client IP from X-Forwarded-For first hop or socket remoteAddress; mismatch \u2192 403 `{error:\"forbidden\",reason:\"ip_denied\"}`. Prometheus `GET /metrics` includes `tool_calls_total`, `rate_limited_total`, optional `ip_denied_total`, `http_requests_total`. Optional `maxBodyBytes` (default 1048576; per-tenant override): POST body over limit \u2192 413 `{error:\"payload_too_large\"}` before JSON parse (Content-Length early or stream count). Prometheus `body_too_large_total`. Optional `cors: { origins: [\"*\"] or explicit list, methods, headers }`. Default omitted/empty `origins` = no CORS headers (deny). When enabled with an explicit list, OPTIONS preflight for a listed Origin \u2192 204 with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin \u2192 403 `{error:\"forbidden\",reason:\"cors_denied\"}`. Matching GET/POST include ACAO. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 503 `Retry-After`). Optional `upstream.timeoutMs` (default 5000): HTTP and stdio upstream calls abort after the timeout. `POST /tools/call` timeout \u2192 504 `{error:\"upstream_timeout\"}`; Prometheus `upstream_timeout_total`; audit `reason=upstream_timeout`. Optional `X-Request-Id` request header: echoed on **every** response. If omitted or empty, the gateway generates a UUID. The same value is stored as `requestId` on audit JSONL events (`GET /audit`, `GET /audit/export`, CLI `export-audit`) and webhook payloads. Optional gzip on audit export: query `gzip=1|true` or request header `Accept-Encoding: gzip` returns a gzipped body with `Content-Encoding: gzip` and `Content-Disposition` filename ending in `.json.gz` / `.csv.gz`. Explicit `gzip=0` disables compression even if Accept-Encoding includes gzip. Uncompressed JSON/CSV remains the default. CLI: `export-audit --gzip --out out/audit.json.gz`. Optional `upstream.breaker: { failureThreshold: 3, openMs: 2000 }` (omitted/`enabled:false`/threshold 0 = disabled). Consecutive `upstream_timeout` and 5xx/connect errors open the circuit: further `POST /tools/call` to that upstream return **503** `{error:\"circuit_open\"}` without calling upstream until `openMs` elapses (half-open: one probe). **503** includes `Retry-After` (remaining seconds until `openUntil`, minimum 1). Audit `reason=circuit_open`; Prometheus `circuit_open_total`. When the breaker is enabled, `GET /health` includes `breaker: { state: closed|open|half_open, failures, openUntil }` (ISO-8601 or null; **no secrets**). The `breaker` field is omitted when disabled so liveness stays `{ok:true}`. `GET /health` is liveness: always 200 `{ok:true}` even if the circuit is open. `GET /ready` is readiness: 200 `{ok:true}` when the breaker is disabled or `closed`/`half_open`; 503 `{ok:false, reason:\"circuit_open\"}` when `state` is `open`. On SIGTERM/SIGINT, 503 `{ok:false, reason:\"shutting_down\"}` wins (liveness `GET /health` stays 200 with `shuttingDown: true` while draining). When enabled, `/ready` includes the same `breaker` snapshot (no secrets). Compose/stack-demo healthchecks stay on `/health`. Optional outbound audit webhooks (`policy.webhooks[]`): fire-and-forget POST JSON after audit write (`type`, `source`, `redacted`, `requestId`, `event`). Every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>` (HMAC still signs the raw body only). Optional per-hook `secret`: when set, POST includes `X-Webhook-Signature: sha256=<hex>` HMAC-SHA256 of the **raw JSON body**. On 5xx or network/timeout, OSS retries the POST once after ~50ms (success on first try = no retry; 4xx do not retry). Optional Prometheus `webhook_retries_total`. Simple HMAC is OSS; exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid later. See `AuditWebhook`. Admin tenant API token rotation: `POST /admin/tenants/{tenantId}/rotate` (alias `POST /admin/tenants/rotate` body `{tenantId}`) requires the same admin token as `GET /admin/tenants`. Response `{ok:true, tenantId, token, previousTokenExpiresAt?}` \u2014 new key shown once. Previous key remains valid for a grace window (default **60s**, env `TOKEN_ROTATE_GRACE_SEC` / `--rotate-grace-sec`) then is rejected. During grace both keys work. Audit event `type=token_rotated` (**no** raw tokens in JSONL/CSV/logs/metrics labels). Unknown tenant \u2192 **404**; unauthenticated \u2192 **401**. File-backed policies persist the new `apiKey` (and `previousApiKey` / `previousApiKeyExpiresAt` during grace) the same way existing keys are stored; in-memory-only (no `--config`) keeps rotation in process until restart. Streamable HTTP MVP: `POST /mcp` (alias `POST /`) accepts JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`) with the same tenant API key as `/tools/*`. Echoes `MCP-Protocol-Version` (default `2025-03-26`). Assigns `Mcp-Session-Id` UUID on `initialize` if omitted; later calls may omit the session (backward compatible). **Not** full spec SSE: `GET /mcp` returns **405** `Allow: POST, DELETE`. `DELETE /mcp` with `Mcp-Session-Id` terminates that session (**204**; missing header **400** `{error:\"session_id_required\"}`; unknown/expired/already gone **404** `{error:\"session_not_found\"}`). Session id is the capability (no admin token). Idempotent: second DELETE \u2192 404. REST `/tools/*` unchanged. Existing REST `POST /tools/list` and `POST /tools/call` are unchanged. Session TTL default **3600s** (`--session-ttl` / `MCP_SESSION_TTL_SEC`; `0` = no expiry). Unused sessions expire: POST with an expired `Mcp-Session-Id` \u2192 **404** `{error:\"session_expired\"}` (clients should re-initialize). Missing session still allowed; unknown (fresh) ids are accepted and tracked (in-memory last-seen cap **10000**, drop oldest).  REST `/tools/*` ignores session. Admin session inventory: `GET /admin/sessions` (same admin token as `GET /admin/tenants`) lists live in-memory Streamable HTTP sessions `{ok, ttlSec, cap, count, sessions[{id, ageMs, ttlRemainingMs, lastSeen}]}` (newest **100** by lastSeen; `count` is the full live size; `truncated: true` when capped; tombstones/expired omitted; optional `dropped` tombstone count; **no** secrets/API keys/Authorization). `ttlSec` is the configured TTL (`0` = no expiry \u2192 `ttlRemainingMs` may be `null`). Unauthenticated \u2192 **401**. CORS + `X-Request-Id` like other admin GET. Admin force-drop: `DELETE /admin/sessions/{id}` (`adminDeleteSession`; same admin token; **204**; unknown/expired/already gone **404** `{error:\"session_not_found\"}`; unauth **401**; id in the path, **no** `Mcp-Session-Id` header). Client `DELETE /mcp` unchanged. GET /admin/config (`adminGetConfig`) redacted runtime config (no secrets). Admin single-tenant GET: `GET /admin/tenants/{tenantId}` (`adminGetTenant`) returns one tenant with `hasApiKey` / `hasPreviousApiKey` / `previousApiKeyExpiresAt` / `allow` / `deny` / `rateLimit` \u2014 **never** `apiKey` or `previousApiKey` values. Unknown id \u2192 **404** `{error:\"tenant_not_found\"}`. Admin webhook inventory: `GET /admin/webhooks` (`adminListWebhooks`) returns `{ok, count, webhooks[{id, events, hasUrl, hasSecret}]}` \u2014 **never** `url` / `secret` / apiKey / admin token. Empty config \u2192 `{ok:true, count:0, webhooks:[]}`. Unauthenticated \u2192 **401**. Optional `redact: { enabled, fields, upstream }` (default enabled=true, fields=[\"*\"], upstream=false): conservative stdlib regex redaction of emails, Bearer tokens, sk-/ghp_-like prefixes, and long hex/base64-ish secrets **inside** tools/call arguments/result. Audit JSONL, GET /audit, GET /audit/export, and webhook payloads are redacted by default. The upstream tools/call body is **not** mutated unless `redact.upstream=true`. Regex only \u2014 not Microsoft Presidio. See `PolicyRedactConfig`. GET /admin/config includes `redact` knobs (no secrets).",
     "version": "0.1.0",
     "license": {
       "name": "Apache-2.0",
@@ -386,7 +386,7 @@
             "$ref": "#/components/responses/UpstreamTimeout"
           }
         },
-        "description": "Call a tool (policy + rate-limit + audit) Body size limited by `maxBodyBytes` (default 1MiB; per-tenant override); over → 413 `payload_too_large`. Upstream proxy abort: `upstream.timeoutMs` (default 5000) on HTTP fetch / stdio RPC; over → 504 `upstream_timeout`. Circuit breaker: `upstream.breaker` `{ failureThreshold, openMs }` (defaults 3 / 2000; omit to disable). Open → 503 `circuit_open` without calling upstream; after `openMs` one half-open probe. 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1).",
+        "description": "Call a tool (policy + rate-limit + audit) Body size limited by `maxBodyBytes` (default 1MiB; per-tenant override); over \u2192 413 `payload_too_large`. Upstream proxy abort: `upstream.timeoutMs` (default 5000) on HTTP fetch / stdio RPC; over \u2192 504 `upstream_timeout`. Circuit breaker: `upstream.breaker` `{ failureThreshold, openMs }` (defaults 3 / 2000; omit to disable). Open \u2192 503 `circuit_open` without calling upstream; after `openMs` one half-open probe. 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1).",
         "parameters": [
           {
             "$ref": "#/components/parameters/XRequestId"
@@ -449,7 +449,7 @@
             "$ref": "#/components/responses/UpstreamTimeout"
           }
         },
-        "description": "Alias of /tools/call Body size limited by `maxBodyBytes` (default 1MiB; per-tenant override); over → 413 `payload_too_large`. Upstream proxy abort: `upstream.timeoutMs` (default 5000) on HTTP fetch / stdio RPC; over → 504 `upstream_timeout`. Circuit breaker: `upstream.breaker` `{ failureThreshold, openMs }` (defaults 3 / 2000; omit to disable). Open → 503 `circuit_open` without calling upstream; after `openMs` one half-open probe. 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1)."
+        "description": "Alias of /tools/call Body size limited by `maxBodyBytes` (default 1MiB; per-tenant override); over \u2192 413 `payload_too_large`. Upstream proxy abort: `upstream.timeoutMs` (default 5000) on HTTP fetch / stdio RPC; over \u2192 504 `upstream_timeout`. Circuit breaker: `upstream.breaker` `{ failureThreshold, openMs }` (defaults 3 / 2000; omit to disable). Open \u2192 503 `circuit_open` without calling upstream; after `openMs` one half-open probe. 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1)."
       }
     },
     "/mcp": {
@@ -460,7 +460,7 @@
         ],
         "summary": "Streamable HTTP JSON-RPC (POST-only MVP)",
         "operationId": "mcpJsonRpc",
-        "description": "Minimal Streamable HTTP surface for current MCP clients. POST JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `ping`) on `/mcp` (alias `POST /`). Same tenant API key as `/tools/*` (Bearer or `X-Api-Key`). Echoes `MCP-Protocol-Version` (default `2025-03-26`; client YYYY-MM-DD is echoed when sent). Assigns `Mcp-Session-Id` UUID on `initialize` if the client omitted it; missing session on later `tools/list` / `tools/call` is accepted (backward compatible with REST local-mvp). **Not** a full spec SSE rewrite: GET is 405 `Allow: POST, DELETE`. `DELETE /mcp` terminates a session (see `mcpSessionDelete`). REST `/tools/list` and `/tools/call` unchanged (no session required). Session TTL default **3600s** (`--session-ttl` / `MCP_SESSION_TTL_SEC`; `0` = no expiry). Expired `Mcp-Session-Id` → **404** `{error:\"session_expired\"}` so clients re-initialize. Missing session still allowed; unknown ids accepted and tracked (cap 10000, drop oldest). Batch JSON-RPC is not supported (400). Notifications (`notifications/*`) return 202 empty.",
+        "description": "Minimal Streamable HTTP surface for current MCP clients. POST JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `ping`) on `/mcp` (alias `POST /`). Same tenant API key as `/tools/*` (Bearer or `X-Api-Key`). Echoes `MCP-Protocol-Version` (default `2025-03-26`; client YYYY-MM-DD is echoed when sent). Assigns `Mcp-Session-Id` UUID on `initialize` if the client omitted it; missing session on later `tools/list` / `tools/call` is accepted (backward compatible with REST local-mvp). **Not** a full spec SSE rewrite: GET is 405 `Allow: POST, DELETE`. `DELETE /mcp` terminates a session (see `mcpSessionDelete`). REST `/tools/list` and `/tools/call` unchanged (no session required). Session TTL default **3600s** (`--session-ttl` / `MCP_SESSION_TTL_SEC`; `0` = no expiry). Expired `Mcp-Session-Id` \u2192 **404** `{error:\"session_expired\"}` so clients re-initialize. Missing session still allowed; unknown ids accepted and tracked (cap 10000, drop oldest). Batch JSON-RPC is not supported (400). Notifications (`notifications/*`) return 202 empty.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -607,7 +607,7 @@
         "summary": "Terminate Streamable HTTP session",
         "operationId": "mcpSessionDelete",
         "security": [],
-        "description": "Terminate the Streamable HTTP session identified by `Mcp-Session-Id`. The session id is the capability — **no** admin token and **no** tenant API key. Success → **204** No Content. Missing header → **400** `{error:\"session_id_required\"}`. Unknown, expired, or already terminated → **404** `{error:\"session_not_found\"}` (idempotent). Does not leak whether the id ever existed. TTL still applies independently. REST `/tools/*` unchanged. Optional audit `type=session_deleted` (**no** raw session id or tokens).",
+        "description": "Terminate the Streamable HTTP session identified by `Mcp-Session-Id`. The session id is the capability \u2014 **no** admin token and **no** tenant API key. Success \u2192 **204** No Content. Missing header \u2192 **400** `{error:\"session_id_required\"}`. Unknown, expired, or already terminated \u2192 **404** `{error:\"session_not_found\"}` (idempotent). Does not leak whether the id ever existed. TTL still applies independently. REST `/tools/*` unchanged. Optional audit `type=session_deleted` (**no** raw session id or tokens).",
         "parameters": [
           {
             "$ref": "#/components/parameters/XRequestId"
@@ -619,7 +619,7 @@
             "name": "Mcp-Session-Id",
             "in": "header",
             "required": true,
-            "description": "Session id to terminate. Missing → 400 `session_id_required`.",
+            "description": "Session id to terminate. Missing \u2192 400 `session_id_required`.",
             "schema": {
               "type": "string"
             }
@@ -747,7 +747,7 @@
           {
             "name": "redact",
             "in": "query",
-            "description": "1|true to redact arguments/result on read",
+            "description": "1|true to wholesale-redact arguments/result on read (`[REDACTED]`). Independent of policy.redact in-payload regex (emails/Bearer/sk-/ghp_/long secrets), which is on by default for audit/export even when this flag is omitted.",
             "schema": {
               "type": "string"
             }
@@ -881,7 +881,8 @@
             "in": "query",
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "JSON only: 1|true to wholesale-redact arguments/result. CSV includes those columns unless this is set. In-payload regex (policy.redact) still runs by default so emails/Bearer tokens/sk- secrets are masked even when this flag is omitted."
           },
           {
             "name": "gzip",
@@ -1097,7 +1098,7 @@
           "admin"
         ],
         "summary": "Get one tenant (admin; no secrets)",
-        "description": "Admin-token-protected single-tenant inventory. Complements `GET /admin/tenants` (list) and `POST /admin/tenants/{tenantId}/rotate`. Returns `{ok, id, hasApiKey, hasPreviousApiKey, previousApiKeyExpiresAt, allow, deny, rateLimit, hasIpAllowlist, maxBodyBytes}` from the effective policy. **Never** returns `apiKey` or `previousApiKey` values (booleans + expiry only). Unknown id → **404** `{error:\"tenant_not_found\"}`. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET.",
+        "description": "Admin-token-protected single-tenant inventory. Complements `GET /admin/tenants` (list) and `POST /admin/tenants/{tenantId}/rotate`. Returns `{ok, id, hasApiKey, hasPreviousApiKey, previousApiKeyExpiresAt, allow, deny, rateLimit, hasIpAllowlist, maxBodyBytes}` from the effective policy. **Never** returns `apiKey` or `previousApiKey` values (booleans + expiry only). Unknown id \u2192 **404** `{error:\"tenant_not_found\"}`. Unauthenticated \u2192 **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET.",
         "operationId": "adminGetTenant",
         "security": [
           {
@@ -1196,7 +1197,7 @@
           "admin"
         ],
         "summary": "List live Streamable HTTP sessions (admin inventory; no secrets)",
-        "description": "Admin-token-protected inventory of in-memory MCP Streamable HTTP sessions. Returns `{ok, ttlSec, cap, count, sessions}` where `sessions` is up to **100** newest-by-lastSeen (`id`, `ageMs`, `ttlRemainingMs`, `lastSeen` ISO-8601). `count` is the full live size; `truncated: true` when more than 100 exist. Tombstones (deleted/expired ids) are **not** listed; optional `dropped` is the current tombstone count. **Never** includes API keys, Authorization headers, or other secrets. `ttlSec` is the configured TTL (`0` = no expiry → `ttlRemainingMs` may be `null`). Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET. List-only on this path. Admin force-drop is `DELETE /admin/sessions/{id}` (`adminDeleteSession`; id in the path; **no** `Mcp-Session-Id` header). Client `DELETE /mcp` with `Mcp-Session-Id` stays the capability path.",
+        "description": "Admin-token-protected inventory of in-memory MCP Streamable HTTP sessions. Returns `{ok, ttlSec, cap, count, sessions}` where `sessions` is up to **100** newest-by-lastSeen (`id`, `ageMs`, `ttlRemainingMs`, `lastSeen` ISO-8601). `count` is the full live size; `truncated: true` when more than 100 exist. Tombstones (deleted/expired ids) are **not** listed; optional `dropped` is the current tombstone count. **Never** includes API keys, Authorization headers, or other secrets. `ttlSec` is the configured TTL (`0` = no expiry \u2192 `ttlRemainingMs` may be `null`). Unauthenticated \u2192 **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET. List-only on this path. Admin force-drop is `DELETE /admin/sessions/{id}` (`adminDeleteSession`; id in the path; **no** `Mcp-Session-Id` header). Client `DELETE /mcp` with `Mcp-Session-Id` stays the capability path.",
         "operationId": "adminListSessions",
         "security": [
           {
@@ -1279,7 +1280,7 @@
           "admin"
         ],
         "summary": "Force-drop a Streamable HTTP session (admin ops kill)",
-        "description": "Admin-token-protected force-drop of an in-memory MCP Streamable HTTP session. Session id is in the **path** — **no** `Mcp-Session-Id` header (client `DELETE /mcp` with `Mcp-Session-Id` stays the capability path for when the client is present). Same admin token as `GET /admin/tenants`. Success → **204** No Content (session tombstoned; subsequent `POST /mcp` with that id → **404** `{error:\"session_not_found\"}`). Unknown, expired, or already gone → **404** `{error:\"session_not_found\"}` (idempotent). Missing id in the path (`DELETE /admin/sessions` or `DELETE /admin/sessions/`) → **404** (router-style). Unauthenticated → **401** `unauthorized_admin`. Optional audit `type=session_deleted` with `via: admin` (**no** raw session id or tokens). CORS Allow-Methods include DELETE when CORS is enabled. REST `/tools/*` and client `DELETE /mcp` unchanged.",
+        "description": "Admin-token-protected force-drop of an in-memory MCP Streamable HTTP session. Session id is in the **path** \u2014 **no** `Mcp-Session-Id` header (client `DELETE /mcp` with `Mcp-Session-Id` stays the capability path for when the client is present). Same admin token as `GET /admin/tenants`. Success \u2192 **204** No Content (session tombstoned; subsequent `POST /mcp` with that id \u2192 **404** `{error:\"session_not_found\"}`). Unknown, expired, or already gone \u2192 **404** `{error:\"session_not_found\"}` (idempotent). Missing id in the path (`DELETE /admin/sessions` or `DELETE /admin/sessions/`) \u2192 **404** (router-style). Unauthenticated \u2192 **401** `unauthorized_admin`. Optional audit `type=session_deleted` with `via: admin` (**no** raw session id or tokens). CORS Allow-Methods include DELETE when CORS is enabled. REST `/tools/*` and client `DELETE /mcp` unchanged.",
         "operationId": "adminDeleteSession",
         "security": [
           {
@@ -1297,7 +1298,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Session id to terminate (from `Mcp-Session-Id` / initialize). Missing path segment → 404."
+            "description": "Session id to terminate (from `Mcp-Session-Id` / initialize). Missing path segment \u2192 404."
           },
           {
             "$ref": "#/components/parameters/XRequestId"
@@ -1378,7 +1379,7 @@
           "admin"
         ],
         "summary": "Redacted runtime config (admin; no secrets)",
-        "description": "Admin-token-protected snapshot of **safe** runtime config for pilot debugging: `sessionTtlSec`, `sessionCap` (default 10000), `auditMax`, `rotateGraceSec`, `rateLimit.perMinute`, `cors.origins` (list or `*`), `upstream.timeoutMs` / `upstream.breaker` (threshold / openMs / optional `state`), tenant **count** (not keys), webhook **count** and `hasWebhookSecret` per dest (**never** the secret). **Never** includes `apiKey`, `previousApiKey`, webhook secrets, admin token, Authorization, `--header` values, or tenant tokens. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET.",
+        "description": "Admin-token-protected snapshot of **safe** runtime config for pilot debugging: `sessionTtlSec`, `sessionCap` (default 10000), `auditMax`, `rotateGraceSec`, `rateLimit.perMinute`, `cors.origins` (list or `*`), `upstream.timeoutMs` / `upstream.breaker` (threshold / openMs / optional `state`), tenant **count** (not keys), webhook **count** and `hasWebhookSecret` per dest (**never** the secret). **Never** includes `apiKey`, `previousApiKey`, webhook secrets, admin token, Authorization, `--header` values, or tenant tokens. Unauthenticated \u2192 **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). CORS + `X-Request-Id` same as other admin GET. Includes resolved `redact: { enabled, upstream, fields }` (in-payload regex; no secrets).",
         "operationId": "adminGetConfig",
         "security": [
           {
@@ -1482,7 +1483,7 @@
           "admin"
         ],
         "summary": "List outbound webhooks (admin inventory; no secrets)",
-        "description": "Admin-token-protected inventory of configured outbound audit webhooks. Returns `{ok, count, webhooks}` where each row is `{id, events, hasUrl, hasSecret}`. `id` is the configured id when present, otherwise the 0-based source index. `events` is the configured event list (or `[]`). `hasUrl` / `hasSecret` are booleans only. **Never** includes `url`, `secret`, apiKey, previousApiKey, admin token, Authorization, `--header` values, tenant tokens, or request bodies. Empty / omitted `webhooks` → `{ok:true, count:0, webhooks:[]}`. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`; tenant API keys are rejected). CORS + `X-Request-Id` same as other admin GET.",
+        "description": "Admin-token-protected inventory of configured outbound audit webhooks. Returns `{ok, count, webhooks}` where each row is `{id, events, hasUrl, hasSecret}`. `id` is the configured id when present, otherwise the 0-based source index. `events` is the configured event list (or `[]`). `hasUrl` / `hasSecret` are booleans only. **Never** includes `url`, `secret`, apiKey, previousApiKey, admin token, Authorization, `--header` values, tenant tokens, or request bodies. Empty / omitted `webhooks` \u2192 `{ok:true, count:0, webhooks:[]}`. Unauthenticated \u2192 **401** `unauthorized_admin` (same gate as `GET /admin/tenants`; tenant API keys are rejected). CORS + `X-Request-Id` same as other admin GET.",
         "operationId": "adminListWebhooks",
         "security": [
           {
@@ -1567,7 +1568,7 @@
           "audit"
         ],
         "summary": "Admin SIEM audit CSV (no bodies/tokens)",
-        "description": "Admin-token-protected audit CSV for SIEM/spreadsheet archive. Columns `ts,tenantId,tool,allow,reason,via,requestId` from JSONL (same fields as `AuditEvent` minus `arguments`/`result`/`argumentKeysHash`). **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log → header-only **200**. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). Uncompressed `text/csv; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=csv`. Markdown: `GET /admin/audit.md` / `?format=md`. HTML: `GET /admin/audit.html` / `?format=html`. CORS + `X-Request-Id` same as other admin GET.",
+        "description": "Admin-token-protected audit CSV for SIEM/spreadsheet archive. Columns `ts,tenantId,tool,allow,reason,via,requestId` from JSONL (same fields as `AuditEvent` minus `arguments`/`result`/`argumentKeysHash`). **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log \u2192 header-only **200**. Unauthenticated \u2192 **401** `unauthorized_admin` (same gate as `GET /admin/tenants`). Uncompressed `text/csv; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=csv`. Markdown: `GET /admin/audit.md` / `?format=md`. HTML: `GET /admin/audit.html` / `?format=html`. CORS + `X-Request-Id` same as other admin GET.",
         "operationId": "getAdminAuditCsv",
         "security": [
           {
@@ -1667,7 +1668,7 @@
           "audit"
         ],
         "summary": "Admin SIEM audit Markdown (no bodies/tokens)",
-        "description": "Admin-token-protected GitHub-flavored Markdown table for ops docs (Feishu/WeCom/Slack). Heading `# Audit` plus columns `ts | tenantId | tool | allow | reason | via | requestId` (same fields as `GET /admin/audit.csv`). `|` in cells is escaped. **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log → heading + header row only, **200**. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/audit.csv`). Uncompressed `text/markdown; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=md`. HTML: `GET /admin/audit.html` / `?format=html`. CORS + `X-Request-Id` same as other admin GET.",
+        "description": "Admin-token-protected GitHub-flavored Markdown table for ops docs (Feishu/WeCom/Slack). Heading `# Audit` plus columns `ts | tenantId | tool | allow | reason | via | requestId` (same fields as `GET /admin/audit.csv`). `|` in cells is escaped. **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log \u2192 heading + header row only, **200**. Unauthenticated \u2192 **401** `unauthorized_admin` (same gate as `GET /admin/audit.csv`). Uncompressed `text/markdown; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=md`. HTML: `GET /admin/audit.html` / `?format=html`. CORS + `X-Request-Id` same as other admin GET.",
         "operationId": "getAdminAuditMd",
         "security": [
           {
@@ -1767,7 +1768,7 @@
           "audit"
         ],
         "summary": "Admin SIEM audit HTML (no bodies/tokens)",
-        "description": "Admin-token-protected self-contained HTML audit table for the local 5-min demo (no CDN / external CSS/JS). Heading `Audit` plus columns `ts`, `tenantId`, `tool`, `allow`, `reason`, `via`, `requestId` (same fields as `GET /admin/audit.csv`). All text escaped (`& < > \" '`). Deny vs allow rows are visually distinct (inline CSS). **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log → heading + “no events” + header row, **200**. Unauthenticated → **401** `unauthorized_admin` (same gate as `GET /admin/audit.csv`). Uncompressed `text/html; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=html`. CORS + `X-Request-Id` same as other admin GET.",
+        "description": "Admin-token-protected self-contained HTML audit table for the local 5-min demo (no CDN / external CSS/JS). Heading `Audit` plus columns `ts`, `tenantId`, `tool`, `allow`, `reason`, `via`, `requestId` (same fields as `GET /admin/audit.csv`). All text escaped (`& < > \" '`). Deny vs allow rows are visually distinct (inline CSS). **Never** includes raw args, headers, tokens, or bodies. Live snapshot is the in-memory retained window (default max 10000; `--audit-max` / `AUDIT_MAX_EVENTS`; over cap drops oldest). Empty log \u2192 heading + \u201cno events\u201d + header row, **200**. Unauthenticated \u2192 **401** `unauthorized_admin` (same gate as `GET /admin/audit.csv`). Uncompressed `text/html; charset=utf-8`. Gzip JSON/CSV packs remain on `GET /audit/export`. Alias: `GET /admin/audit?format=html`. CORS + `X-Request-Id` same as other admin GET.",
         "operationId": "getAdminAuditHtml",
         "security": [
           {
@@ -1822,7 +1823,7 @@
         ],
         "responses": {
           "200": {
-            "description": "HTML audit snapshot (heading + table; heading + “no events” when empty). No arguments/result/tokens.",
+            "description": "HTML audit snapshot (heading + table; heading + \u201cno events\u201d when empty). No arguments/result/tokens.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/XRequestId"
@@ -1840,7 +1841,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Audit · local list</title></head><body><h1>Audit</h1><p>no events</p><table></table></body></html>\n"
+                "example": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Audit \u00b7 local list</title></head><body><h1>Audit</h1><p>no events</p><table></table></body></html>\n"
               }
             }
           },
@@ -1867,7 +1868,7 @@
           "audit"
         ],
         "summary": "Admin audit snapshot (json | csv | md | html)",
-        "description": "Admin-token-protected audit snapshot. Query `format=json` (default) is an uncompressed JSON pack (`ok`, `format`, `count`, `events`) — does **not** use `Accept-Encoding: gzip` (gzip stays on `GET /audit/export`). `format=csv` is the same SIEM-safe `text/csv` body as `GET /admin/audit.csv` (no args/tokens). `format=md` is the same `text/markdown` body as `GET /admin/audit.md` (`# Audit` GFM table; no args/tokens). `format=html` is the same `text/html` body as `GET /admin/audit.html` (self-contained table; no CDN; no args/tokens). Unknown format → **400** `unsupported_format`. Unauthenticated → **401** `unauthorized_admin`. Query `tenant=` filters the retained window to that tenantId. Unknown tenant → empty **200**.",
+        "description": "Admin-token-protected audit snapshot. Query `format=json` (default) is an uncompressed JSON pack (`ok`, `format`, `count`, `events`) \u2014 does **not** use `Accept-Encoding: gzip` (gzip stays on `GET /audit/export`). `format=csv` is the same SIEM-safe `text/csv` body as `GET /admin/audit.csv` (no args/tokens). `format=md` is the same `text/markdown` body as `GET /admin/audit.md` (`# Audit` GFM table; no args/tokens). `format=html` is the same `text/html` body as `GET /admin/audit.html` (self-contained table; no CDN; no args/tokens). Unknown format \u2192 **400** `unsupported_format`. Unauthenticated \u2192 **401** `unauthorized_admin`. Query `tenant=` filters the retained window to that tenantId. Unknown tenant \u2192 empty **200**.",
         "operationId": "getAdminAudit",
         "security": [
           {
@@ -1972,7 +1973,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "<!DOCTYPE html>\\n<html lang=\"en\">\\n<head><meta charset=\"utf-8\"><title>Audit · local list</title></head>\\n<body><h1>Audit</h1>\\n<p>no events</p>\\n<table></table></body></html>\\n"
+                "example": "<!DOCTYPE html>\\n<html lang=\"en\">\\n<head><meta charset=\"utf-8\"><title>Audit \u00b7 local list</title></head>\\n<body><h1>Audit</h1>\\n<p>no events</p>\\n<table></table></body></html>\\n"
               }
             }
           },
@@ -2014,7 +2015,7 @@
           "admin"
         ],
         "summary": "Rotate a tenant API token (admin; new token shown once)",
-        "description": "Admin-token-protected tenant API key rotation. Replaces `tenants[].apiKey` in the same policy store. The new token is returned **once** in `{ok:true, tenantId, token, previousTokenExpiresAt?}`. The previous key remains valid until `previousTokenExpiresAt` (default grace **60s**, `TOKEN_ROTATE_GRACE_SEC` / `--rotate-grace-sec`; `0` = immediate). During grace both keys authenticate; after grace only the new key. Writes audit JSONL `{type:\"token_rotated\", tenantId, requestId}` — **never** raw tokens. File-backed `--config` persists the new `apiKey` (and previous key + expiry during grace) the same way existing keys are stored. In-memory-only (no config path) keeps rotation until restart. Unknown tenant → 404 `{error:\"unknown_tenant\"}`. Missing/invalid admin token → 401 `{error:\"unauthorized_admin\"}` (same gate as `GET /admin/tenants`). Alias: `POST /admin/tenants/rotate` with body `{tenantId}`.",
+        "description": "Admin-token-protected tenant API key rotation. Replaces `tenants[].apiKey` in the same policy store. The new token is returned **once** in `{ok:true, tenantId, token, previousTokenExpiresAt?}`. The previous key remains valid until `previousTokenExpiresAt` (default grace **60s**, `TOKEN_ROTATE_GRACE_SEC` / `--rotate-grace-sec`; `0` = immediate). During grace both keys authenticate; after grace only the new key. Writes audit JSONL `{type:\"token_rotated\", tenantId, requestId}` \u2014 **never** raw tokens. File-backed `--config` persists the new `apiKey` (and previous key + expiry during grace) the same way existing keys are stored. In-memory-only (no config path) keeps rotation until restart. Unknown tenant \u2192 404 `{error:\"unknown_tenant\"}`. Missing/invalid admin token \u2192 401 `{error:\"unauthorized_admin\"}` (same gate as `GET /admin/tenants`). Alias: `POST /admin/tenants/rotate` with body `{tenantId}`.",
         "operationId": "adminRotateTenantToken",
         "security": [
           {
@@ -2262,7 +2263,7 @@
       },
       "MaxBodyBytes": {
         "type": "integer",
-        "description": "Max HTTP request body size in bytes for POST /tools/call (and alias). Global policy `maxBodyBytes` (default 1048576); optional per-tenant override. Enforced by Content-Length check and streaming byte count before JSON.parse. Over limit → 413 `{error:\"payload_too_large\"}`.",
+        "description": "Max HTTP request body size in bytes for POST /tools/call (and alias). Global policy `maxBodyBytes` (default 1048576); optional per-tenant override. Enforced by Content-Length check and streaming byte count before JSON.parse. Over limit \u2192 413 `{error:\"payload_too_large\"}`.",
         "default": 1048576,
         "example": 1048576,
         "minimum": 1
@@ -2317,7 +2318,7 @@
       },
       "CorsConfig": {
         "type": "object",
-        "description": "Optional CORS. Default omitted or empty `origins` = no extra CORS headers (deny all). `origins` may be `[\"*\"]` (any Origin) or an explicit list. When enabled with an explicit list, OPTIONS preflight for a non-listed Origin returns 403 `{error:\"forbidden\",reason:\"cors_denied\"}`; allowed Origin → 204 with ACAO/ACAM/ACAH. Matching GET/POST/DELETE get Access-Control-Allow-Origin. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (plus `X-Audit-Count`, `X-Audit-Redacted`, `Content-Disposition`). local-mvp uses `[\"http://localhost:3000\"]`. Default allow/expose also includes `MCP-Protocol-Version` and `Mcp-Session-Id` for Streamable HTTP browser clients.",
+        "description": "Optional CORS. Default omitted or empty `origins` = no extra CORS headers (deny all). `origins` may be `[\"*\"]` (any Origin) or an explicit list. When enabled with an explicit list, OPTIONS preflight for a non-listed Origin returns 403 `{error:\"forbidden\",reason:\"cors_denied\"}`; allowed Origin \u2192 204 with ACAO/ACAM/ACAH. Matching GET/POST/DELETE get Access-Control-Allow-Origin. Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (plus `X-Audit-Count`, `X-Audit-Redacted`, `Content-Disposition`). local-mvp uses `[\"http://localhost:3000\"]`. Default allow/expose also includes `MCP-Protocol-Version` and `Mcp-Session-Id` for Streamable HTTP browser clients.",
         "properties": {
           "origins": {
             "type": "array",
@@ -2378,7 +2379,7 @@
       },
       "UpstreamConfig": {
         "type": "object",
-        "description": "Optional upstream MCP proxy. `timeoutMs` (default 5000) aborts HTTP fetch and stdio JSON-RPC. Timeout on POST /tools/call → 504 `{error:\"upstream_timeout\"}`. Optional `breaker: { failureThreshold: 3, openMs: 2000 }` (omit / `enabled:false` / threshold 0 = disabled). Consecutive timeout and 5xx/connect errors open the circuit → 503 `{error:\"circuit_open\"}` until `openMs` (half-open: one probe). 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1). When enabled, GET /health includes a `breaker` snapshot (`state`, `failures`, `openUntil`; no secrets).",
+        "description": "Optional upstream MCP proxy. `timeoutMs` (default 5000) aborts HTTP fetch and stdio JSON-RPC. Timeout on POST /tools/call \u2192 504 `{error:\"upstream_timeout\"}`. Optional `breaker: { failureThreshold: 3, openMs: 2000 }` (omit / `enabled:false` / threshold 0 = disabled). Consecutive timeout and 5xx/connect errors open the circuit \u2192 503 `{error:\"circuit_open\"}` until `openMs` (half-open: one probe). 503 includes `Retry-After` (remaining seconds until `openUntil`, min 1). When enabled, GET /health includes a `breaker` snapshot (`state`, `failures`, `openUntil`; no secrets).",
         "properties": {
           "type": {
             "type": "string",
@@ -2408,12 +2409,12 @@
             "type": "integer",
             "default": 5000,
             "minimum": 1,
-            "description": "Abort HTTP/stdio upstream calls after this many milliseconds (default 5000). Timeout → 504 `{error:\"upstream_timeout\"}`.",
+            "description": "Abort HTTP/stdio upstream calls after this many milliseconds (default 5000). Timeout \u2192 504 `{error:\"upstream_timeout\"}`.",
             "example": 5000
           },
           "breaker": {
             "type": "object",
-            "description": "Optional consecutive-failure circuit breaker. Omitted, `enabled: false`, or `failureThreshold: 0` disables (existing timeout/proxy proves). Defaults when present: failureThreshold 3, openMs 2000. Failures: `upstream_timeout`, HTTP 5xx, connect errors. Open → 503 `{error:\"circuit_open\"}` without calling upstream; `Retry-After` is remaining seconds until `openUntil` (min 1). After openMs, half-open allows one probe. When enabled, GET /health includes `breaker: { state, failures, openUntil }` (no secrets).",
+            "description": "Optional consecutive-failure circuit breaker. Omitted, `enabled: false`, or `failureThreshold: 0` disables (existing timeout/proxy proves). Defaults when present: failureThreshold 3, openMs 2000. Failures: `upstream_timeout`, HTTP 5xx, connect errors. Open \u2192 503 `{error:\"circuit_open\"}` without calling upstream; `Retry-After` is remaining seconds until `openUntil` (min 1). After openMs, half-open allows one probe. When enabled, GET /health includes `breaker: { state, failures, openUntil }` (no secrets).",
             "properties": {
               "enabled": {
                 "type": "boolean",
@@ -2563,7 +2564,7 @@
       },
       "AuditEvent": {
         "type": "object",
-        "description": "JSONL audit row. `requestId` is the resolved `X-Request-Id` (incoming or generated UUID).",
+        "description": "JSONL audit row. `requestId` is the resolved `X-Request-Id` (incoming or generated UUID). By default `arguments`/`result` strings are in-payload redacted (emails, Bearer tokens, sk-/ghp_-like prefixes, long hex/base64-ish secrets) via `policy.redact` (regex, not Presidio). Wholesale `[REDACTED]` wipe is `?redact=1` / `audit.redactOnWrite`.",
         "properties": {
           "ts": {
             "type": "string",
@@ -2598,7 +2599,7 @@
           },
           "type": {
             "type": "string",
-            "description": "Present on non-tool-call rows. `token_rotated` is written on admin rotate — never includes raw tokens/apiKeys.",
+            "description": "Present on non-tool-call rows. `token_rotated` is written on admin rotate \u2014 never includes raw tokens/apiKeys.",
             "example": "token_rotated"
           }
         }
@@ -2625,7 +2626,7 @@
           },
           "redacted": {
             "type": "boolean",
-            "description": "True when arguments/result were redacted (`webhooksRedact` default true)."
+            "description": "True when arguments/result were wholesale-redacted (`webhooksRedact` default true). In-payload regex redaction (`policy.redact`, default on) still runs first."
           },
           "requestId": {
             "type": "string",
@@ -2638,7 +2639,7 @@
                 "$ref": "#/components/schemas/AuditEvent"
               }
             ],
-            "description": "Audit row (redacted when webhooksRedact / redactOnWrite / export.redactDefault)."
+            "description": "Audit row. In-payload regex redaction is on by default (`policy.redact`). Wholesale wipe when webhooksRedact / redactOnWrite / export.redactDefault."
           }
         },
         "required": [
@@ -2941,7 +2942,7 @@
       },
       "AdminRuntimeConfigTenants": {
         "type": "object",
-        "description": "Tenant **count** only — never ids, apiKeys, or tokens.",
+        "description": "Tenant **count** only \u2014 never ids, apiKeys, or tokens.",
         "required": [
           "count"
         ],
@@ -2990,7 +2991,7 @@
       },
       "AdminRuntimeConfig": {
         "type": "object",
-        "description": "Redacted runtime config for GET /admin/config. Allowlist of safe fields only. Never apiKey, previousApiKey, webhook secrets, admin token, Authorization, or `--header` values.",
+        "description": "Redacted runtime config for GET /admin/config. Allowlist of safe fields only. Never apiKey, previousApiKey, webhook secrets, admin token, Authorization, or `--header` values. Includes `redact` (enabled/upstream/fields) \u2014 the in-payload regex knob.",
         "required": [
           "ok",
           "sessionTtlSec",
@@ -3001,7 +3002,8 @@
           "cors",
           "upstream",
           "tenants",
-          "webhooks"
+          "webhooks",
+          "redact"
         ],
         "additionalProperties": false,
         "properties": {
@@ -3042,6 +3044,9 @@
           },
           "webhooks": {
             "$ref": "#/components/schemas/AdminRuntimeConfigWebhooks"
+          },
+          "redact": {
+            "$ref": "#/components/schemas/AdminRuntimeConfigRedact"
           }
         }
       },
@@ -3174,6 +3179,57 @@
             "type": "integer",
             "minimum": 1,
             "description": "Effective maxBodyBytes (tenant override or global/default)"
+          }
+        }
+      },
+      "PolicyRedactConfig": {
+        "type": "object",
+        "description": "Policy `redact` knob. Conservative stdlib regex inspector for PII/secrets inside tool-call payloads. Not Microsoft Presidio. Default: audit logs + webhook payloads redacted; upstream tools/call body not mutated.",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Master switch. Default true (audit JSONL write, GET /audit, GET /audit/export, webhooks)."
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "*"
+            ],
+            "description": "`[\"*\"]` walks arguments/args/result only. Or list those keys."
+          },
+          "upstream": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, also mutate arguments sent to HTTP/stdio upstream tools/call. Default false so APIs are not broken."
+          }
+        }
+      },
+      "AdminRuntimeConfigRedact": {
+        "type": "object",
+        "description": "Resolved policy.redact knobs. No secrets.",
+        "required": [
+          "enabled",
+          "upstream",
+          "fields"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "upstream": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }

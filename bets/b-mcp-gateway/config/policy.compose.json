@@ -186,5 +186,12 @@
   },
   "cors": {
     "origins": []
+  },
+  "redact": {
+    "enabled": true,
+    "fields": [
+      "*"
+    ],
+    "upstream": false
   }
 }

@@ -74,6 +74,12 @@ import {
   matchAdminSessionPath,
 } from "./mcp-http.js";
 import { summarizeConfigForAdmin, summarizeWebhooksForAdmin } from "./admin-config.js";
+import {
+  resolvePayloadRedact,
+  resolveUpstreamRedact,
+  redactAuditEvent,
+  redactToolArgs,
+} from "./redact.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OPENAPI_PATH = path.resolve(__dirname, "../openapi/gateway.openapi.json");
@@ -161,8 +167,12 @@ function readBody(req, maxBytes = DEFAULT_MAX_BODY_BYTES) {
 
 function appendAudit(auditPath, event, policy, metrics, opts = {}) {
   let toWrite = event;
+  // In-payload PII/secret redaction (default on). Clone — do not mutate the live event.
+  if (resolvePayloadRedact(policy)) {
+    toWrite = redactAuditEvent(toWrite, policy);
+  }
   if (resolveRedactOnWrite(policy)) {
-    toWrite = redactEvent(event);
+    toWrite = redactEvent(toWrite);
   }
   // Ring buffer first: cap retained history only. Webhook fan-out still sees every new event.
   if (Array.isArray(opts.events)) {
@@ -544,7 +554,10 @@ export function createServer(options = {}) {
         };
       }
       try {
-        result = await state.upstream.callTool(name, args);
+        const callArgs = resolveUpstreamRedact(state.policy)
+          ? redactToolArgs(args, state.policy)
+          : args;
+        result = await state.upstream.callTool(name, callArgs);
         if (isUpstreamFailure(result)) {
           state.breaker.recordFailure();
         } else {
@@ -988,6 +1001,9 @@ export function createServer(options = {}) {
           const html = eventsToAdminHtml(events);
           return respondText(res, 200, html, "text/html; charset=utf-8", metricPath);
         }
+        if (resolvePayloadRedact(state.policy)) {
+          events = events.map((e) => redactAuditEvent(e, state.policy));
+        }
         const doRedact = resolveRedact({ flag: qRedact, policy: state.policy });
         if (doRedact) events = redactEvents(events);
         return respondJson(
@@ -1044,6 +1060,9 @@ export function createServer(options = {}) {
             return respondJson(res, 400, { error: "invalid_until", hint: "use ISO-8601 timestamp" }, "/audit");
           }
           throw err;
+        }
+        if (resolvePayloadRedact(state.policy)) {
+          events = events.map((e) => redactAuditEvent(e, state.policy));
         }
         const doRedact = resolveRedact({ flag: qRedact, policy: state.policy });
         if (doRedact) events = redactEvents(events);
@@ -1103,6 +1122,9 @@ export function createServer(options = {}) {
             return respondJson(res, 400, { error: "invalid_until", hint: "use ISO-8601 timestamp" }, "/audit/export");
           }
           throw err;
+        }
+        if (resolvePayloadRedact(state.policy)) {
+          events = events.map((e) => redactAuditEvent(e, state.policy));
         }
         const doRedact = resolveRedact({ flag: qRedact, policy: state.policy });
         if (doRedact) events = redactEvents(events);

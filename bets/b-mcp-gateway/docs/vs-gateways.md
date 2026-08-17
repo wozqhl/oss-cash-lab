@@ -3,6 +3,10 @@
 Honest comparison of **this** Node policy/audit gateway (oss-cash-lab bet B,
 package `@oss-cash-lab/mcp-gateway`) against category incumbents.
 
+**CN / security wedge (2026 MCP gateway roundups):** most infra gateways
+do routing, auth, and observability. Few inspect and redact PII/secrets
+**inside** tool-call payloads. This tree does — regex only, not Presidio.
+
 Columns are only features **this tree actually ships**. No SSO, OPA, WASM,
 Entra, K8s control plane, or full-spec SSE are claimed here — those are
 incumbent surfaces, not ours.
@@ -50,6 +54,7 @@ we read (do not treat "—" as a proof they lack it).
 | **Rate limit** | Yes — `rateLimitPerMinute` global + per-tenant. | — (not in the public README we read) | Yes (their docs). | Yes (their docs). | — (not called out as this knob in the pages we read) |
 | **Circuit breaker** | Yes — `upstream.breaker` consecutive-failure closed to open to half-open. 503 `circuit_open` + `Retry-After`. | — | Resiliency is a project goal; not this exact breaker. | Retries documented; not this breaker. | — |
 | **Admin webhooks** | Outbound **audit** fan-out (`policy.webhooks[]`): fire-and-forget, **1 retry**, optional HMAC. `GET /admin/webhooks` is a redacted inventory (**no** URLs/secrets). Not inbound admin-event webhooks. | — | — | Admin UI; not this outbound audit fan-out. | — |
+| **Payload PII/secret redaction** | **Yes — conservative regex** inside `tools/call` `arguments`/`result` (emails, Bearer tokens, `sk-`/`ghp_`-like prefixes, long hex/base64-ish). Default: **audit + webhooks** redacted; **upstream body not mutated** unless `redact.upstream=true`. Stdlib only. **Not Presidio.** | — (Entra / adapter lifecycle; no in-payload PII inspector in the docs we read) | ExtMCP **guardrails** can rewrite tool args via an **external** processor (e.g. wire Presidio yourself). Not a built-in regex redactor. | Plugins / registry; not this stdlib inspector. | Optional interceptor Lambda (bring your own). |
 | **OSS license** | Apache-2.0 | MIT | Apache-2.0 | Apache-2.0 | No (managed AWS) |
 
 ## What this gateway is not
@@ -59,10 +64,11 @@ we read (do not treat "—" as a proof they lack it).
 - Not IBM ContextForge. They federate many servers with an Admin UI, plugins, and OTel. We proxy one HTTP or stdio upstream plus builtin tools.
 - Not AWS AgentCore Gateway. That is a managed cloud service.
 - **No SSO / SAML / Entra, no OPA, no WASM plugins.** Those appear on paid-later notes in the B README only.
+- **Not Presidio.** In-payload redaction is conservative regex (`src/redact.js`), not NER / checksums / an external analyzer. agentgateway's ExtMCP guardrails can call out to Presidio; we do not.
 
 ## When to use which
 
-- Need a **local, no-IdP** MCP front door with tenant keys, static allow/deny, JSONL/SIEM audit, and a tiny Streamable HTTP client surface: this CLI.
+- Need a **local, no-IdP** MCP front door with tenant keys, static allow/deny, JSONL/SIEM audit, **in-payload secret/PII redaction** (CN/security wedge vs routing-only gateways), and a tiny Streamable HTTP client surface: this CLI.
 - Need **K8s adapter lifecycle + Entra**: microsoft/mcp-gateway.
 - Need a **shared AI/MCP/A2A/LLM proxy** at mesh scale: agentgateway.
 - Need a **self-hosted registry + federation + Admin UI**: IBM ContextForge.
@@ -77,6 +83,8 @@ From this bet directory with Node 18+:
     npm run local-mvp
 
 Expect admin audit tenant filter: 401 without admin token, empty 200 for unknown tenant, no API keys in the body.
+
+Expect payload redaction: `POST /tools/call` with `Authorization: Bearer secret-token` and an email in args — live response still has the raw values (upstream not mutated); `GET /audit` / `GET /audit/export` do not.
 
 Sources (read 17 Aug 2026):
 - microsoft/mcp-gateway README and microsoft.github.io/mcp-gateway

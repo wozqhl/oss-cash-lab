@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Conservative stdlib payload redactor (`src/redact.js`): emails, Bearer tokens, `sk-`/`ghp_`-like prefixes, long hex/base64-ish secrets. Policy `redact: { enabled, fields, upstream }`. Default: audit JSONL + webhook payloads redacted; upstream `tools/call` body not mutated unless `redact.upstream=true`. Regex only — not Microsoft Presidio.
 - docs/vs-gateways.md comparison matrix vs microsoft/mcp-gateway, agentgateway, IBM ContextForge, AWS AgentCore.
 - README callout: not microsoft/mcp-gateway. Suggested public name oss-mcp-gateway.
 

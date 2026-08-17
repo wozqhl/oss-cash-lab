@@ -11,6 +11,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] GET /admin/audit tenant-scoped admin list (admin token; empty 200 for unknown tenant)
 - [x] docs/vs-gateways.md vs Microsoft / agentgateway / ContextForge / AgentCore
 - [x] README name-collision callout (not microsoft/mcp-gateway)
+- [x] Conservative stdlib PII/secret redaction inside tool-call payloads (audit/webhooks default; upstream opt-in). Regex, not Presidio.
 
 ## Still open
 

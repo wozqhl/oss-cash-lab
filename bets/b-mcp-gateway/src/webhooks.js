@@ -10,6 +10,7 @@ import {
   redactEvent,
   resolveRedactOnWrite,
 } from "./audit-export.js";
+import { resolvePayloadRedact, redactAuditEvent } from "./redact.js";
 
 const DEFAULT_TIMEOUT_MS = 750;
 /** OSS: one retry after this delay on 5xx / network / timeout. */
@@ -94,6 +95,10 @@ export function webhookEventType(auditEv) {
 export function buildWebhookPayload(auditEv, policy) {
   const type = webhookEventType(auditEv);
   let event = auditEv && typeof auditEv === "object" ? { ...auditEv } : auditEv;
+  // In-payload redaction is always-on by default (even when wholesale webhooksRedact is off).
+  if (resolvePayloadRedact(policy)) {
+    event = redactAuditEvent(event, policy);
+  }
   const redacted = resolveWebhooksRedact(policy);
   if (redacted) event = redactEvent(event);
   const requestId = event?.requestId ?? auditEv?.requestId ?? null;

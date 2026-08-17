@@ -113,6 +113,16 @@ import {
   DEFAULT_AUDIT_MAX_EVENTS,
   ENV_AUDIT_MAX_EVENTS,
 } from "./audit-export.js";
+import {
+  REDACTED,
+  redactString,
+  redactValue,
+  redactAuditEvent,
+  redactAuditEvents,
+  resolveRedactConfig,
+  resolvePayloadRedact,
+  resolveUpstreamRedact,
+} from "./redact.js";
 
 const VERSION = "0.1.0";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -538,6 +548,74 @@ if (cmd === "--version" || cmd === "-V") {
     zlib.gunzipSync(gzipRound).toString("utf8") === '{"ok":true}';
   if (!gzipOk) {
     console.error("smoke failed gzip export helpers");
+    process.exit(1);
+  }
+  const secretTok = "secret-token";
+  const piiEmail = "alice@example.com";
+  const ghp = "ghp_exampletokenvalue1";
+  const longHex = "a".repeat(32);
+  const shortHex = "deadbeef";
+  const rs = redactString("Authorization: Bearer " + secretTok + " contact " + piiEmail + " " + ghp);
+  const rsOk =
+    !rs.includes(secretTok) &&
+    !rs.includes(piiEmail) &&
+    !rs.includes(ghp) &&
+    rs.includes(REDACTED) &&
+    rs.includes("Bearer") &&
+    redactString(longHex) === REDACTED &&
+    redactString(shortHex) === shortHex &&
+    redactString("hello world") === "hello world" &&
+    redactString("sk-secret-smoke").includes(REDACTED) &&
+    !redactString("sk-secret-smoke").includes("sk-secret-smoke");
+  if (!rsOk) {
+    console.error("smoke failed redactString patterns", rs);
+    process.exit(1);
+  }
+  const cfgDef = resolveRedactConfig({});
+  const cfgOff = resolveRedactConfig({ redact: { enabled: false } });
+  const cfgUp = resolveRedactConfig({ redact: { enabled: true, upstream: true, fields: ["arguments"] } });
+  const cfgOk =
+    cfgDef.enabled === true &&
+    cfgDef.upstream === false &&
+    cfgDef.fields[0] === "*" &&
+    resolvePayloadRedact({}) === true &&
+    resolveUpstreamRedact({}) === false &&
+    cfgOff.enabled === false &&
+    resolvePayloadRedact({ redact: { enabled: false } }) === false &&
+    cfgUp.upstream === true &&
+    resolveUpstreamRedact({ redact: { upstream: true } }) === true &&
+    resolveUpstreamRedact({ redact: { enabled: false, upstream: true } }) === false;
+  if (!cfgOk) {
+    console.error("smoke failed resolveRedactConfig", { cfgDef, cfgOff, cfgUp });
+    process.exit(1);
+  }
+  const evIn = {
+    tool: "echo",
+    requestId: "rid-plain",
+    arguments: {
+      Authorization: "Bearer " + secretTok,
+      email: piiEmail,
+      message: "hello",
+    },
+    result: { echo: piiEmail, ok: true },
+  };
+  const evOut = redactAuditEvent(evIn, {});
+  const evDump = JSON.stringify(evOut);
+  const evOk =
+    !evDump.includes(secretTok) &&
+    !evDump.includes(piiEmail) &&
+    evOut.arguments.message === "hello" &&
+    evOut.requestId === "rid-plain" &&
+    evOut.result.ok === true &&
+    evIn.arguments.Authorization.includes(secretTok) &&
+    redactAuditEvent(evIn, { redact: { enabled: false } }).arguments.email === piiEmail;
+  if (!evOk) {
+    console.error("smoke failed redactAuditEvent", evOut);
+    process.exit(1);
+  }
+  const walked = redactValue({ nested: { email: piiEmail, keep: 1 } });
+  if (walked.nested.email === piiEmail || walked.nested.keep !== 1) {
+    console.error("smoke failed redactValue nested", walked);
     process.exit(1);
   }
   const adminOkEv = {
@@ -1698,7 +1776,9 @@ if (cmd === "--version" || cmd === "-V") {
     cfgParsed.upstream?.breaker?.openMs !== 2000 ||
     cfgParsed.tenants?.count !== 1 ||
     cfgParsed.webhooks?.count !== 1 ||
-    cfgParsed.webhooks?.destinations?.[0]?.hasWebhookSecret !== true
+    cfgParsed.webhooks?.destinations?.[0]?.hasWebhookSecret !== true ||
+    cfgParsed.redact?.enabled !== true ||
+    cfgParsed.redact?.upstream !== false
   ) {
     console.error("smoke failed admin config helper shape", cfgParsed, cfgSafe);
     process.exit(1);
@@ -2414,7 +2494,118 @@ if (cmd === "--version" || cmd === "-V") {
     try { fs.unlinkSync(mcpTtlTmp); } catch { /* ignore */ }
   }
 
-  console.log("mcp-gateway " + VERSION + " smoke OK — policy+ratelimit+ipAllowlist+cors+upstreamTimeout+circuitBreaker+ready+requestId+gzipExport+webhook+hmac+timestamp+retry+watch+shutdown+accessLog+adminAuditCsv+adminAuditMd+adminAuditHtml+tokenRotate+streamableHttp+sessionTtl+sessionTerminate+adminSessions+adminSessionDelete+adminConfig+adminGetTenant+adminWebhooks+auditRing");
+  const redactTmp = path.join("/tmp", "b-redact-payload-smoke-audit.jsonl");
+  try { fs.unlinkSync(redactTmp); } catch { /* ignore */ }
+  const gwRedact = createServer({
+    policy: {
+      adminToken: "admin-dev-token",
+      allow: ["echo"],
+      deny: [],
+      tenants: [{ id: "acme", apiKey: "ten_acme_mcp" }],
+      tools: [{ name: "echo", description: "echo" }],
+      redact: { enabled: true, fields: ["*"], upstream: false },
+    },
+    auditPath: redactTmp,
+  });
+  await new Promise((resolve, reject) => {
+    gwRedact.server.once("error", reject);
+    gwRedact.server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const rPort = gwRedact.server.address().port;
+    const rBase = "http://127.0.0.1:" + rPort;
+    const rAuth = { "content-type": "application/json", authorization: "Bearer ten_acme_mcp" };
+    const unauthCall = await fetch(rBase + "/tools/call", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer secret-token" },
+      body: JSON.stringify({
+        name: "echo",
+        arguments: { Authorization: "Bearer secret-token", email: "alice@example.com" },
+      }),
+    });
+    const unauthCallBody = await unauthCall.json();
+    if (unauthCall.status !== 401 || unauthCallBody.error !== "unknown_api_key") {
+      console.error("smoke failed tools/call 401 with Bearer secret-token", unauthCall.status, unauthCallBody);
+      process.exit(1);
+    }
+    const adminUnauth = await fetch(rBase + "/admin/audit");
+    const adminUnauthBody = await adminUnauth.json();
+    if (adminUnauth.status !== 401 || adminUnauthBody.error !== "unauthorized_admin") {
+      console.error("smoke failed admin audit 401 unchanged", adminUnauth.status, adminUnauthBody);
+      process.exit(1);
+    }
+    const callOk = await fetch(rBase + "/tools/call", {
+      method: "POST",
+      headers: rAuth,
+      body: JSON.stringify({
+        name: "echo",
+        arguments: {
+          Authorization: "Bearer secret-token",
+          email: "alice@example.com",
+          message: "hello-redact",
+        },
+      }),
+    });
+    const callBody = await callOk.json();
+    const callDump = JSON.stringify(callBody);
+    if (
+      callOk.status !== 200 ||
+      callBody.ok !== true ||
+      !callDump.includes("secret-token") ||
+      !callDump.includes("alice@example.com") ||
+      !callDump.includes("hello-redact")
+    ) {
+      console.error("smoke failed tools/call live body should stay unredacted", callOk.status, callBody);
+      process.exit(1);
+    }
+    const auditRes = await fetch(rBase + "/audit", { headers: rAuth });
+    const auditBody = await auditRes.json();
+    const auditDump = JSON.stringify(auditBody);
+    if (
+      auditRes.status !== 200 ||
+      auditDump.includes("secret-token") ||
+      auditDump.includes("alice@example.com") ||
+      !auditDump.includes("hello-redact") ||
+      !auditDump.includes(REDACTED)
+    ) {
+      console.error("smoke failed GET /audit payload redaction", auditRes.status, auditBody);
+      process.exit(1);
+    }
+    const expRes = await fetch(rBase + "/audit/export?format=json", { headers: rAuth });
+    const expBody = await expRes.json();
+    const expDump = JSON.stringify(expBody);
+    if (
+      expRes.status !== 200 ||
+      expDump.includes("secret-token") ||
+      expDump.includes("alice@example.com") ||
+      !expDump.includes("hello-redact")
+    ) {
+      console.error("smoke failed GET /audit/export payload redaction", expRes.status, expBody);
+      process.exit(1);
+    }
+    const disk = fs.readFileSync(redactTmp, "utf8");
+    if (disk.includes("secret-token") || disk.includes("alice@example.com")) {
+      console.error("smoke failed audit JSONL still has raw secret", disk);
+      process.exit(1);
+    }
+    const cfgRedact = await fetch(rBase + "/admin/config", {
+      headers: { "x-admin-token": "admin-dev-token" },
+    });
+    const cfgRedactBody = await cfgRedact.json();
+    if (
+      cfgRedact.status !== 200 ||
+      cfgRedactBody.redact?.enabled !== true ||
+      cfgRedactBody.redact?.upstream !== false
+    ) {
+      console.error("smoke failed GET /admin/config redact knob", cfgRedact.status, cfgRedactBody);
+      process.exit(1);
+    }
+  } finally {
+    try { await gwRedact.close(); } catch { /* ignore */ }
+    try { fs.unlinkSync(redactTmp); } catch { /* ignore */ }
+  }
+
+  console.log("mcp-gateway " + VERSION + " smoke OK — policy+ratelimit+ipAllowlist+cors+upstreamTimeout+circuitBreaker+ready+requestId+gzipExport+webhook+hmac+timestamp+retry+watch+shutdown+accessLog+adminAuditCsv+adminAuditMd+adminAuditHtml+tokenRotate+streamableHttp+sessionTtl+sessionTerminate+adminSessions+adminSessionDelete+adminConfig+adminGetTenant+adminWebhooks+auditRing+payloadRedact");
 } else if (cmd === "demo") {
   for (const tool of ["listPets", "deletePet", "createPet"]) {
     const decision = evaluatePolicy(demoPolicy, tool);
@@ -2550,6 +2741,9 @@ if (cmd === "--version" || cmd === "-V") {
       process.exit(1);
     }
     throw err;
+  }
+  if (resolvePayloadRedact(policy)) {
+    events = redactAuditEvents(events, policy);
   }
   const doRedact = resolveRedact({ flag: args.redact, policy });
   if (doRedact) events = redactEvents(events);

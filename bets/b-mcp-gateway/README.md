@@ -83,7 +83,7 @@ Admin tenants: `GET /admin/tenants` (X-Admin-Token / Bearer admin) → `{id,allo
 Admin tenant: `GET /admin/tenants/{id}` (same admin token) → `{ok,id,hasApiKey,hasPreviousApiKey,previousApiKeyExpiresAt,allow,deny,rateLimit,hasIpAllowlist,maxBodyBytes}` (**never** `apiKey` / `previousApiKey` values) · unknown id → `404` `{error:tenant_not_found}` · missing/invalid token → `401`  
 Admin sessions: `GET /admin/sessions` (same admin token) → `{ok, ttlSec, cap, count, sessions:[{id, ageMs, ttlRemainingMs, lastSeen}]}` live in-memory Streamable HTTP sessions (newest **100**; `truncated: true` when more; tombstones omitted; **no** secrets/keys/headers) · missing/invalid token → `401`  
 Admin session drop: `DELETE /admin/sessions/{id}` (same admin token; id in the path, **no** `Mcp-Session-Id` header) → **204**; unknown/expired/already gone → **404** `{error:"session_not_found"}` (idempotent); unauth → **401**. Client `DELETE /mcp` unchanged.  
-Admin config: `GET /admin/config` (same admin token) → `{ok, sessionTtlSec, sessionCap, auditMax, rotateGraceSec, rateLimit, cors.origins, upstream.timeoutMs/breaker, tenants.count, webhooks.count + hasWebhookSecret}` redacted runtime config (**never** apiKey / secrets / admin token / Authorization / `--header` values) · missing/invalid token → `401`  
+Admin config: `GET /admin/config` (same admin token) → `{ok, sessionTtlSec, sessionCap, auditMax, rotateGraceSec, rateLimit, cors.origins, upstream.timeoutMs/breaker, tenants.count, webhooks.count + hasWebhookSecret, redact.enabled/upstream/fields}` redacted runtime config (**never** apiKey / secrets / admin token / Authorization / `--header` values) · missing/invalid token → `401`  
 Admin webhooks: `GET /admin/webhooks` (same admin token) → `{ok, count, webhooks:[{id, events, hasUrl, hasSecret}]}` redacted outbound webhook inventory (**never** url / secret / apiKey / admin token) · empty → `{ok:true, count:0, webhooks:[]}` · missing/invalid token → `401`  
 Admin rotate: `POST /admin/tenants/{id}/rotate` (same admin auth) → `{ok:true, tenantId, token, previousTokenExpiresAt?}` — **new token shown once**. Previous key valid for grace (default **60s**, `--rotate-grace-sec` / `TOKEN_ROTATE_GRACE_SEC`) then 401. Unknown tenant → `404`. Audit `type=token_rotated` (**no** raw tokens in JSONL/CSV/logs/metrics).  
 
@@ -160,7 +160,7 @@ Optional policy config posts each audit event to HTTP endpoints after JSONL writ
 - **Retry (OSS)**: on **5xx** or **network/timeout**, retry the POST **once** after ~50ms. Success on the first try = no retry. **4xx do not retry**. Optional Prometheus `webhook_retries_total`.
 - **HMAC (OSS)**: optional per-hook `secret`. When set, POST includes `X-Webhook-Signature: sha256=<hex>` — HMAC-SHA256 of the **raw JSON body**. Omit / empty `secret` → unsigned (existing fan-out). Simple HMAC is OSS.
 - **Timestamp (OSS)**: every outbound POST includes `X-Webhook-Timestamp: <unix-seconds>`. HMAC still signs the raw body only (timestamp is an extra header). **Replay window enforcement = paid later**.
-- **Redaction**: `webhooksRedact` defaults **true** (prefer redacted payloads). Also forced when `audit.redactOnWrite` or `export.redactDefault` is true. Uses the same `[REDACTED]` / `argumentKeysHash` rules as export.
+- **Redaction**: in-payload regex (`policy.redact`, default on) runs first; then `webhooksRedact` defaults **true** (wholesale `[REDACTED]`). Also forced when `audit.redactOnWrite` or `export.redactDefault` is true. Same `argumentKeysHash` rules as export.
 - **Paid note**: OSS is best-effort with **1 retry** (no DLQ, no exponential backoff). Optional simple HMAC + timestamp header. **Exponential backoff / queues, key rotation, and timestamp replay window enforcement = paid / pilot**.
 
 Local prove: `mock-webhook-receiver.js` writes the last POST body to a file (optional `--secret` verifies HMAC; `--headers-out` persists `X-Webhook-Signature` + `X-Webhook-Timestamp`; `--fail-once` returns 500 then 200). `scripts/local-mvp.sh` asserts unsigned `tool_call` + `deny` receipts **and** timestamp present/roughly now, plus an isolated signed receiver (`secret` set → signature header present + HMAC matches body + timestamp independent), plus an isolated `--fail-once` receiver (2 POSTs, body delivered, `webhook_retries_total` ≥ 1). Smoke unit-tests 200/4xx = no retry and 5xx/network = one retry.
@@ -235,7 +235,7 @@ Ops kill when the MCP client is gone (no `Mcp-Session-Id` to send). Same admin t
 Ops-facing **redacted** snapshot of runtime knobs for pilot debugging (TTL, CORS, breaker, rate-limit, session cap) **without secrets**:
 
 - **Auth**: same as `GET /admin/tenants` — `X-Admin-Token` or Bearer matching `adminToken`. Missing/invalid → `401 {"error":"unauthorized_admin"}`.
-- **Response**: `{ ok, sessionTtlSec, sessionCap, auditMax, rotateGraceSec, rateLimit: { perMinute }, cors: { origins }, upstream: { timeoutMs, breaker }, tenants: { count }, webhooks: { count, destinations: [{ hasWebhookSecret }] } }`.
+- **Response**: `{ ok, sessionTtlSec, sessionCap, auditMax, rotateGraceSec, rateLimit: { perMinute }, cors: { origins }, upstream: { timeoutMs, breaker }, tenants: { count }, webhooks: { count, destinations: [{ hasWebhookSecret }] }, redact: { enabled, upstream, fields } }`.
 - **CORS origins**: explicit list, or `*` when any Origin is allowed. Empty list when CORS is disabled.
 - **Secrets**: **never** `apiKey`, `previousApiKey`, webhook secrets, admin token, `Authorization`, `--header` values, or tenant tokens. Tenant **count** only (not keys). Webhook dests expose `hasWebhookSecret` boolean only.
 - CORS + `X-Request-Id` like other admin GET.
@@ -356,14 +356,33 @@ Optional tenant field:
 - Client IP preference: first `X-Forwarded-For` hop, else socket `remoteAddress`.
 - **stack-demo / local-mvp** talk to the gateway on **loopback** (`127.0.0.1`); if you set `ipAllowlist`, include loopback (or a matching CIDR) so demos keep working.
 
+### Payload PII/secret redaction (CN / security wedge)
+
+Most 2026 MCP infra gateways (microsoft/mcp-gateway, agentgateway) do **routing / auth / observability**. Few inspect **inside** `tools/call` arguments. This tree ships a **conservative, stdlib-only regex** layer — emails, `Bearer` tokens, `sk-` / `ghp_`-like prefixes, long hex / base64-ish secrets. **Not Microsoft Presidio** (no NER, no checksums, no external analyzer). Honest gap vs a Presidio/ExtMCP guardrail stack.
+
+```json
+{
+  "redact": {
+    "enabled": true,
+    "fields": ["*"],
+    "upstream": false
+  }
+}
+```
+
+- **`enabled`** (default **true**): walk `arguments` / `args` / `result` on **audit JSONL write**, **GET /audit** / **GET /audit/export** / CLI `export-audit`, and **webhook** payloads. Matched spans become `[REDACTED]`; surrounding structure stays. `fields: ["*"]` means those payload keys only (not `ts` / `tool` / `requestId`).
+- **`upstream`** (default **false**): do **not** mutate the body sent to an HTTP/stdio upstream `tools/call`. Set `true` only when you accept breaking APIs that need the raw secret. Live `/tools/call` **responses** are never rewritten by this layer.
+- Disable with `redact.enabled: false` (debug only). Wholesale `[REDACTED]` field wipe (`?redact=1` / `audit.redactOnWrite`) is a separate, stricter switch below.
+
 ### Disk vs export redaction modes
 
-Two independent switches (do not confuse):
+Independent switches (do not confuse with in-payload regex above):
 
 | Mode | Config / flag | When it applies | Default |
 |------|---------------|-----------------|--------|
-| **Export / query redaction** | `?redact=` / `--redact` / `--no-redact`, else `export.redactDefault` | `GET /audit`, `GET /audit/export`, CLI `export-audit` — transforms events **on read** | `false` (local-mvp keeps unredacted export tests) |
+| **In-payload regex** | `redact.enabled` / `redact.fields` / `redact.upstream` | Inspect strings **inside** `arguments`/`result` (audit write + query/export + webhooks). Upstream body only if `redact.upstream=true` | **on** for audit/webhooks; **off** for upstream |
+| **Export / query redaction** | `?redact=` / `--redact` / `--no-redact`, else `export.redactDefault` | `GET /audit`, `GET /audit/export`, CLI `export-audit` — wholesale `arguments`/`result` → `[REDACTED]` **on read** | `false` (local-mvp keeps unredacted export tests) |
 | **Redact-on-write** | `audit.redactOnWrite: true` | JSONL append at call time — disk never stores raw `arguments`/`result` (keeps `argumentKeysHash`) | `false` |
-| **Webhook redaction** | `webhooksRedact` (default **true**); also if `redactOnWrite` / `export.redactDefault` | Audit webhook POST payload | `true` |
+| **Webhook redaction** | `webhooksRedact` (default **true**); also if `redactOnWrite` / `export.redactDefault` | Audit webhook POST payload (wholesale wipe; in-payload regex still runs first) | `true` |
 
-Use **export redaction** when operators need full local JSONL for debugging but must hand PII-safe packs to security. Use **redact-on-write** when disk itself must not retain secrets (stricter retention). Webhooks prefer redacted payloads by default (`webhooksRedact: true`). Live `/tools/call` responses are never redacted by these modes.
+Use **in-payload regex** as the default CN/security control so SIEM packs keep tool structure without emails/tokens. Use **export redaction** when operators need full local JSONL for debugging but must hand PII-safe packs to security. Use **redact-on-write** when disk itself must not retain any args (stricter retention). Webhooks prefer redacted payloads by default (`webhooksRedact: true`). Live `/tools/call` responses are never redacted by these modes.
