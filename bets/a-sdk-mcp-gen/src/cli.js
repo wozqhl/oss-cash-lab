@@ -34,6 +34,8 @@ import {
   isSupportedOpenApiVersion,
   unwrapNullUnion,
   schemaExample,
+  paginationInfo,
+  iterateHelperName,
 } from "./openapi.js";
 import { loadOpenApiSpec } from "./yaml.js";
 import { fetchOpenApiText, parseFetchHeaderLines, redactSecretsInText, pollRemoteOpenApi, specWatchStateFromFetch, remoteSpecChange, hashSpecBody } from "./fetch-spec.js";
@@ -1075,6 +1077,10 @@ if (cmd === "--version" || cmd === "-V") {
     console.error("smoke ts public method names changed");
     process.exit(1);
   }
+  if (ts.includes("iterateListPets")) {
+    console.error("smoke demo ts should not emit iterateListPets without pageable query params");
+    process.exit(1);
+  }
   const py = generatePyClient(ops, "Demo API");
   if (!py.includes("def listPets") || !py.includes("urllib.request") || !py.includes("429") || !py.includes("def _retry_delay_s")) {
     console.error("smoke python client failed");
@@ -1773,6 +1779,155 @@ if (cmd === "--version" || cmd === "-V") {
       process.exit(1);
     }
 
+    // pageable petstore listPets (limit query) gets iterateListPets; existing names stay
+    const petOps = listOperations(petstoreSpec);
+    const listPetOp = petOps.find((o) => o.operationId === "listPets");
+    const listInfo = paginationInfo(listPetOp);
+    if (!listInfo || listInfo.limit !== "limit" || iterateHelperName("listPets") !== "iterateListPets") {
+      console.error("smoke paginationInfo listPets", listInfo);
+      process.exit(1);
+    }
+    if (paginationInfo(petOps.find((o) => o.operationId === "createPet"))) {
+      console.error("smoke createPet should not be pageable");
+      process.exit(1);
+    }
+    const petClients = path.join(tmp, "petstore-page");
+    generateToDir(petstoreSpec, petClients, ["ts", "python", "go"]);
+    const petTs = fs.readFileSync(path.join(petClients, "client.ts"), "utf8");
+    if (!petTs.includes("async function listPets") || !petTs.includes("iterateListPets") || !petTs.includes("next_cursor") || !petTs.includes("nextPageToken")) {
+      console.error("smoke petstore client.ts missing listPets / iterateListPets helper");
+      process.exit(1);
+    }
+    if (!/return \{\s*listPets,/.test(petTs) || !petTs.includes("iterateListPets,")) {
+      console.error("smoke petstore client.ts should keep listPets and export iterateListPets");
+      process.exit(1);
+    }
+    const petPy = fs.readFileSync(path.join(petClients, "client.py"), "utf8");
+    if (!petPy.includes("def listPets") || !petPy.includes("def iterateListPets") || !petPy.includes("def _page_len")) {
+      console.error("smoke petstore client.py missing iterateListPets");
+      process.exit(1);
+    }
+    const petGo = fs.readFileSync(path.join(petClients, "client.go"), "utf8");
+    if (!petGo.includes("func (c *Client) ListPets") || !petGo.includes("func (c *Client) IterateListPets") || !petGo.includes("nextPageToken")) {
+      console.error("smoke petstore client.go missing IterateListPets");
+      process.exit(1);
+    }
+    const petToolNames = (JSON.parse(fs.readFileSync(path.join(petClients, "mcp-tools.json"), "utf8")).tools || []).map((t) => t.name);
+    for (const n of ["listPets", "createPet", "getPet", "deletePet"]) {
+      if (!petToolNames.includes(n)) {
+        console.error("smoke petstore tools missing", n, petToolNames);
+        process.exit(1);
+      }
+    }
+    if (petToolNames.includes("iterateListPets")) {
+      console.error("smoke iterate helper must not become an MCP tool", petToolNames);
+      process.exit(1);
+    }
+    const petBase = path.join(tmp, "petstore-page-base");
+    const petNew = path.join(tmp, "petstore-page-new");
+    generateToDir(petstoreSpec, petBase, ["ts", "python", "go"]);
+    generateToDir(petstoreSpec, petNew, ["ts", "python", "go"]);
+    if (runCheck(petNew, petBase, { checkClients: true }) !== 0) {
+      console.error("smoke petstore breaking check should stay green for existing names");
+      process.exit(1);
+    }
+    const pagePy = path.join(petClients, "_page_smoke.py");
+    fs.writeFileSync(pagePy, [
+      "import json, urllib.parse",
+      "from client import Client",
+      "class FakeRes:",
+      "    def __init__(self, body):",
+      "        self._b = json.dumps(body).encode()",
+      "    def read(self):",
+      "        return self._b",
+      "    def __enter__(self):",
+      "        return self",
+      "    def __exit__(self, *a):",
+      "        return False",
+      "class FakeOpener:",
+      "    def open(self, req):",
+      "        url = getattr(req, 'full_url', str(req))",
+      "        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)",
+      "        page = int((q.get('page') or ['1'])[0])",
+      "        if page <= 1:",
+      "            return FakeRes([{'id': 1}, {'id': 2}])",
+      "        if page == 2:",
+      "            return FakeRes([{'id': 3}])",
+      "        return FakeRes([])",
+      "c = Client('http://example.test', opener=FakeOpener())",
+      "pages = list(c.iterateListPets({'limit': 2}))",
+      "assert pages == [[{'id': 1}, {'id': 2}], [{'id': 3}]], pages",
+      "print('page-iter-ok')",
+      "",
+    ].join("\n"));
+    const pageRun = spawnSync("python3", [pagePy], { encoding: "utf8", timeout: 8000, cwd: petClients, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+    if (pageRun.error || pageRun.status !== 0 || !String(pageRun.stdout || "").includes("page-iter-ok")) {
+      console.error("smoke petstore iterateListPets runtime failed", pageRun.status, pageRun.stdout, pageRun.stderr, pageRun.error);
+      process.exit(1);
+    }
+
+    // cursor-mode fixture used only in smoke (does not change petstore tool names)
+    const cursorSpec = {
+      openapi: "3.0.3",
+      info: { title: "Cursor API", version: "1.0.0" },
+      paths: {
+        "/items": {
+          get: {
+            operationId: "listItems",
+            summary: "List items",
+            parameters: [{ name: "cursor", in: "query", schema: { type: "string" } }],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    };
+    const curInfo = paginationInfo(listOperations(cursorSpec)[0]);
+    if (!curInfo || curInfo.mode !== "cursor" || curInfo.cursor !== "cursor") {
+      console.error("smoke cursor paginationInfo", curInfo);
+      process.exit(1);
+    }
+    const curDir = path.join(tmp, "cursor-page");
+    generateToDir(cursorSpec, curDir, ["ts", "python"]);
+    const curTs = fs.readFileSync(path.join(curDir, "client.ts"), "utf8");
+    if (!curTs.includes("async function listItems") || !curTs.includes("iterateListItems")) {
+      console.error("smoke cursor client.ts missing iterateListItems");
+      process.exit(1);
+    }
+    const curPy = path.join(curDir, "_cursor_smoke.py");
+    fs.writeFileSync(curPy, [
+      "import json, urllib.parse",
+      "from client import Client",
+      "class FakeRes:",
+      "    def __init__(self, body):",
+      "        self._b = json.dumps(body).encode()",
+      "    def read(self):",
+      "        return self._b",
+      "    def __enter__(self):",
+      "        return self",
+      "    def __exit__(self, *a):",
+      "        return False",
+      "class FakeOpener:",
+      "    def open(self, req):",
+      "        url = getattr(req, 'full_url', str(req))",
+      "        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)",
+      "        cur = (q.get('cursor') or [''])[0]",
+      "        if not cur:",
+      "            return FakeRes({'data': [1, 2], 'next_cursor': 'abc'})",
+      "        if cur == 'abc':",
+      "            return FakeRes({'data': [3], 'next_cursor': ''})",
+      "        return FakeRes({'data': []})",
+      "c = Client('http://example.test', opener=FakeOpener())",
+      "pages = list(c.iterateListItems({}))",
+      "assert pages == [{'data': [1, 2], 'next_cursor': 'abc'}, {'data': [3], 'next_cursor': ''}], pages",
+      "print('cursor-iter-ok')",
+      "",
+    ].join("\n"));
+    const curRun = spawnSync("python3", [curPy], { encoding: "utf8", timeout: 8000, cwd: curDir, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+    if (curRun.error || curRun.status !== 0 || !String(curRun.stdout || "").includes("cursor-iter-ok")) {
+      console.error("smoke cursor iterateListItems runtime failed", curRun.status, curRun.stdout, curRun.stderr, curRun.error);
+      process.exit(1);
+    }
+
     // OpenAPI 3.1 mini: accept 3.1.x, type unions, examples, $ref, ignore webhooks
     if (!isSupportedOpenApiVersion("3.1.0") || !isSupportedOpenApiVersion("3.1.1") || !isSupportedOpenApiVersion("3.0.3")) {
       console.error("smoke isSupportedOpenApiVersion 3.0/3.1");
@@ -2000,7 +2155,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

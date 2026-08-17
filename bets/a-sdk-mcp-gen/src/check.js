@@ -20,7 +20,7 @@ export function loadToolNames(dir) {
 function extractTsExports(src) {
   const names = new Set();
   // async function opName( inside createClient
-  for (const m of src.matchAll(/async\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+  for (const m of src.matchAll(/async\s+function\s*\*?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
     if (m[1] !== "request") names.add(m[1]);
   }
   return names;

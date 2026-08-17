@@ -1060,8 +1060,128 @@ export function generatePackageJson(title, packageName) {
   return lines.join("\n");
 }
 
+const PAGEABLE_QUERY = new Set(["page", "pagesize", "offset", "limit", "cursor", "starting_after"]);
+
+/** GET ops with common page query params. Conservative — not a Stainless pager. */
+export function paginationInfo(op) {
+  if (!op || String(op.method || "").toUpperCase() !== "GET") return null;
+  const found = {};
+  for (const p of op.parameters || []) {
+    if (!p?.name || String(p.in || "").toLowerCase() !== "query") continue;
+    const raw = String(p.name);
+    const key = raw.toLowerCase();
+    if (!PAGEABLE_QUERY.has(key)) continue;
+    if (key === "pagesize") found.pageSize = raw;
+    else if (key === "starting_after") found.startingAfter = raw;
+    else found[key] = raw;
+  }
+  if (!found.page && !found.pageSize && !found.offset && !found.limit && !found.cursor && !found.startingAfter) {
+    return null;
+  }
+  const cursorParam = found.cursor || found.startingAfter || null;
+  const sizeParam = found.limit || found.pageSize || null;
+  const pageParam = found.page || null;
+  const offsetParam = found.offset || null;
+  let mode = "page";
+  if (cursorParam && !pageParam && !offsetParam) mode = "cursor";
+  else if (offsetParam && !pageParam) mode = "offset";
+  return { ...found, cursorParam, sizeParam, pageParam, offsetParam, mode };
+}
+
+export function iterateHelperName(operationId) {
+  const id = String(operationId || "Op").replace(/[^A-Za-z0-9_]/g, "_") || "Op";
+  return "iterate" + id.charAt(0).toUpperCase() + id.slice(1);
+}
+
+function pageableOps(ops) {
+  const out = [];
+  for (const op of ops || []) {
+    const info = paginationInfo(op);
+    if (info) out.push({ op, info, iter: iterateHelperName(op.operationId) });
+  }
+  return out;
+}
+
+function emitTsPageRuntime(lines) {
+  lines.push(`  // Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.`);
+  lines.push(`  function pageLen(data: unknown): number {`);
+  lines.push(`    if (Array.isArray(data)) return data.length;`);
+  lines.push(`    if (data && typeof data === "object") {`);
+  lines.push(`      const o = data as { [k: string]: unknown };`);
+  lines.push(`      for (const k of ["data", "items", "results"]) {`);
+  lines.push(`        if (Array.isArray(o[k])) return (o[k] as unknown[]).length;`);
+  lines.push(`      }`);
+  lines.push(`    }`);
+  lines.push(`    return -1;`);
+  lines.push(`  }`);
+  lines.push(`  function nextCursorOf(data: unknown): string | undefined {`);
+  lines.push(`    if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;`);
+  lines.push(`    const o = data as { [k: string]: unknown };`);
+  lines.push(`    for (const k of ["next", "next_cursor", "nextPageToken"]) {`);
+  lines.push(`      const v = o[k];`);
+  lines.push(`      if (typeof v === "string" && v) return v;`);
+  lines.push(`    }`);
+  lines.push(`    return undefined;`);
+  lines.push(`  }`);
+}
+
+function emitTsIterate(lines, op, info, iterName) {
+  const fn = op.operationId;
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  lines.push(`  async function* ${iterName}(args: Record<string, unknown> = {}) {`);
+  lines.push(`    const state: Record<string, unknown> = { ...args };`);
+  if (mode === "offset") {
+    lines.push(`    let offset = Number(state[${JSON.stringify(offsetKey)}] ?? 0) || 0;`);
+  } else if (mode === "page") {
+    lines.push(`    let page = Number(state[${JSON.stringify(pageKey)}] ?? 1) || 1;`);
+  }
+  lines.push(`    for (let n = 0; n < 1000; n++) {`);
+  lines.push(`      const callArgs: Record<string, unknown> = { ...state };`);
+  if (mode === "offset") {
+    lines.push(`      callArgs[${JSON.stringify(offsetKey)}] = offset;`);
+  } else if (mode === "page") {
+    lines.push(`      callArgs[${JSON.stringify(pageKey)}] = page;`);
+  }
+  lines.push(`      const data = await ${fn}(callArgs);`);
+  lines.push(`      yield data;`);
+  lines.push(`      const len = pageLen(data);`);
+  if (sizeKey) {
+    lines.push(`      const size = Number(callArgs[${JSON.stringify(sizeKey)}] ?? 0) || 0;`);
+    lines.push(`      if (data == null || len === 0 || (size > 0 && len >= 0 && len < size)) break;`);
+  } else {
+    lines.push(`      if (data == null || len === 0) break;`);
+  }
+  lines.push(`      const cur = nextCursorOf(data);`);
+  lines.push(`      if (cur && cur !== state[${JSON.stringify(cursorKey)}]) {`);
+  lines.push(`        state[${JSON.stringify(cursorKey)}] = cur;`);
+  lines.push(`        continue;`);
+  lines.push(`      }`);
+  if (mode === "cursor") {
+    lines.push(`      break;`);
+  } else if (mode === "offset") {
+    lines.push(`      if (len < 0) break;`);
+    if (sizeKey) {
+      lines.push(`      const step = size > 0 ? size : len;`);
+    } else {
+      lines.push(`      const step = len;`);
+    }
+    lines.push(`      if (step <= 0) break;`);
+    lines.push(`      offset += step;`);
+  } else {
+    lines.push(`      if (len < 0) break;`);
+    lines.push(`      page += 1;`);
+  }
+  lines.push(`    }`);
+  lines.push(`  }`);
+}
+
 export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
+  const pageable = pageableOps(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`// API: ${title}`);
@@ -1116,6 +1236,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    }`);
   lines.push(`    throw new Error(method + " " + path + " -> network");`);
   lines.push(`  }`);
+  if (pageable.length) emitTsPageRuntime(lines);
   for (const op of ops) {
     const fn = op.operationId;
     lines.push(`  async function ${fn}(args: Record<string, unknown> = {}) {`);
@@ -1133,10 +1254,15 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`    return request(${JSON.stringify(op.method)}, path, args);`);
     }
     lines.push(`  }`);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitTsIterate(lines, op, hit.info, hit.iter);
   }
   lines.push(`  return {`);
   for (const op of ops) {
     lines.push(`    ${op.operationId},`);
+  }
+  for (const p of pageable) {
+    lines.push(`    ${p.iter},`);
   }
   lines.push(`  };`);
   lines.push(`}`);
@@ -1144,9 +1270,103 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   return lines.join("\n");
 }
 
+function emitPyPageRuntime(lines) {
+  lines.push(`# Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000.`);
+  lines.push(`def _page_len(data: Any) -> int:`);
+  lines.push(`    if isinstance(data, list):`);
+  lines.push(`        return len(data)`);
+  lines.push(`    if isinstance(data, dict):`);
+  lines.push(`        for k in ("data", "items", "results"):`);
+  lines.push(`            v = data.get(k)`);
+  lines.push(`            if isinstance(v, list):`);
+  lines.push(`                return len(v)`);
+  lines.push(`    return -1`);
+  lines.push(``);
+  lines.push(`def _next_cursor(data: Any) -> Any:`);
+  lines.push(`    if isinstance(data, dict):`);
+  lines.push(`        for k in ("next", "next_cursor", "nextPageToken"):`);
+  lines.push(`            v = data.get(k)`);
+  lines.push(`            if isinstance(v, str) and v:`);
+  lines.push(`                return v`);
+  lines.push(`    return None`);
+  lines.push(``);
+  lines.push(`def _as_int(v: Any, default: int) -> int:`);
+  lines.push(`    try:`);
+  lines.push(`        if v is None:`);
+  lines.push(`            return default`);
+  lines.push(`        return int(v)`);
+  lines.push(`    except (TypeError, ValueError):`);
+  lines.push(`        return default`);
+  lines.push(``);
+}
+
+function emitPyIterate(lines, op, info, iterName) {
+  const fn = op.operationId;
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `Auto pages ${fn} (page/cursor). Not a full pager.`.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"');
+  lines.push(`    def ${iterName}(self, args: Optional[Mapping[str, Any]] = None) -> Any:`);
+  lines.push(`        """${summary}"""`);
+  lines.push(`        state: MutableMapping[str, Any] = dict(args or {})`);
+  if (mode === "offset") {
+    lines.push(`        offset = _as_int(state.get(${JSON.stringify(offsetKey)}), 0)`);
+  } else if (mode === "page") {
+    lines.push(`        page = _as_int(state.get(${JSON.stringify(pageKey)}), 1)`);
+    lines.push(`        if page < 1:`);
+    lines.push(`            page = 1`);
+  }
+  lines.push(`        n = 0`);
+  lines.push(`        while n < 1000:`);
+  lines.push(`            n += 1`);
+  lines.push(`            call = dict(state)`);
+  if (mode === "offset") {
+    lines.push(`            call[${JSON.stringify(offsetKey)}] = offset`);
+  } else if (mode === "page") {
+    lines.push(`            call[${JSON.stringify(pageKey)}] = page`);
+  }
+  lines.push(`            data = self.${fn}(call)`);
+  lines.push(`            yield data`);
+  lines.push(`            ln = _page_len(data)`);
+  if (sizeKey) {
+    lines.push(`            size = _as_int(call.get(${JSON.stringify(sizeKey)}), 0)`);
+    lines.push(`            if data is None or ln == 0 or (size > 0 and ln >= 0 and ln < size):`);
+    lines.push(`                break`);
+  } else {
+    lines.push(`            if data is None or ln == 0:`);
+    lines.push(`                break`);
+  }
+  lines.push(`            cur = _next_cursor(data)`);
+  lines.push(`            if cur and cur != state.get(${JSON.stringify(cursorKey)}):`);
+  lines.push(`                state[${JSON.stringify(cursorKey)}] = cur`);
+  lines.push(`                continue`);
+  if (mode === "cursor") {
+    lines.push(`            break`);
+  } else if (mode === "offset") {
+    lines.push(`            if ln < 0:`);
+    lines.push(`                break`);
+    if (sizeKey) {
+      lines.push(`            step = size if size > 0 else ln`);
+    } else {
+      lines.push(`            step = ln`);
+    }
+    lines.push(`            if step <= 0:`);
+    lines.push(`                break`);
+    lines.push(`            offset += step`);
+  } else {
+    lines.push(`            if ln < 0:`);
+    lines.push(`                break`);
+    lines.push(`            page += 1`);
+  }
+  lines.push(``);
+}
+
 /** Minimal sync Python client (stdlib urllib only — no requests). */
 export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
+  const pageable = pageableOps(ops);
   const lines = [];
   lines.push(`# Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`# API: ${title}`);
@@ -1181,6 +1401,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                pass`);
   lines.push(`    return 0.1 * (2 ** attempt)`);
   lines.push(``);
+  if (pageable.length) emitPyPageRuntime(lines);
   lines.push(`class Client:`);
   lines.push(`    """Sync HTTP client stub generated from OpenAPI."""`);
   lines.push(``);
@@ -1249,6 +1470,8 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`        return self._request(${JSON.stringify(op.method)}, path, dict(args_map))`);
     }
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitPyIterate(lines, op, hit.info, hit.iter);
   }
   lines.push(``);
   lines.push(`def create_client(base_url: str = "", opener: Any = None) -> Client:`);
@@ -1266,9 +1489,148 @@ export function toGoExported(name) {
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
+function emitGoPageRuntime(lines) {
+  lines.push(`// pageLen is the length of a list payload, or -1 if the shape is unknown.`);
+  lines.push(`func pageLen(data any) int {`);
+  lines.push(`\tswitch v := data.(type) {`);
+  lines.push(`\tcase []any:`);
+  lines.push(`\t\treturn len(v)`);
+  lines.push(`\tcase map[string]any:`);
+  lines.push(`\t\tfor _, k := range []string{"data", "items", "results"} {`);
+  lines.push(`\t\t\tif arr, ok := v[k].([]any); ok {`);
+  lines.push(`\t\t\t\treturn len(arr)`);
+  lines.push(`\t\t\t}`);
+  lines.push(`\t\t}`);
+  lines.push(`\t}`);
+  lines.push(`\treturn -1`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func nextCursorOf(data any) string {`);
+  lines.push(`\tm, ok := data.(map[string]any)`);
+  lines.push(`\tif !ok {`);
+  lines.push(`\t\treturn ""`);
+  lines.push(`\t}`);
+  lines.push(`\tfor _, k := range []string{"next", "next_cursor", "nextPageToken"} {`);
+  lines.push(`\t\tif s, ok := m[k].(string); ok && s != "" {`);
+  lines.push(`\t\t\treturn s`);
+  lines.push(`\t\t}`);
+  lines.push(`\t}`);
+  lines.push(`\treturn ""`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func asInt(v any) int {`);
+  lines.push(`\tswitch n := v.(type) {`);
+  lines.push(`\tcase int:`);
+  lines.push(`\t\treturn n`);
+  lines.push(`\tcase int64:`);
+  lines.push(`\t\treturn int(n)`);
+  lines.push(`\tcase float64:`);
+  lines.push(`\t\treturn int(n)`);
+  lines.push(`\tcase string:`);
+  lines.push(`\t\ti, err := strconv.Atoi(n)`);
+  lines.push(`\t\tif err == nil {`);
+  lines.push(`\t\t\treturn i`);
+  lines.push(`\t\t}`);
+  lines.push(`\t}`);
+  lines.push(`\treturn 0`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func cloneArgs(args map[string]any) map[string]any {`);
+  lines.push(`\tout := map[string]any{}`);
+  lines.push(`\tif args == nil {`);
+  lines.push(`\t\treturn out`);
+  lines.push(`\t}`);
+  lines.push(`\tfor k, v := range args {`);
+  lines.push(`\t\tout[k] = v`);
+  lines.push(`\t}`);
+  lines.push(`\treturn out`);
+  lines.push(`}`);
+  lines.push(``);
+}
+
+function emitGoIterate(lines, op, info, iterName) {
+  const fn = toGoExported(op.operationId);
+  const goIter = toGoExported(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\*\//g, "* /");
+  lines.push(`// ${goIter} ${summary}`);
+  lines.push(`func (c *Client) ${goIter}(args map[string]any) ([]any, error) {`);
+  lines.push(`\tstate := cloneArgs(args)`);
+  if (mode === "offset") {
+    lines.push(`\toffset := asInt(state[${JSON.stringify(offsetKey)}])`);
+  } else if (mode === "page") {
+    lines.push(`\tpage := asInt(state[${JSON.stringify(pageKey)}])`);
+    lines.push(`\tif page < 1 {`);
+    lines.push(`\t\tpage = 1`);
+    lines.push(`\t}`);
+  }
+  lines.push(`\tvar pages []any`);
+  lines.push(`\tfor n := 0; n < 1000; n++ {`);
+  lines.push(`\t\tcall := cloneArgs(state)`);
+  if (mode === "offset") {
+    lines.push(`\t\tcall[${JSON.stringify(offsetKey)}] = offset`);
+  } else if (mode === "page") {
+    lines.push(`\t\tcall[${JSON.stringify(pageKey)}] = page`);
+  }
+  lines.push(`\t\tdata, err := c.${fn}(call)`);
+  lines.push(`\t\tif err != nil {`);
+  lines.push(`\t\t\treturn pages, err`);
+  lines.push(`\t\t}`);
+  lines.push(`\t\tpages = append(pages, data)`);
+  lines.push(`\t\tln := pageLen(data)`);
+  if (sizeKey) {
+    lines.push(`\t\tsize := asInt(call[${JSON.stringify(sizeKey)}])`);
+    lines.push(`\t\tif data == nil || ln == 0 || (size > 0 && ln >= 0 && ln < size) {`);
+    lines.push(`\t\t\tbreak`);
+    lines.push(`\t\t}`);
+  } else {
+    lines.push(`\t\tif data == nil || ln == 0 {`);
+    lines.push(`\t\t\tbreak`);
+    lines.push(`\t\t}`);
+  }
+  lines.push(`\t\tcur := nextCursorOf(data)`);
+  lines.push(`\t\tif prev, _ := state[${JSON.stringify(cursorKey)}].(string); cur != "" && cur != prev {`);
+  lines.push(`\t\t\tstate[${JSON.stringify(cursorKey)}] = cur`);
+  lines.push(`\t\t\tcontinue`);
+  lines.push(`\t\t}`);
+  if (mode === "cursor") {
+    lines.push(`\t\tbreak`);
+  } else if (mode === "offset") {
+    lines.push(`\t\tif ln < 0 {`);
+    lines.push(`\t\t\tbreak`);
+    lines.push(`\t\t}`);
+    if (sizeKey) {
+      lines.push(`\t\tstep := ln`);
+      lines.push(`\t\tif size > 0 {`);
+      lines.push(`\t\t\tstep = size`);
+      lines.push(`\t\t}`);
+    } else {
+      lines.push(`\t\tstep := ln`);
+    }
+    lines.push(`\t\tif step <= 0 {`);
+    lines.push(`\t\t\tbreak`);
+    lines.push(`\t\t}`);
+    lines.push(`\t\toffset += step`);
+  } else {
+    lines.push(`\t\tif ln < 0 {`);
+    lines.push(`\t\t\tbreak`);
+    lines.push(`\t\t}`);
+    lines.push(`\t\tpage++`);
+  }
+  lines.push(`\t}`);
+  lines.push(`\treturn pages, nil`);
+  lines.push(`}`);
+  lines.push(``);
+}
+
 /** Minimal Go HTTP client stub (stdlib net/http only). package client. */
 export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
+  const pageable = pageableOps(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`// API: ${title}`);
@@ -1414,6 +1776,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\treturn out, rest`);
   lines.push(`}`);
   lines.push(``);
+  if (pageable.length) emitGoPageRuntime(lines);
 
   for (const op of ops) {
     const fn = toGoExported(op.operationId);
@@ -1441,6 +1804,8 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
     }
     lines.push(`}`);
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitGoIterate(lines, op, hit.info, hit.iter);
   }
 
   return lines.join("\n");
@@ -2882,6 +3247,7 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
 export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go", "java", "rust", "csharp", "kotlin", "swift", "ruby", "php"], packageName = DEFAULT_PACKAGE_NAME, opts = {}) {
   const pkg = splitPkg(packageName);
   const names = ops.map((o) => o.operationId).join(", ");
+  const pageable = (ops || []).filter((o) => paginationInfo(o));
   const langSet = new Set(langs);
   const mcp = opts.mcp !== false;
   const mcpConfig = opts.mcpConfig;
@@ -2935,6 +3301,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     ``,
     `Operations (${ops.length}): ${names}`,
     ``,
+    ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
     `Files:`,
     ...files,
     ``,
