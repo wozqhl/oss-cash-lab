@@ -59,6 +59,29 @@ fi
 test -f out/junit-gate-mixed.xml
 grep -q 'failures="1"' out/junit-gate-mixed.xml
 
+echo "==> promptfoo adapter good fixture (expect PASS / exit 0 + junit + tap)"
+python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo-good.xml --tap out/promptfoo-good.tap --fail-under 80
+test -f out/junit-promptfoo-good.xml
+test -f out/promptfoo-good.tap
+grep -q 'failures="0"' out/junit-promptfoo-good.xml
+grep -q '<testsuite' out/junit-promptfoo-good.xml
+grep -q 'france-capital' out/junit-promptfoo-good.xml
+grep -q 'TAP version 13' out/promptfoo-good.tap
+grep -q 'ok ' out/promptfoo-good.tap
+
+echo "==> promptfoo adapter bad fixture (expect FAIL / exit 1 + junit)"
+set +e
+python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.json --junit out/junit-promptfoo-bad.xml --fail-under 80
+pf_code=$?
+set -e
+if [ "$pf_code" -eq 0 ]; then
+  echo "from-promptfoo unexpectedly passed on bad fixture"
+  exit 1
+fi
+test -f out/junit-promptfoo-bad.xml
+grep -q '<failure' out/junit-promptfoo-bad.xml
+grep -q '&amp;' out/junit-promptfoo-bad.xml
+
 echo "==> baseline diff against same suite (expect PASS)"
 python3 -m agent_ci run --suite fixtures/demo --diff-baseline out/baseline.json
 
@@ -1924,4 +1947,4 @@ echo "==> [runs-max] list 2 / oldest 404 / queue still 202 OK (isolated); main s
 cleanup_serve
 trap - EXIT
 
-echo "c-agent-ci local-mvp OK (queue+cors+request-id+openapi+metrics+webhook+hmac+watch+shutdown+access-log+junit+tap+md+html+gha+rate-limit+runs-max+run-diff+run-cases)"
+echo "c-agent-ci local-mvp OK (queue+cors+request-id+openapi+metrics+webhook+hmac+watch+shutdown+access-log+junit+tap+md+html+gha+rate-limit+runs-max+run-diff+run-cases+promptfoo)"

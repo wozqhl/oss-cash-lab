@@ -1,0 +1,18 @@
+# ROADMAP · C · agent-ci
+
+Bet-local. Portfolio root ROADMAP is updated separately.
+
+## Shipped here
+
+- [x] Promptfoo JSON → JUnit/TAP adapter (`from-promptfoo`; existing reporters)
+- [x] Composite Action (action.yml; results and/or command, fail-under, junit)
+- [x] Example workflow + artifact upload (examples/github-actions/agent-ci-promptfoo.yml)
+- [x] Checked-in good/bad fixtures (no network promptfoo in smoke)
+- [x] Existing DeepEval/Inspect-shaped JUnit/TAP/Markdown emit kept
+
+## Still open
+
+- [ ] Live `npx promptfoo eval` in a consumer repo (needs Node + provider keys)
+- [ ] Optional DeepEval JSON adapter if a consumer dumps that shape
+- [ ] Copy action.yml into a standalone repo if this bet is extracted
+- [ ] Hosted runner seats / real GitHub Checks token posting (paid later)

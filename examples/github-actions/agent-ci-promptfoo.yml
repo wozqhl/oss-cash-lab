@@ -1,0 +1,74 @@
+# Copy to .github/workflows/agent-ci-promptfoo.yml in a consumer repo.
+# Requires Python 3.12+ (setup-python below).
+#
+# Wraps Promptfoo output (or a checked-in fixture that mimics
+# `promptfoo eval --output`) and emits JUnit via agent-ci. Not a third
+# eval YAML language — Promptfoo already has one.
+#
+# Consumer (standalone):
+#   uses: wozqhl/oss-cash-lab/bets/c-agent-ci@main
+#   results: path to YOUR promptfoo-output.json (or the checked-in fixture)
+# This portfolio (same checkout, if you ever enable the workflow):
+#   uses: ./bets/c-agent-ci
+#   results: bets/c-agent-ci/fixtures/promptfoo/good.json
+#   working-directory note: CLI equivalent below assumes bets/c-agent-ci
+#
+# Examples only — do not add this as a required push workflow on oss-cash-lab
+# (keep .github/workflows/ci.yml as the gate).
+#
+# Smoke path uses a checked-in fixture (no network, no promptfoo install).
+# Optional live eval for consumers (commented; needs Node + API keys):
+#   npx promptfoo eval --output promptfoo-output.json
+# Equivalent CLI (same convert the Action runs):
+#   PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit junit.xml --fail-under 80
+name: Agent CI (Promptfoo adapter)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  agent-ci-promptfoo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Consumer copy-paste. Same-repo: uses: ./bets/c-agent-ci
+      # and results: bets/c-agent-ci/fixtures/promptfoo/good.json
+      - name: Convert Promptfoo fixture
+        uses: wozqhl/oss-cash-lab/bets/c-agent-ci@main
+        with:
+          results: fixtures/promptfoo/good.json
+          junit: junit.xml
+          fail-under: "80"
+          # Optional live producer (do not enable here — needs network + keys):
+          # command: npx promptfoo eval --output promptfoo-output.json
+          # results: promptfoo-output.json
+
+      - name: Upload JUnit XML
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-ci-promptfoo-junit
+          path: junit.xml
+          if-no-files-found: error
+
+      # Optional TAP13 + Markdown job summary (comment ok):
+      # - name: TAP + summary
+      #   if: always()
+      #   run: |
+      #     PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --format tap --tap results.tap
+      #     PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --format text

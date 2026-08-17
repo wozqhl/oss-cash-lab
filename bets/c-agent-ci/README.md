@@ -2,9 +2,13 @@
 
 > Deterministic agent CI eval · **Status: local-mvp** · **Phase 1**
 
+Docs: [CHANGELOG](./CHANGELOG.md) · [ROADMAP](./ROADMAP.md)
+
 ## Thesis
 
 Agent quality needs CI gates. Fixture-driven, seeded, mock-LLM evals with JUnit / TAP13 / Markdown / HTML / GitHub Actions annotation output.
+
+**Positioning:** an **adapter**, not a third eval DSL. Wrap [Promptfoo](https://www.promptfoo.dev/) (MIT; it already has a GHA and `eval --output` JSON) and keep the existing DeepEval/Inspect-shaped JUnit/TAP emit. Platform engineers get one reporter. We do **not** invent another YAML eval language.
 
 ## Who pays / 谁付钱
 
@@ -37,6 +41,8 @@ PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --format gha
 # GitHub Actions log annotations:
 # PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --format gha
 PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --fail-under 80
+PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo.xml --fail-under 80
+PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.json --junit out/junit-promptfoo-bad.xml --fail-under 80  # exit 1
 PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --diff-baseline out/baseline.json
 PYTHONPATH=src python3 -m agent_ci diff --from out/run-a.json --to out/run-b.json
 PYTHONPATH=src python3 -m agent_ci diff --from out/run-a.json --to out/run-b.json --format md
@@ -137,9 +143,31 @@ PYTHONPATH=src python3 -m agent_ci report-check --suite fixtures/demo --out out/
 | POST to local mock (`/v1/check-runs`) | **OSS** (demo) |
 | Real GitHub token posting to `api.github.com` | **Paid / hosted later** |
 
+## Promptfoo adapter (not a replacement)
+
+`from-promptfoo` reads Promptfoo `eval --output` JSON and reuses the existing JUnit / TAP13 reporters + `--fail-under` gate.
+
+Real output shape (Promptfoo `OutputFile` / EvaluateSummary v3): `results.results[].success` + `gradingResult.{pass,score,reason}`. Also accepts the docs/table variant `results.outputs[]` (`pass`) and a bare list of rows.
+
+```bash
+# Checked-in fixtures (no network, no promptfoo install):
+PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo.xml --tap out/promptfoo.tap --fail-under 80
+# → exit 0, JUnit failures="0"
+PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.json --junit out/junit-promptfoo-bad.xml --fail-under 80
+# → exit 1 (1 pass / 1 fail, score 50)
+
+# Optional live producer (consumer repo; needs Node + provider keys):
+# npx promptfoo eval --output promptfoo-output.json
+# PYTHONPATH=src python3 -m agent_ci from-promptfoo --in promptfoo-output.json --junit junit.xml --fail-under 80
+```
+
+Composite Action: [`action.yml`](./action.yml) — `uses: wozqhl/oss-cash-lab/bets/c-agent-ci@main`. Inputs: `results` (JSON path), optional `command` (run promptfoo / a fixture producer), `fail-under`, `junit`, optional `tap`. Copy-paste workflow: [`examples/github-actions/agent-ci-promptfoo.yml`](../../examples/github-actions/agent-ci-promptfoo.yml) (smoke uses the good fixture; live `npx promptfoo eval` is commented).
+
+This is a **wrapper**, not a Promptfoo or DeepEval replacement. Promptfoo already ships its own GHA and JUnit export; we convert its JSON so a platform team has one agent-ci reporter next to cassette suites.
+
 ## GitHub Actions (JUnit + job summary + annotations + run-vs-run diff)
 
-Copy-paste: portfolio [`examples/github-actions/agent-ci-junit.yml`](../../examples/github-actions/agent-ci-junit.yml) → consumer `.github/workflows/`. Green path: `python3 -m agent_ci run --suite fixtures/demo --junit junit.xml` then `actions/upload-artifact@v4`. Optional run-vs-run Markdown job summary (commented in the YAML): `python3 -m agent_ci diff --from run-a.json --to run-b.json --format md >> "$GITHUB_STEP_SUMMARY"` (two identical demo dumps → “no changes”; download a previous artifact as `--from`). Optional composite: [`examples/github-actions/agent-ci-junit/action.yml`](../../examples/github-actions/agent-ci-junit/action.yml). See [`examples/github-actions/README.md`](../../examples/github-actions/README.md). Not a required workflow on this repo.
+Copy-paste: portfolio [`examples/github-actions/agent-ci-junit.yml`](../../examples/github-actions/agent-ci-junit.yml) → consumer `.github/workflows/`. Green path: `python3 -m agent_ci run --suite fixtures/demo --junit junit.xml` then `actions/upload-artifact@v4`. Optional run-vs-run Markdown job summary (commented in the YAML): `python3 -m agent_ci diff --from run-a.json --to run-b.json --format md >> "$GITHUB_STEP_SUMMARY"` (two identical demo dumps → “no changes”; download a previous artifact as `--from`). Optional composite: [`examples/github-actions/agent-ci-junit/action.yml`](../../examples/github-actions/agent-ci-junit/action.yml). Promptfoo wrap: [`examples/github-actions/agent-ci-promptfoo.yml`](../../examples/github-actions/agent-ci-promptfoo.yml) + bet [`action.yml`](./action.yml). See [`examples/github-actions/README.md`](../../examples/github-actions/README.md). Not a required workflow on this repo.
 
 Optional Markdown job summary (`GITHUB_STEP_SUMMARY`):
 

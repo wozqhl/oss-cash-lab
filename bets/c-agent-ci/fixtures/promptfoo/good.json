@@ -1,0 +1,53 @@
+{
+  "evalId": "fixture-good",
+  "results": {
+    "version": 3,
+    "timestamp": "2026-08-17T00:00:00.000Z",
+    "results": [
+      {
+        "description": "france-capital",
+        "promptIdx": 0,
+        "testIdx": 0,
+        "success": true,
+        "score": 1.0,
+        "latencyMs": 12,
+        "failureReason": 0,
+        "provider": { "id": "echo" },
+        "prompt": { "raw": "What is the capital of France?", "label": "france" },
+        "testCase": { "description": "france-capital" },
+        "vars": {},
+        "namedScores": {},
+        "gradingResult": {
+          "pass": true,
+          "score": 1.0,
+          "reason": "All assertions passed",
+          "assertion": { "type": "contains", "value": "Paris" }
+        }
+      },
+      {
+        "description": "math-2plus2",
+        "promptIdx": 0,
+        "testIdx": 1,
+        "success": true,
+        "score": 1.0,
+        "latencyMs": 8,
+        "failureReason": 0,
+        "provider": { "id": "echo" },
+        "prompt": { "raw": "Compute 2+2", "label": "math" },
+        "testCase": { "description": "math-2plus2" },
+        "vars": {},
+        "namedScores": {},
+        "gradingResult": {
+          "pass": true,
+          "score": 1.0,
+          "reason": "All assertions passed",
+          "assertion": { "type": "equals", "value": "4" }
+        }
+      }
+    ],
+    "prompts": [],
+    "stats": { "successes": 2, "failures": 0, "errors": 0 }
+  },
+  "config": {},
+  "shareableUrl": null
+}

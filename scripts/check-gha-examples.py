@@ -45,10 +45,18 @@ A_CHECK = "node src/cli.js check --out sdk-new --baseline sdk"
 A_CHECK_TEMP = "node src/cli.js generate examples/petstore.openapi.json --check-baseline sdk"
 A_GENERATE_USES = "wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main"
 C_RUN = "PYTHONPATH=src " + C_CMD
+C_PF_USES = "wozqhl/oss-cash-lab/bets/c-agent-ci@main"
+C_PF_CMD = (
+    "python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json "
+    "--junit junit.xml --fail-under 80"
+)
+C_PF_RUN = "PYTHONPATH=src " + C_PF_CMD
+C_PF_NPX = "npx promptfoo eval --output promptfoo-output.json"
 D_RUN = "PYTHONPATH=src " + D_CMD
 
 WORKFLOWS = (
     "agent-ci-junit.yml",
+    "agent-ci-promptfoo.yml",
     "ai-bom-sarif.yml",
     "otel-ai-cost-gha.yml",
     "sdk-mcp-gen-check.yml",
@@ -196,6 +204,7 @@ def prove_c(c_root: Path) -> None:
             fail("C demo suite expected failures=\"0\"")
         print("  ok C CLI  fixtures/demo -> junit.xml")
         prove_c_diff(c_root)
+        prove_c_promptfoo(c_root)
     finally:
         if out.exists():
             out.unlink()
@@ -252,6 +261,78 @@ def prove_c_diff(c_root: Path) -> None:
         if not out.startswith("# "):
             fail(f"C diff md missing heading\n{out!r}")
         print("  ok C CLI  diff --format md identical demo dumps (no changes)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def prove_c_promptfoo(c_root: Path) -> None:
+    """Good fixture → exit 0 + JUnit; bad fixture → exit 1."""
+    good = c_root / "fixtures" / "promptfoo" / "good.json"
+    bad = c_root / "fixtures" / "promptfoo" / "bad.json"
+    if not good.is_file() or not bad.is_file():
+        fail(f"missing C promptfoo fixtures under {c_root / 'fixtures' / 'promptfoo'}")
+    tmp = Path(tempfile.mkdtemp(prefix="agent-ci-gha-pf-"))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "src"
+    try:
+        junit = tmp / "good.xml"
+        proc = subprocess.run(
+            [
+                "python3",
+                "-m",
+                "agent_ci",
+                "from-promptfoo",
+                "--in",
+                str(good),
+                "--junit",
+                str(junit),
+                "--fail-under",
+                "80",
+            ],
+            cwd=c_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            fail(
+                f"C from-promptfoo good exit {proc.returncode}\n"
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            )
+        if not junit.is_file():
+            fail("C from-promptfoo good did not write junit")
+        xml = junit.read_text(encoding="utf-8")
+        if "<testsuite" not in xml or 'failures="0"' not in xml:
+            fail(f"C from-promptfoo good junit unexpected\n{xml}")
+        print("  ok C CLI  fixtures/promptfoo/good.json -> junit (exit 0)")
+
+        bad_j = tmp / "bad.xml"
+        proc = subprocess.run(
+            [
+                "python3",
+                "-m",
+                "agent_ci",
+                "from-promptfoo",
+                "--in",
+                str(bad),
+                "--junit",
+                str(bad_j),
+                "--fail-under",
+                "80",
+            ],
+            cwd=c_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 1:
+            fail(
+                f"C from-promptfoo bad exit {proc.returncode} (want 1)\n"
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            )
+        if not bad_j.is_file():
+            fail("C from-promptfoo bad did not write junit")
+        print("  ok C CLI  fixtures/promptfoo/bad.json -> exit 1")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -468,6 +549,24 @@ def main() -> None:
                 fail(f"{fname}: dorny/test-reporter must not be a live step")
             if "--fail-under" in live_body:
                 fail(f"{fname}: do not add a failing suite / fail-under as a live step")
+        if fname == "agent-ci-promptfoo.yml":
+            live_body = "\n".join(live_lines(text))
+            if C_PF_USES not in live_body:
+                fail(f"{fname} missing live uses:\n  {C_PF_USES}")
+            if "fixtures/promptfoo/good.json" not in text:
+                fail(f"{fname} must use the checked-in good fixture")
+            if "actions/upload-artifact@v4" not in text:
+                fail(f"{fname} must upload-artifact@v4")
+            if C_PF_RUN not in text:
+                fail(f"{fname} must document CLI from-promptfoo (comment ok):\n  {C_PF_RUN}")
+            if C_PF_NPX not in text:
+                fail(f"{fname} must document optional live npx (comment ok):\n  {C_PF_NPX}")
+            if "fail-under" not in text:
+                fail(f"{fname} must pass fail-under (action input or CLI)")
+            if C_PF_NPX in live_body:
+                fail(f"{fname}: do not run live npx promptfoo (fixture-only smoke)")
+            if "github/codeql-action/upload-sarif" in live_body:
+                fail(f"{fname}: Promptfoo adapter uploads JUnit, not upload-sarif")
         if fname == "ai-bom-sarif.yml":
             if D_RUN not in text:
                 fail(f"{fname} missing run line:\n  {D_RUN}")
@@ -567,6 +666,22 @@ def main() -> None:
         if key not in a_text:
             fail(f"bets/a-sdk-mcp-gen/action.yml missing input {key}")
     print(f"  ok bets/a-sdk-mcp-gen/action.yml  name+runs.composite  ({engine})")
+
+    c_action = root / "bets" / "c-agent-ci" / "action.yml"
+    if not c_action.is_file():
+        fail(f"missing {c_action}")
+    doc, engine = load_mapping(c_action, k8s)
+    engines.add(engine)
+    require_name_runs(c_action, doc)
+    c_text = c_action.read_text(encoding="utf-8")
+    if "github.action_path" not in c_text:
+        fail("bets/c-agent-ci/action.yml must run CLI from github.action_path")
+    if "from-promptfoo" not in c_text:
+        fail("bets/c-agent-ci/action.yml must invoke from-promptfoo")
+    for key in ("results:", "command:", "fail-under:", "junit:"):
+        if key not in c_text:
+            fail(f"bets/c-agent-ci/action.yml missing input {key}")
+    print(f"  ok bets/c-agent-ci/action.yml  name+runs.composite  ({engine})")
 
     prove_c(root / "bets" / "c-agent-ci")
     prove_d(root / "bets" / "d-ai-bom")

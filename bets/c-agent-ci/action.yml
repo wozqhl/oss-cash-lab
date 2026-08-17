@@ -1,0 +1,71 @@
+name: agent-ci
+description: Wrap Promptfoo (or a fixture) and emit JUnit/TAP via agent-ci reporters
+inputs:
+  results:
+    description: Path to Promptfoo eval --output JSON (or a checked-in fixture that mimics it)
+    required: false
+    default: promptfoo-output.json
+  command:
+    description: Optional command that writes the JSON at `results` (e.g. npx promptfoo eval --output …). Empty = convert an existing file / fixture (no network).
+    required: false
+    default: ""
+  fail-under:
+    description: Quality gate 0–100 (pass-rate score). Empty = fail only if any case failed.
+    required: false
+    default: ""
+  junit:
+    description: JUnit XML output path
+    required: false
+    default: junit.xml
+  tap:
+    description: Optional TAP13 output path (empty = skip)
+    required: false
+    default: ""
+  suite-name:
+    description: testsuite / TAP label
+    required: false
+    default: promptfoo
+  pythonpath:
+    description: Extra PYTHONPATH entries (action src is always prepended)
+    required: false
+    default: ""
+outputs:
+  junit-path:
+    description: Path to the JUnit XML file
+    value: ${{ inputs.junit }}
+runs:
+  using: composite
+  steps:
+    - name: Convert Promptfoo results
+      shell: bash
+      env:
+        INPUT_RESULTS: ${{ inputs.results }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_FAIL_UNDER: ${{ inputs.fail-under }}
+        INPUT_JUNIT: ${{ inputs.junit }}
+        INPUT_TAP: ${{ inputs.tap }}
+        INPUT_SUITE_NAME: ${{ inputs.suite-name }}
+        INPUT_PYTHONPATH: ${{ inputs.pythonpath }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        export PYTHONPATH="${ACTION_PATH}/src${INPUT_PYTHONPATH:+:${INPUT_PYTHONPATH}}"
+        if [[ -n "${INPUT_COMMAND}" ]]; then
+          echo "Running producer: ${INPUT_COMMAND}"
+          bash -lc "${INPUT_COMMAND}"
+        fi
+        if [[ -z "${INPUT_RESULTS}" ]]; then
+          echo "::error::results path is required (Promptfoo output JSON or a fixture)"
+          exit 2
+        fi
+        args=(from-promptfoo --in "${INPUT_RESULTS}" --suite-name "${INPUT_SUITE_NAME:-promptfoo}")
+        if [[ -n "${INPUT_JUNIT}" ]]; then
+          args+=(--junit "${INPUT_JUNIT}")
+        fi
+        if [[ -n "${INPUT_TAP}" ]]; then
+          args+=(--tap "${INPUT_TAP}")
+        fi
+        if [[ -n "${INPUT_FAIL_UNDER}" ]]; then
+          args+=(--fail-under "${INPUT_FAIL_UNDER}")
+        fi
+        python3 -m agent_ci "${args[@]}"
