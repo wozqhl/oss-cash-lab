@@ -1,7 +1,8 @@
 # 内网 Demo 跑通手册（飞书 / 钉钉 / 企微）
 
 > 本地 mock webhook → 共享意图路由 → 一条 ask/reply。无需公网、无需厂商 SDK。  
-> **Status:** local-mvp · 配套脚本：`scripts/demo-ask-reply.sh`
+> **Status:** local-mvp · ask/reply：`scripts/demo-ask-reply.sh` · 飞书审批（请假/用印）：`scripts/demo-feishu-approval.sh`  
+> 私有化 / 等保 / Dify 前后关系见 [cn-onprem.md](./cn-onprem.md)。
 
 ## 1. 准备配置
 

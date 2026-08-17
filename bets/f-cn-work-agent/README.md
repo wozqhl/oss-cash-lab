@@ -1,6 +1,21 @@
 # F · cn-work-agent
 
-> WeCom / DingTalk / Feishu on-prem agent · **Status: local-mvp** · Phase 3
+> 飞书 / 钉钉 / 企微 **审批适配器**（挂在 Dify / n8n 前面）· **Status: local-mvp 0.1.0** · Phase 3
+
+## 给信息化
+
+这不是 Dify 替代品。本仓库是 **私有化部署的 IM 审批适配器**：飞书 / 钉钉 / 企微 webhook → 本地审批单 → 卡片 / 决定 HTTP，再把结果交给后面的 Dify 或 n8n。买家是政企信息化 / IT，不是 GitHub star。
+
+**诚实边界：** 当前是 **0.1.0 本地 MVP**。**不是**等保认证产品。SSO、等保测评支持、厂商正式 SDK 属于付费项。无客户案例。
+
+三分钟本地演示（请假 + 用印，无真实飞书网络）：
+
+```bash
+cd bets/f-cn-work-agent
+bash scripts/demo-feishu-approval.sh
+```
+
+私有化 / 等保 / 与 Dify 的前后关系：[docs/cn-onprem.md](./docs/cn-onprem.md)。内网 ask/reply 手册：[docs/intranet-demo.md](./docs/intranet-demo.md)。
 
 ## Thesis / 立意
 
@@ -289,8 +304,9 @@ PYTHONPATH=src python3 -m cn_work_agent serve --port 8790
 ```
 
 ```bash
-bash scripts/local-mvp.sh      # hits all three platforms (good + bad auth)
-bash scripts/demo-ask-reply.sh # config-driven ask/reply demo (optional)
+bash scripts/local-mvp.sh              # hits all three platforms (good + bad auth)
+bash scripts/demo-feishu-approval.sh   # 三分钟：飞书请假/用印审批（推荐给信息化）
+bash scripts/demo-ask-reply.sh         # config-driven ask/reply demo (optional)
 ```
 
 内网手册（中文）：[docs/intranet-demo.md](./docs/intranet-demo.md) — 含 curl、审计日志与生产验签 **DRAFT** 差异说明。
