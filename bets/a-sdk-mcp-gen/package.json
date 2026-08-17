@@ -18,5 +18,33 @@
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wozqhl/oss-cash-lab.git",
+    "directory": "bets/a-sdk-mcp-gen"
+  },
+  "bugs": {
+    "url": "https://github.com/wozqhl/oss-cash-lab/issues"
+  },
+  "homepage": "https://github.com/wozqhl/oss-cash-lab/tree/main/bets/a-sdk-mcp-gen",
+  "files": [
+    "src",
+    "examples",
+    "action.yml",
+    "README.md",
+    "PUBLISH.md",
+    "CHANGELOG.md",
+    "docs"
+  ],
+  "keywords": [
+    "openapi",
+    "sdk",
+    "mcp",
+    "generator",
+    "model-context-protocol",
+    "typescript",
+    "python",
+    "go"
+  ]
 }

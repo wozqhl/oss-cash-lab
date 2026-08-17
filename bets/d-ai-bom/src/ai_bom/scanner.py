@@ -1041,7 +1041,7 @@ def scan_path(
 
     return {
         "bomFormat": "CycloneDX",
-        "specVersion": "1.5",
+        "specVersion": "1.7",
         "version": 1,
         "metadata": {
             "component": {

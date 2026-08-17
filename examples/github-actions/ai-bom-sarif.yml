@@ -40,6 +40,9 @@ jobs:
       - name: Scan (SARIF)
         run: PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --sarif ai-bom.sarif
 
+      - name: License policy gate
+        run: PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --gate-licenses
+
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -50,3 +53,7 @@ jobs:
       # - name: Annotate
       #   if: always()
       #   run: PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --format gha
+
+      # CRA license fixtures (local prove; fail fixture exits 1 — do not enable as a live job):
+      # PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-pass --policy policies/default.json --gate-licenses
+      # PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-fail --policy policies/default.json --gate-licenses

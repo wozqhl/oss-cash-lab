@@ -2,6 +2,8 @@
 
 > OpenAPI -> SDK + MCP generator · Status: local-mvp · Phase 2
 
+Docs: [vs Stainless / Speakeasy / OpenAPI Generator](./docs/vs-stainless.md) · [PUBLISH.md](./PUBLISH.md) · [CHANGELOG](./CHANGELOG.md) · [ROADMAP](./ROADMAP.md)
+
 ## Thesis / 立意
 
 Turn existing OpenAPI into TypeScript + Python + Go + Java + Rust + C# + Kotlin + Swift + Ruby + PHP SDK stubs + MCP tool registry + stdio MCP servers (Node + Python + Go).
@@ -166,6 +168,24 @@ Paste `mcp.json` into your **MCP servers config JSON** (Cursor / Claude Desktop 
   }
 }
 ```
+
+## GitHub Action (generate)
+
+Composite Action at [`action.yml`](./action.yml) so a consumer can:
+
+    uses: wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main
+    with:
+      spec: examples/petstore.openapi.json   # XOR with url
+      output: sdk
+      # langs: ts,python
+
+It runs this CLI (Node 18+ must already be on the runner) and fails if the CLI exits non-zero.
+Copy-paste workflow that uploads the tree: [`examples/github-actions/sdk-mcp-gen-generate.yml`](../../examples/github-actions/sdk-mcp-gen-generate.yml).
+The older [`sdk-mcp-gen-check.yml`](../../examples/github-actions/sdk-mcp-gen-check.yml) is **CHECK only** (drift vs baseline), not generate-and-upload.
+
+Try the same command locally (no Actions runner):
+
+    node src/cli.js generate examples/petstore.openapi.json --out sdk
 
 ## Breaking check
 

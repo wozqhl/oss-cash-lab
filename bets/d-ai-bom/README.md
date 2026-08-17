@@ -1,6 +1,6 @@
 # D · ai-bom
 
-> AI-BOM scanner (models / tools / lineage) · **Status: local-mvp** · Phase 2
+> AI-BOM scanner (models / tools / lineage) · **Status: local-mvp** · Phase 2 · [CHANGELOG](./CHANGELOG.md) · [ROADMAP](./ROADMAP.md) · [CRA notes](./docs/cra.md)
 
 ## Thesis / 立意
 
@@ -17,14 +17,14 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 
 | OSS | Paid (Pro wedge) |
 |-----|------------------|
-| Directory scan + CycloneDX-like JSON BOM + **CycloneDX 1.5 JSON/XML / SPDX 2.3 JSON/XML / SARIF 2.1.0 / Markdown summary / GHA annotations / HTML summary** (`--format`, `GET /v1/bom?format=`) | Policy packs, CI `--strict` gates, inventory DB |
+| Directory scan + CycloneDX-like JSON BOM + **CycloneDX 1.7 JSON/XML / SPDX 2.3 JSON/XML / SARIF 2.1.0 / Markdown summary / GHA annotations / HTML summary** (`--format`, `GET /v1/bom?format=`) | Policy packs, CI `--strict` gates, inventory DB |
 | Built-in pickle heuristic | Managed packs (forbidden + required disclosures), SSO |
 | `--evidence` DRAFT markdown sketch | Signed auditor packs, continuous inventory |
 | `--sarif` / `--format sarif` / `GET /v1/bom?format=sarif` SARIF 2.1.0 for code scanning | Managed alert routing / inventory DB |
 | `--format gha` / `GET /v1/bom?format=gha` GitHub Actions `::error`/`::notice` log annotations | Managed alert routing / inventory DB |
 | `--format html` / `GET /v1/bom?format=html` self-contained HTML BOM summary (no CDN; policy hits red) | Hosted inventory dashboard |
 | SPDX license fields on package components (`package.json` / `pyproject` / `requirements.txt`) | License inventory DB / enrichment |
-| Policy `forbiddenLicenseIds` (GPL/AGPL/SSPL) + `--strict` | Managed license allow/deny packs |
+| Policy `forbiddenLicenseIds` (GPL/AGPL/SSPL) + `--strict` / `--gate-licenses` | Managed license allow/deny packs |
 | `.aibomignore` / `--ignore` path filters | Managed path policies / inventory scopes |
 | `.aibom-exceptions.json` / `--exceptions` license waivers (reason + optional expiry) | Managed exception workflow / approval trail |
 | Local `serve` HTTP (`/health` `/ready` `/bom.json` `/v1/bom?format=json\|cyclonedx\|cyclonedx-xml\|spdx\|spdx-xml\|sarif\|md\|gha\|html` `/v1/bom.xml` `/v1/bom.spdx.xml` `/v1/bom.sarif` `/v1/bom.md` `/v1/bom.gha.txt` `/v1/bom.html` **`/v1/policy`** **`/v1/config`** **`/v1/components`** **`/v1/exceptions`** `/evidence.md` `/` `/openapi.json` `/metrics`; optional `--cors-origins` / `AI_BOM_CORS_ORIGINS`; HTTP rate-limit `--rate-limit` / `RATE_LIMIT_PER_MINUTE`; `X-Request-Id` echo; optional `--watch` dir mtime poll rescan) | **Hosted inventory** / fleet dashboard |
@@ -39,15 +39,18 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 | Code | Meaning |
 |------|---------|
 | 0 | Scan OK (no `--strict` violations) |
-| 1 | `--strict`: forbidden hits, disclosure gaps, and/or forbidden licenses |
+| 1 | `--strict`: forbidden hits, disclosure gaps, and/or forbidden licenses; `--gate-licenses`: forbidden licenses only |
 | 2 | Usage / IO / policy parse error |
 
 ## 2-week MVP checklist / 2周MVP清单
 
 - [x] Scan dir for model IDs, prompts, MCP deps
 - [x] CycloneDX-like JSON (lite schema)
-- [x] CycloneDX 1.5 + SPDX 2.3 JSON export (`scan --format cyclonedx|spdx|json`; `GET /v1/bom?format=`; default json unchanged)
-- [x] CycloneDX 1.5 XML export (`scan --format cyclonedx-xml`; `GET /v1/bom?format=cyclonedx-xml` / `GET /v1/bom.xml`; same component/license/policy-hit model; `cyclonedx` stays JSON)
+- [x] CycloneDX 1.7 + SPDX 2.3 JSON export (`scan --format cyclonedx|spdx|json`; `GET /v1/bom?format=`; default json unchanged)
+- [x] CycloneDX 1.7 XML export (`scan --format cyclonedx-xml`; `GET /v1/bom?format=cyclonedx-xml` / `GET /v1/bom.xml`; same component/license/policy-hit model; `cyclonedx` stays JSON)
+- [x] CycloneDX 1.7 ML-BOM fields from existing scan data (`machine-learning-model` + `modelCard` format/path; prompts as `data`; licenses; no invented schema)
+- [x] `--gate-licenses` CI license-policy gate (exit 1 on `forbiddenLicenseIds` only) + `examples/cra-fixtures/license-pass` / `license-fail`
+- [x] CRA orientation [`docs/cra.md`](./docs/cra.md) (Article 14 vs Dec 2027; no certification claim)
 - [x] SPDX 2.3 XML export (`scan --format spdx-xml`; `GET /v1/bom?format=spdx-xml` / `GET /v1/bom.spdx.xml`; same packages/`licenseConcluded` as JSON; `spdx` stays JSON)
 - [x] Markdown BOM summary (`scan --format md`; `GET /v1/bom?format=md` / `GET /v1/bom.md`; `text/markdown`; human/Slack; not an SBOM spec)
 - [x] GitHub Actions workflow-command annotations (`scan --format gha`; `GET /v1/bom?format=gha` / `GET /v1/bom.gha.txt`; `text/plain`; `::error` / waived `::notice`; clean empty)
@@ -95,8 +98,12 @@ PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --format spdx-xml --ou
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --format sarif --out out/bom.format.sarif
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --format md --out out/bom.md
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --format html --out out/bom.html
-# CI gate:
+# CI gate (all policy hits; sample-app fails on pickle):
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --strict; echo exit=$?
+# CI license-only gate (sample-app MIT → 0; planted GPL fixture → 1):
+PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --policy policies/default.json --gate-licenses; echo exit=$?
+PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-pass --policy policies/default.json --gate-licenses; echo exit=$?
+PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-fail --policy policies/default.json --gate-licenses; echo exit=$?
 # active license/policy gate (ids/counts only):
 PYTHONPATH=src python3 -m ai_bom policy examples/sample-app --policy policies/default.json
 # optional policy-hit webhook (OSS 1 retry; exponential backoff / queues / key rotation / timestamp replay = paid later):
@@ -162,7 +169,7 @@ PYTHONPATH=src python3 -m ai_bom serve --path examples/sample-app --port 8793 --
 | `GET /health` | `{ok, service: ai-bom, componentCount, policyHits, licenses}` |
 | `GET /ready` | **200** `{ok:true, service}` plus the same snapshot as `/health` when healthy; **503** `{ok:false, reason:"shutting_down"}` on SIGTERM/SIGINT. Compose/stack-demo healthchecks stay on `/health`. |
 | `GET /bom.json` | Internal AI-BOM JSON (CycloneDX-like + `summary`; unchanged) |
-| `GET /v1/bom?format=json\|cyclonedx\|cyclonedx-xml\|spdx\|spdx-xml\|sarif\|md\|gha\|html` | Default **json** = same as `/bom.json`. `cyclonedx` = CycloneDX 1.5 JSON (`bomFormat`+`specVersion`). `cyclonedx-xml` = CycloneDX 1.5 XML (`bom` xmlns 1.5; alias `cdx-xml`). `spdx` = SPDX 2.3 JSON (`spdxVersion`+`packages`). `spdx-xml` = SPDX 2.3 XML (`SpdxDocument` + `spdxVersion` SPDX-2.3; alias `spdxxml`). `sarif` = SARIF 2.1.0 (`version`+`runs`; same as CLI `--sarif`). `md` = human/Slack Markdown summary (`# AI-BOM` + counts; alias `markdown`). `gha` = GitHub Actions workflow commands (`::error` / waived `::notice`; alias `annotations`; clean → empty). `html` = self-contained HTML BOM summary (`text/html`; component count + licenses + policy hits red; no CDN). Unknown format → 400. |
+| `GET /v1/bom?format=json\|cyclonedx\|cyclonedx-xml\|spdx\|spdx-xml\|sarif\|md\|gha\|html` | Default **json** = same as `/bom.json`. `cyclonedx` = CycloneDX 1.7 JSON (`bomFormat`+`specVersion`). `cyclonedx-xml` = CycloneDX 1.7 XML (`bom` xmlns 1.7; alias `cdx-xml`). `spdx` = SPDX 2.3 JSON (`spdxVersion`+`packages`). `spdx-xml` = SPDX 2.3 XML (`SpdxDocument` + `spdxVersion` SPDX-2.3; alias `spdxxml`). `sarif` = SARIF 2.1.0 (`version`+`runs`; same as CLI `--sarif`). `md` = human/Slack Markdown summary (`# AI-BOM` + counts; alias `markdown`). `gha` = GitHub Actions workflow commands (`::error` / waived `::notice`; alias `annotations`; clean → empty). `html` = self-contained HTML BOM summary (`text/html`; component count + licenses + policy hits red; no CDN). Unknown format → 400. |
 | `GET /v1/bom.xml` | Alias for `?format=cyclonedx-xml` (`application/vnd.cyclonedx+xml`). |
 | `GET /v1/bom.spdx.xml` | Alias for `?format=spdx-xml` (`application/spdx+xml`). |
 | `GET /v1/bom.sarif` | Alias for `?format=sarif` (`application/sarif+json`). |
@@ -247,15 +254,15 @@ Manifest scans attach CycloneDX-like `licenses` on components:
 
 `summary.licenses` counts ids/names; `--evidence` includes a **License summary / 许可证摘要** section. Sample app ships `package.json` with `"license": "MIT"` so `out/bom.json` contains MIT.
 
-## CycloneDX 1.5 + SPDX 2.3 export
+## CycloneDX 1.7 + SPDX 2.3 export
 
 The scan result is still the **internal AI-BOM JSON** (default `--format json` / `GET /v1/bom` / `GET /bom.json`): CycloneDX-like `bomFormat` + `specVersion` plus custom `summary` (policy hits, license counts). Compliance teams ingest standard documents, so exporters map that model without new deps:
 
 | Format | CLI | HTTP | jq |
 |--------|-----|------|----|
 | Internal JSON (default) | `scan --format json` (or omit) | `GET /v1/bom` / `GET /v1/bom?format=json` / `GET /bom.json` | `.summary` |
-| CycloneDX 1.5 JSON | `scan --format cyclonedx` | `GET /v1/bom?format=cyclonedx` | `.bomFormat` `.specVersion` |
-| CycloneDX 1.5 XML | `scan --format cyclonedx-xml` (alias `cdx-xml`) | `GET /v1/bom?format=cyclonedx-xml` / `GET /v1/bom.xml` | `<bom xmlns="http://cyclonedx.org/schema/bom/1.5">` |
+| CycloneDX 1.7 JSON | `scan --format cyclonedx` | `GET /v1/bom?format=cyclonedx` | `.bomFormat` `.specVersion` |
+| CycloneDX 1.7 XML | `scan --format cyclonedx-xml` (alias `cdx-xml`) | `GET /v1/bom?format=cyclonedx-xml` / `GET /v1/bom.xml` | `<bom xmlns="http://cyclonedx.org/schema/bom/1.7">` |
 | SPDX 2.3 JSON | `scan --format spdx` | `GET /v1/bom?format=spdx` | `.spdxVersion` |
 | SPDX 2.3 XML | `scan --format spdx-xml` (alias `spdxxml`) | `GET /v1/bom?format=spdx-xml` / `GET /v1/bom.spdx.xml` | `<SpdxDocument>` `SPDX-2.3` |
 | SARIF 2.1.0 | `scan --format sarif` or `--sarif PATH` | `GET /v1/bom?format=sarif` / `GET /v1/bom.sarif` | `.version` `.runs` |
@@ -263,7 +270,7 @@ The scan result is still the **internal AI-BOM JSON** (default `--format json` /
 | GHA annotations | `scan --format gha` (alias `annotations`) | `GET /v1/bom?format=gha` / `GET /v1/bom.gha.txt` | `::error title=<component>` |
 | HTML summary | `scan --format html` | `GET /v1/bom?format=html` / `GET /v1/bom.html` | `<h1>` `<table` policy hits red |
 
-CycloneDX keeps component `name` / `version` / `purl` or `type` and `licenses[]`. Policy hits are **not** `vulnerabilities` — they go on the BOM `properties` array (`aibom:policyHits`, optional `aibom:forbiddenLicenses`). XML reuses that same model (`--format cyclonedx-xml`; names with `&` are escaped). SPDX JSON (`--format spdx`) packages use `licenseConcluded` from those licenses; SPDX XML (`--format spdx-xml`) reuses that same document (`<SpdxDocument>`, `spdxVersion` SPDX-2.3; names with `&` are escaped). Document `documentNamespace` is stable per scan root; forbidden-license hits are `hasExtractedLicensingInfos` (honest policy notes, not CVEs). Unknown `--format` on HTTP → **400** `{error:"bad_format"}` (`xml` is not a format). `--format gha` / `GET /v1/bom.gha.txt` prints GitHub Actions workflow commands (`text/plain`; `::error title=<component>::<license or rule>` for policy hits / forbidden licenses; waived `::notice title=<component>::waived <reason>`; clean scan → empty stdout / empty body **200**, no `::error`; alias `annotations`). Does not require GitHub. `--format md` / `GET /v1/bom.md` is a **human/Slack Markdown summary** (`text/markdown`; `# AI-BOM` + **components** / **policyHits** / **waived** + license / policy-hit / waived tables; `|` escaped; empty → heading + zeros 200). It is **not** another SBOM spec and never dumps file contents or secrets. `--format html` / `GET /v1/bom.html` is a **self-contained HTML BOM summary** (`text/html`; heading + component count + license table + policy hits / forbidden licenses in red if any; names escaped with stdlib `html.escape`; no CDN; empty → heading + zeros 200). `GET /` keeps the same formatter plus serve-index nav. `--sarif PATH` is unchanged (side file; same `to_sarif` builder as `--format sarif` / HTTP). `--evidence` / `--strict` / webhook still use the internal model.
+CycloneDX 1.7 keeps component `name` / `version` / `purl` or `type` and `licenses[]`. Models use `machine-learning-model` + `modelCard` properties the scanner already has (`aibom:format`, `aibom:sourcePath` basename); prompts use `data` (name only, no file dump). No invented architecture / datasets / metrics. Policy hits are **not** `vulnerabilities` — they go on the BOM `properties` array (`aibom:policyHits`, optional `aibom:forbiddenLicenses`). XML reuses that same model (`--format cyclonedx-xml`; names with `&` are escaped). SPDX JSON (`--format spdx`) packages use `licenseConcluded` from those licenses; SPDX XML (`--format spdx-xml`) reuses that same document (`<SpdxDocument>`, `spdxVersion` SPDX-2.3; names with `&` are escaped). Document `documentNamespace` is stable per scan root; forbidden-license hits are `hasExtractedLicensingInfos` (honest policy notes, not CVEs). Unknown `--format` on HTTP → **400** `{error:"bad_format"}` (`xml` is not a format). `--format gha` / `GET /v1/bom.gha.txt` prints GitHub Actions workflow commands (`text/plain`; `::error title=<component>::<license or rule>` for policy hits / forbidden licenses; waived `::notice title=<component>::waived <reason>`; clean scan → empty stdout / empty body **200**, no `::error`; alias `annotations`). Does not require GitHub. `--format md` / `GET /v1/bom.md` is a **human/Slack Markdown summary** (`text/markdown`; `# AI-BOM` + **components** / **policyHits** / **waived** + license / policy-hit / waived tables; `|` escaped; empty → heading + zeros 200). It is **not** another SBOM spec and never dumps file contents or secrets. `--format html` / `GET /v1/bom.html` is a **self-contained HTML BOM summary** (`text/html`; heading + component count + license table + policy hits / forbidden licenses in red if any; names escaped with stdlib `html.escape`; no CDN; empty → heading + zeros 200). `GET /` keeps the same formatter plus serve-index nav. `--sarif PATH` is unchanged (side file; same `to_sarif` builder as `--format sarif` / HTTP). `--evidence` / `--strict` / webhook still use the internal model.
 
 ### Forbidden license gate / 禁止许可证门禁
 
@@ -272,10 +279,13 @@ CycloneDX keeps component `name` / `version` / `purl` or `type` and `licenses[]`
 - components whose CycloneDX `licenses[].license.id` (or SPDX expression tokens) match → `summary.forbiddenLicenses[]` policy hits
 - `summary.policyHits` includes these hits
 - `--strict` exits **1**
+- `--gate-licenses` exits **1** on forbidden licenses only (CI-friendly; pickle / disclosure gaps do not fail)
 - `--evidence` lists **Forbidden licenses / 禁止许可证**
 - `--sarif` emits `ruleId` = `license/<SPDX-ID>` results
 
-MIT (and other non-forbidden ids) on the sample-app stay clean for this gate; local-mvp also proves a temp `package.json` with `"license": "GPL-3.0"` fails `--strict`. A matching `.aibom-exceptions.json` waiver (component+license+reason, unexpired) removes that hit (`summary.waived`); an expired waiver still fails and is listed in `summary.expiredExceptions`.
+MIT (and other non-forbidden ids) on the sample-app stay clean for this license gate (`--gate-licenses` exit 0; `--strict` still fails sample-app on `pickle.load`). Committed fixtures: [`examples/cra-fixtures/license-pass`](./examples/cra-fixtures/license-pass) (MIT, exit 0) and [`examples/cra-fixtures/license-fail`](./examples/cra-fixtures/license-fail) (planted `GPL-3.0`, exit 1). A matching `.aibom-exceptions.json` waiver (component+license+reason, unexpired) removes that hit (`summary.waived`); an expired waiver still fails and is listed in `summary.expiredExceptions`.
+
+CRA dates / honesty limits: [`docs/cra.md`](./docs/cra.md). How to run the fixtures: [`examples/cra-fixtures/README.md`](./examples/cra-fixtures/README.md).
 
 `GET /v1/policy` (and CLI `ai-bom policy`) returns the **active gate**, not scan hits: `{ok, forbiddenLicenseIds, forbiddenPatterns, exceptionsCount, ignoreFile}`. Pattern field is **ids** only (no regex). Exception field is a **count** (no reasons). Missing policy file → **200** with empty lists. Does not dump policy / ignore / exceptions file contents or secrets.
 

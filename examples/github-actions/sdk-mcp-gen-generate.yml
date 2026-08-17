@@ -1,0 +1,63 @@
+# Copy to .github/workflows/sdk-mcp-gen-generate.yml in a consumer repo.
+# Requires Node 18+ (setup-node below).
+# Runs generation via the composite Action (not the drift-check example).
+#
+# Consumer (standalone):
+#   uses: wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main
+#   spec: path to YOUR OpenAPI (or pass url: instead)
+# This portfolio (same checkout, if you ever enable the workflow):
+#   uses: ./bets/a-sdk-mcp-gen
+#   spec: bets/a-sdk-mcp-gen/examples/petstore.openapi.json
+#
+# Examples only — do not add this as a required push workflow on oss-cash-lab
+# (keep .github/workflows/ci.yml as the gate).
+#
+# Equivalent CLI (same generate the Action runs):
+#   node src/cli.js generate examples/petstore.openapi.json --out sdk
+# Optional langs:
+#   node src/cli.js generate examples/petstore.openapi.json --out sdk --lang ts,python
+# Optional URL instead of a file:
+#   node src/cli.js generate --url https://example.invalid/openapi.json --out sdk
+name: SDK MCP Gen (generate)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  sdk-mcp-gen-generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Consumer copy-paste. Same-repo: uses: ./bets/a-sdk-mcp-gen
+      # and spec: bets/a-sdk-mcp-gen/examples/petstore.openapi.json
+      - name: Generate SDK + MCP
+        uses: wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main
+        with:
+          spec: examples/petstore.openapi.json
+          output: sdk
+          # langs: ts,python
+          # url: https://example.invalid/openapi.json
+
+      - name: Upload generated SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-mcp-gen-petstore
+          path: sdk
+          if-no-files-found: error

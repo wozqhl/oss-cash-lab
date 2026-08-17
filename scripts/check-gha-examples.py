@@ -43,6 +43,7 @@ A_CHECK_BASELINE = (
 )
 A_CHECK = "node src/cli.js check --out sdk-new --baseline sdk"
 A_CHECK_TEMP = "node src/cli.js generate examples/petstore.openapi.json --check-baseline sdk"
+A_GENERATE_USES = "wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main"
 C_RUN = "PYTHONPATH=src " + C_CMD
 D_RUN = "PYTHONPATH=src " + D_CMD
 
@@ -51,6 +52,7 @@ WORKFLOWS = (
     "ai-bom-sarif.yml",
     "otel-ai-cost-gha.yml",
     "sdk-mcp-gen-check.yml",
+    "sdk-mcp-gen-generate.yml",
 )
 COMPOSITES = (
     "agent-ci-junit/action.yml",
@@ -436,7 +438,7 @@ def main() -> None:
     k8s = load_k8s()
     engines: set[str] = set()
     readme = (examples / "README.md").read_text(encoding="utf-8")
-    for needle in (C_CMD, C_DIFF_CMD, C_DIFF_SUMMARY, D_CMD, D_GHA_CMD, C_RUN, D_RUN, E_CMD, E_TENANT_CMD, E_MD_CMD, A_GEN, A_CHECK_BASELINE, A_CHECK, A_CHECK_TEMP):
+    for needle in (C_CMD, C_DIFF_CMD, C_DIFF_SUMMARY, D_CMD, D_GHA_CMD, C_RUN, D_RUN, E_CMD, E_TENANT_CMD, E_MD_CMD, A_GEN, A_CHECK_BASELINE, A_CHECK, A_CHECK_TEMP, A_GENERATE_USES):
         if needle not in readme:
             fail(f"examples/github-actions/README.md missing exact command:\n  {needle}")
 
@@ -508,6 +510,22 @@ def main() -> None:
                 fail(f"{fname} must document omit --out --check-baseline (comment ok):\n  {A_CHECK_TEMP}")
             if "github/codeql-action/upload-sarif" in live_body:
                 fail(f"{fname}: A drift is CLI exit 1, not upload-sarif")
+        if fname == "sdk-mcp-gen-generate.yml":
+            live_body = "\n".join(live_lines(text))
+            if "actions/setup-node@" not in live_body:
+                fail(f"{fname} must setup-node")
+            if "actions/upload-artifact@v4" not in text:
+                fail(f"{fname} must upload-artifact@v4")
+            if "petstore.openapi.json" not in text and "openapi-3.1-mini" not in text:
+                fail(f"{fname} must generate petstore or openapi-3.1-mini")
+            if A_GENERATE_USES not in live_body:
+                fail(f"{fname} missing live uses:\n  {A_GENERATE_USES}")
+            if A_GEN not in text:
+                fail(f"{fname} must document CLI generate (comment ok):\n  {A_GEN}")
+            if "--check-baseline" in live_body:
+                fail(f"{fname}: generate example must not be the drift check")
+            if "github/codeql-action/upload-sarif" in live_body:
+                fail(f"{fname}: generate uploads artifacts, not upload-sarif")
         print(f"  ok {fname}  on+jobs  ({engine})")
 
     for rel in COMPOSITES:
@@ -531,6 +549,24 @@ def main() -> None:
             if "node src/cli.js generate" not in text or "--check-baseline" not in text:
                 fail(f"{rel} must run sdk-mcp-gen generate --check-baseline")
         print(f"  ok {rel}  name+runs.composite  ({engine})")
+
+    a_action = root / "bets" / "a-sdk-mcp-gen" / "action.yml"
+    if not a_action.is_file():
+        fail(f"missing {a_action}")
+    doc, engine = load_mapping(a_action, k8s)
+    engines.add(engine)
+    require_name_runs(a_action, doc)
+    a_text = a_action.read_text(encoding="utf-8")
+    if "github.action_path" not in a_text:
+        fail("bets/a-sdk-mcp-gen/action.yml must run CLI from github.action_path")
+    if "src/cli.js" not in a_text:
+        fail("bets/a-sdk-mcp-gen/action.yml must invoke src/cli.js")
+    if "--check-baseline" in a_text:
+        fail("bets/a-sdk-mcp-gen/action.yml must run generate, not drift check")
+    for key in ("spec:", "url:", "output:", "langs:"):
+        if key not in a_text:
+            fail(f"bets/a-sdk-mcp-gen/action.yml missing input {key}")
+    print(f"  ok bets/a-sdk-mcp-gen/action.yml  name+runs.composite  ({engine})")
 
     prove_c(root / "bets" / "c-agent-ci")
     prove_d(root / "bets" / "d-ai-bom")

@@ -5,6 +5,12 @@ Loads each *.json dashboard, requires Grafana 9/10 shape (`panels`,
 `schemaVersion` ~38, `title`), at least 5 panels, a Prometheus datasource
 template, and every PromQL `expr` to name a metric that appears in B-F
 bet metric source files (stdlib json + grep of those files; no Grafana).
+
+`oss-cash-lab.json` is the combined B-F portfolio dashboard (5 row
+panels, cross-bet required metrics, a B deny/error metric). Other JSON
+files (e.g. `e-otel-ai-cost.json`) are dedicated bet dashboards: same
+parse/schema/PromQL-in-source checks, without the portfolio row/deny
+requirements.
 """
 from __future__ import annotations
 
@@ -151,7 +157,10 @@ def require_datasource_template(dash: dict, path: Path) -> None:
         fail(f"{path.name}: need templating datasource query=prometheus")
 
 
-def check_dashboard(path: Path, known: set[str], source_blob: str) -> None:
+PORTFOLIO_DASHBOARD = "oss-cash-lab.json"
+
+
+def check_dashboard(path: Path, known: set[str], source_blob: str, *, portfolio: bool) -> None:
     try:
         dash = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
@@ -193,24 +202,26 @@ def check_dashboard(path: Path, known: set[str], source_blob: str) -> None:
     if len(exprs) < 5:
         fail(f"{path.name}: need >=5 PromQL expr, got {len(exprs)}")
 
-    present_required = [m for m in REQUIRED_IF_PRESENT if m in known]
-    missing_req = [m for m in present_required if m not in used]
-    if missing_req:
-        fail(f"{path.name}: dashboard missing required metrics {missing_req}")
-    deny_used = [m for m in DENY_METRICS if m in used]
-    if not deny_used:
-        fail(
-            f"{path.name}: need at least one deny/error metric "
-            f"({', '.join(DENY_METRICS)})"
-        )
+    if portfolio:
+        present_required = [m for m in REQUIRED_IF_PRESENT if m in known]
+        missing_req = [m for m in present_required if m not in used]
+        if missing_req:
+            fail(f"{path.name}: dashboard missing required metrics {missing_req}")
+        deny_used = [m for m in DENY_METRICS if m in used]
+        if not deny_used:
+            fail(
+                f"{path.name}: need at least one deny/error metric "
+                f"({', '.join(DENY_METRICS)})"
+            )
 
-    rows = [p for p in flat if p.get("type") == "row"]
-    if len(rows) < 5:
-        fail(f"{path.name}: need 5 row panels (B/C/D/E/F), got {len(rows)}")
+        rows = [p for p in flat if p.get("type") == "row"]
+        if len(rows) < 5:
+            fail(f"{path.name}: need 5 row panels (B/C/D/E/F), got {len(rows)}")
 
     print(
         f"  ok {path.name}  title={title!r}  schemaVersion={schema}  "
         f"panels={len(panels)}  expr={len(exprs)}  metrics={len(used)}"
+        f"{'  portfolio' if portfolio else '  dedicated'}"
     )
 
 
@@ -227,7 +238,9 @@ def main() -> None:
         fail(f"too few metric names from bet source: {sorted(known)}")
     blob = "\n".join((root / rel).read_text(encoding="utf-8") for rel in METRIC_SOURCES)
     for path in json_files:
-        check_dashboard(path, known, blob)
+        check_dashboard(
+            path, known, blob, portfolio=(path.name == PORTFOLIO_DASHBOARD)
+        )
     print(f"grafana dashboards ok ({len(json_files)} json, {len(known)} source metrics)")
 
 

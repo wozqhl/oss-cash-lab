@@ -1,8 +1,9 @@
 """CLI for ai-bom.
 
 Exit codes:
-  0  success (no --strict violations)
+  0  success (no --strict / --gate-licenses violations)
   1  --strict: forbidden pattern hits, disclosure gaps, and/or forbidden licenses
+     --gate-licenses: forbidden licenses only (CI license-policy gate)
   2  usage / IO / policy parse error
 """
 from __future__ import annotations
@@ -150,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         "--format",
         default=DEFAULT_FORMAT,
         choices=list(FORMAT_CHOICES),
-        help="BOM export: json (default internal model), cyclonedx (CycloneDX 1.5 JSON), cyclonedx-xml (CycloneDX 1.5 XML; alias cdx-xml), spdx (SPDX 2.3 JSON), spdx-xml (SPDX 2.3 XML; alias spdxxml), sarif (SARIF 2.1.0; same builder as --sarif PATH), md (human/Slack Markdown summary; alias markdown), gha (GitHub Actions ::error/::notice workflow commands; alias annotations), html (self-contained HTML BOM summary; no CDN)",
+        help="BOM export: json (default internal model), cyclonedx (CycloneDX 1.7 JSON), cyclonedx-xml (CycloneDX 1.7 XML; alias cdx-xml), spdx (SPDX 2.3 JSON), spdx-xml (SPDX 2.3 XML; alias spdxxml), sarif (SARIF 2.1.0; same builder as --sarif PATH), md (human/Slack Markdown summary; alias markdown), gha (GitHub Actions ::error/::notice workflow commands; alias annotations), html (self-contained HTML BOM summary; no CDN)",
     )
     p_scan.add_argument(
         "--evidence",
@@ -166,6 +167,14 @@ def main(argv: list[str] | None = None) -> int:
         "--strict",
         action="store_true",
         help="Exit 1 if forbidden patterns, disclosure gaps, or forbidden licenses",
+    )
+    p_scan.add_argument(
+        "--gate-licenses",
+        action="store_true",
+        help=(
+            "CI license-policy gate: exit 1 if forbiddenLicenseIds match "
+            "(existing policy). Does not fail on pickle/disclosure (use --strict)."
+        ),
     )
     p_scan.add_argument(
         "--sarif",
@@ -530,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:
             json_obj = {}
         format_ok = (
             cdx.get("bomFormat") == "CycloneDX"
-            and cdx.get("specVersion") == "1.5"
+            and cdx.get("specVersion") == "1.7"
             and isinstance(cdx.get("components"), list)
             and any(
                 isinstance((c.get("licenses") or [{}])[0], dict)
@@ -581,6 +590,55 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not format_ok:
             print("smoke failed cyclonedx/spdx export")
+            return 1
+
+        sample_cdx = to_cyclonedx(sample_bom)
+        ml_comps = [
+            c
+            for c in (sample_cdx.get("components") or [])
+            if isinstance(c, dict) and c.get("type") == "machine-learning-model"
+        ]
+        data_comps = [
+            c
+            for c in (sample_cdx.get("components") or [])
+            if isinstance(c, dict) and c.get("type") == "data"
+        ]
+        has_gguf_card = any(
+            any(
+                p.get("name") == "aibom:format" and p.get("value") == "gguf"
+                for p in ((c.get("modelCard") or {}).get("properties") or [])
+            )
+            for c in ml_comps
+        )
+        mlb_ok = (
+            sample_cdx.get("specVersion") == "1.7"
+            and sample_cdx.get("bomFormat") == "CycloneDX"
+            and bool(ml_comps)
+            and has_gguf_card
+            and bool(data_comps)
+            and all(isinstance(c.get("data"), list) and c["data"] for c in data_comps)
+            and all(isinstance(c.get("licenses"), list) and c["licenses"] for c in ml_comps)
+        )
+        if not mlb_ok:
+            print("smoke failed cyclonedx 1.7 ML-BOM fields", len(ml_comps), has_gguf_card, len(data_comps))
+            return 1
+
+        fixtures = Path(__file__).resolve().parents[2] / "examples" / "cra-fixtures"
+        policy_path = Path(__file__).resolve().parents[2] / "policies" / "default.json"
+        try:
+            cra_policy = load_policy(policy_path)
+        except Exception as e:
+            print("smoke failed load cra policy", e)
+            return 1
+        pass_bom = scan_path(fixtures / "license-pass", policy=cra_policy)
+        fail_bom = scan_path(fixtures / "license-fail", policy=cra_policy)
+        pass_fl = pass_bom.get("summary", {}).get("forbiddenLicenses") or []
+        fail_fl = fail_bom.get("summary", {}).get("forbiddenLicenses") or []
+        if pass_fl:
+            print("smoke failed license-pass fixture has forbidden licenses", pass_fl)
+            return 1
+        if not any(h.get("licenseId") == "GPL-3.0" for h in fail_fl):
+            print("smoke failed license-fail fixture missing GPL-3.0", fail_fl)
             return 1
 
         sarif_doc = to_sarif(bom, tool_version=__version__)
@@ -636,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
                     break
         xml_ok = (
             cdx_xml.lstrip().startswith("<bom")
-            and 'xmlns="http://cyclonedx.org/schema/bom/1.5"' in cdx_xml
+            and 'xmlns="http://cyclonedx.org/schema/bom/1.7"' in cdx_xml
             and "version=\"1\"" in cdx_xml
             and "serialNumber=" in cdx_xml
             and "<components" in cdx_xml
@@ -644,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
             and cdx_xml_dump == cdx_xml
             and dumps_export(bom, "cdx-xml") == cdx_xml
             and empty_xml.lstrip().startswith("<bom")
-            and 'xmlns="http://cyclonedx.org/schema/bom/1.5"' in empty_xml
+            and 'xmlns="http://cyclonedx.org/schema/bom/1.7"' in empty_xml
             and "<components" in empty_xml
             and empty_xml.rstrip().endswith("</bom>")
             and "foo &amp; bar" in amp_xml
@@ -1808,15 +1866,15 @@ def main(argv: list[str] | None = None) -> int:
                     if not xml_http.lstrip().startswith("<bom"):
                         print(f"smoke failed HTTP cyclonedx-xml start {xml_http[:80]!r}")
                         return 1
-                    if "http://cyclonedx.org/schema/bom/1.5" not in xml_http:
-                        print("smoke failed HTTP cyclonedx-xml xmlns 1.5")
+                    if "http://cyclonedx.org/schema/bom/1.7" not in xml_http:
+                        print("smoke failed HTTP cyclonedx-xml xmlns 1.7")
                         return 1
                     if "xml" not in ctype:
                         print(f"smoke failed HTTP cyclonedx-xml content-type {ctype}")
                         return 1
                 with urllib.request.urlopen(base + "/v1/bom.xml") as resp:
                     alias_xml = resp.read().decode("utf-8")
-                    if not alias_xml.lstrip().startswith("<bom") or "bom/1.5" not in alias_xml:
+                    if not alias_xml.lstrip().startswith("<bom") or "bom/1.7" not in alias_xml:
                         print(f"smoke failed HTTP /v1/bom.xml {alias_xml[:80]!r}")
                         return 1
                 with urllib.request.urlopen(base + "/v1/bom?format=spdx-xml") as resp:
@@ -2526,6 +2584,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"strict: disclosure gaps: {gaps}")
             if forbidden_licenses:
                 print(f"strict: forbidden licenses: {forbidden_licenses}")
+            return 1
+        if getattr(args, "gate_licenses", False) and forbidden_licenses:
+            print(f"gate-licenses: forbidden licenses: {forbidden_licenses}")
             return 1
         return 0
     parser.print_help()

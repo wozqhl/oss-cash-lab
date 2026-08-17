@@ -71,7 +71,31 @@ assert "summary" not in doc
 print("cli --format spdx ok", doc["spdxVersion"], "packages=", len(doc["packages"]))
 PYSPDX
 
-echo "==> scan --format cyclonedx-xml (CycloneDX 1.5 XML)"
+echo "==> scan --format cyclonedx (CycloneDX 1.7 JSON)"
+python3 -m ai_bom scan examples/sample-app \
+  --policy policies/default.json \
+  --format cyclonedx \
+  --out out/bom.cdx.json
+test -f out/bom.cdx.json
+python3 - <<"PYCDXJSON"
+import json
+from pathlib import Path
+cdx = json.loads(Path("out/bom.cdx.json").read_text())
+assert cdx.get("bomFormat") == "CycloneDX", cdx.get("bomFormat")
+assert cdx.get("specVersion") == "1.7", cdx.get("specVersion")
+assert "summary" not in cdx
+ml = [c for c in (cdx.get("components") or []) if c.get("type") == "machine-learning-model"]
+assert ml, "expected machine-learning-model components"
+assert any(
+    any(p.get("name") == "aibom:format" and p.get("value") == "gguf"
+        for p in ((c.get("modelCard") or {}).get("properties") or []))
+    for c in ml
+), "expected gguf modelCard from scan data"
+assert any(isinstance(c.get("licenses"), list) and c["licenses"] for c in ml)
+print("cli --format cyclonedx ok", cdx["specVersion"], "ml=", len(ml))
+PYCDXJSON
+
+echo "==> scan --format cyclonedx-xml (CycloneDX 1.7 XML)"
 python3 -m ai_bom scan examples/sample-app \
   --policy policies/default.json \
   --format cyclonedx-xml \
@@ -81,7 +105,7 @@ python3 - <<"PYCDXXML"
 from pathlib import Path
 xml = Path("out/bom.cdx.xml").read_text()
 assert xml.lstrip().startswith("<bom"), xml[:80]
-assert 'xmlns="http://cyclonedx.org/schema/bom/1.5"' in xml
+assert 'xmlns="http://cyclonedx.org/schema/bom/1.7"' in xml
 assert "ai-bom-sample-app" in xml or "gpt-4o-mini" in xml, xml[:400]
 assert "<components" in xml
 print("cli --format cyclonedx-xml ok")
@@ -302,6 +326,61 @@ results = (sarif.get("runs") or [{}])[0].get("results") or []
 assert not any(str(r.get("ruleId") or "").startswith("license/") for r in results), [r.get("ruleId") for r in results]
 print("MIT sample-app license gate OK (no forbiddenLicense hits)")
 PY
+
+echo "==> CRA fixtures: license-pass gate 0; license-fail gate 1"
+python3 -m ai_bom scan examples/cra-fixtures/license-pass \
+  --policy policies/default.json --gate-licenses >/tmp/d-cra-pass.out
+echo "cra_pass_gate=$?"
+set +e
+python3 -m ai_bom scan examples/sample-app \
+  --policy policies/default.json --gate-licenses >/tmp/d-cra-sample-gate.out 2>&1
+sample_gate=$?
+set -e
+if [ "$sample_gate" -ne 0 ]; then
+  echo "expected exit 0 for sample-app --gate-licenses (MIT), got $sample_gate"
+  cat /tmp/d-cra-sample-gate.out
+  exit 1
+fi
+python3 -m ai_bom scan examples/cra-fixtures/license-pass \
+  --policy policies/default.json --strict >/tmp/d-cra-pass-strict.out
+echo "cra_pass_strict=$?"
+set +e
+python3 -m ai_bom scan examples/cra-fixtures/license-fail \
+  --policy policies/default.json --gate-licenses >/tmp/d-cra-fail.out 2>&1
+fail_gate=$?
+python3 -m ai_bom scan examples/cra-fixtures/license-fail \
+  --policy policies/default.json --strict \
+  --out /tmp/d-cra-fail-bom.json \
+  --evidence /tmp/d-cra-fail-evidence.md \
+  --sarif /tmp/d-cra-fail.sarif >/tmp/d-cra-fail-strict.out 2>&1
+fail_strict=$?
+set -e
+if [ "$fail_gate" -ne 1 ]; then
+  echo "expected exit 1 for license-fail --gate-licenses, got $fail_gate"
+  cat /tmp/d-cra-fail.out
+  exit 1
+fi
+if [ "$fail_strict" -ne 1 ]; then
+  echo "expected exit 1 for license-fail --strict, got $fail_strict"
+  cat /tmp/d-cra-fail-strict.out
+  exit 1
+fi
+grep -Eqi "GPL-3\.0|forbidden license|gate-licenses" /tmp/d-cra-fail.out
+python3 - <<"PYCRA"
+import json
+from pathlib import Path
+bom = json.loads(Path("/tmp/d-cra-fail-bom.json").read_text())
+fl = bom["summary"].get("forbiddenLicenses") or []
+assert any(h.get("licenseId") == "GPL-3.0" for h in fl), fl
+assert bom["summary"].get("policyHits", 0) >= 1
+ev = Path("/tmp/d-cra-fail-evidence.md").read_text()
+assert "GPL-3.0" in ev
+sarif = json.loads(Path("/tmp/d-cra-fail.sarif").read_text())
+results = (sarif.get("runs") or [{}])[0].get("results") or []
+assert any(r.get("ruleId") == "license/GPL-3.0" for r in results), [r.get("ruleId") for r in results]
+print("CRA fixtures ok: pass gate 0, fail gate 1, GPL-3.0 in BOM/SARIF")
+PYCRA
+
 
 echo "==> temp package.json GPL-3.0 -> strict fails + evidence/sarif license hits"
 LIC_TMP="$(mktemp -d)"
@@ -860,7 +939,7 @@ assert (bom.get("summary") or {}).get("licenses", {}).get("MIT", 0) >= 1
 print("serve bom.json MIT ok", bom["summary"].get("licenses"))
 PYBOM
 
-echo "==> GET /v1/bom?format=cyclonedx (CycloneDX 1.5)"
+echo "==> GET /v1/bom?format=cyclonedx (CycloneDX 1.7)"
 curl -sf "http://127.0.0.1:$PORT/v1/bom?format=cyclonedx" -o out/serve-bom-cdx.json
 test -s out/serve-bom-cdx.json
 python3 - <<"PYCDX"
@@ -868,7 +947,7 @@ import json
 from pathlib import Path
 cdx = json.loads(Path("out/serve-bom-cdx.json").read_text())
 assert cdx.get("bomFormat") == "CycloneDX", cdx.get("bomFormat")
-assert cdx.get("specVersion") == "1.5", cdx.get("specVersion")
+assert cdx.get("specVersion") == "1.7", cdx.get("specVersion")
 assert "summary" not in cdx
 assert any(p.get("name") == "aibom:policyHits" for p in (cdx.get("properties") or []))
 assert any(
@@ -888,7 +967,7 @@ assert bom.get("bomFormat") == "CycloneDX"
 print("http /v1/bom default json ok")
 PYV1
 
-echo "==> GET /v1/bom?format=cyclonedx-xml (CycloneDX 1.5 XML)"
+echo "==> GET /v1/bom?format=cyclonedx-xml (CycloneDX 1.7 XML)"
 CDX_XML_CODE="$(curl -s -o out/serve-bom-cdx.xml -D out/serve-bom-cdx-xml.h -w "%{http_code}" \
   "http://127.0.0.1:$PORT/v1/bom?format=cyclonedx-xml")"
 echo "v1_bom_cdx_xml_status=$CDX_XML_CODE"
@@ -898,7 +977,7 @@ python3 - <<"PYCDXHTTPXML"
 from pathlib import Path
 xml = Path("out/serve-bom-cdx.xml").read_text()
 assert xml.lstrip().startswith("<bom"), xml[:80]
-assert "http://cyclonedx.org/schema/bom/1.5" in xml
+assert "http://cyclonedx.org/schema/bom/1.7" in xml
 assert "<components" in xml
 assert "ai-bom-sample-app" in xml or "gpt-4o-mini" in xml or "MIT" in xml
 print("http ?format=cyclonedx-xml ok")
@@ -908,7 +987,7 @@ python3 - <<"PYCDXALIAS"
 from pathlib import Path
 xml = Path("out/serve-bom-cdx-alias.xml").read_text()
 assert xml.lstrip().startswith("<bom"), xml[:80]
-assert "bom/1.5" in xml
+assert "bom/1.7" in xml
 print("http /v1/bom.xml alias ok")
 PYCDXALIAS
 

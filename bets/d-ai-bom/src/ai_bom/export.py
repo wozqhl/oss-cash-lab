@@ -1,4 +1,4 @@
-"""BOM exporters: internal JSON (default), CycloneDX 1.5 JSON/XML, SPDX 2.3 JSON/XML, SARIF 2.1.0, Markdown summary, GHA annotations, HTML summary.
+"""BOM exporters: internal JSON (default), CycloneDX 1.7 JSON/XML, SPDX 2.3 JSON/XML, SARIF 2.1.0, Markdown summary, GHA annotations, HTML summary.
 
 No extra deps. Valid enough that jq can read .bomFormat / .spdxVersion / .version.
 The scan result (custom AI-BOM with summary) stays the internal model.
@@ -34,14 +34,14 @@ SPDX_XML_CONTENT_TYPE = "application/spdx+xml; charset=utf-8"
 MD_CONTENT_TYPE = "text/markdown; charset=utf-8"
 GHA_CONTENT_TYPE = "text/plain; charset=utf-8"
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
-CDX_XMLNS = "http://cyclonedx.org/schema/bom/1.5"
+CDX_XMLNS = "http://cyclonedx.org/schema/bom/1.7"
 
-CDX_SPEC_VERSION = "1.5"
+CDX_SPEC_VERSION = "1.7"
 SPDX_VERSION = "SPDX-2.3"
 
 _SPDX_REF_SAFE = re.compile(r"[^A-Za-z0-9.-]+")
 
-# Internal component.type → CycloneDX 1.5 component type.
+# Internal component.type → CycloneDX 1.7 component type (ML-BOM since 1.5).
 _CDX_TYPE = {
     "library": "library",
     "application": "application",
@@ -124,10 +124,19 @@ def _license_concluded(licenses: list[Any] | None) -> str:
     return "NOASSERTION"
 
 
+def _basename(raw: Any) -> str:
+    """Last path segment only — never an absolute host path in the CDX export."""
+    s = str(raw or "").strip().replace("\\", "/")
+    if not s:
+        return ""
+    return s.rstrip("/").split("/")[-1]
+
+
 def _cdx_component(src: dict[str, Any], idx: int) -> dict[str, Any]:
     name = str(src.get("name") or f"component-{idx}")
+    ctype = _cdx_type(src.get("type"))
     out: dict[str, Any] = {
-        "type": _cdx_type(src.get("type")),
+        "type": ctype,
         "name": name,
     }
     version = src.get("version")
@@ -143,11 +152,28 @@ def _cdx_component(src: dict[str, Any], idx: int) -> dict[str, Any]:
         out["licenses"] = licenses
     else:
         out["licenses"] = [{"license": {"name": "UNKNOWN"}}]
+    # ML-BOM fields the scanner already has. Do not invent architecture / datasets / metrics.
+    if ctype == "machine-learning-model":
+        card_props: list[dict[str, str]] = []
+        fmt = src.get("format")
+        if fmt not in (None, ""):
+            card_props.append({"name": "aibom:format", "value": str(fmt)})
+        src_name = _basename(src.get("path"))
+        if src_name:
+            card_props.append({"name": "aibom:sourcePath", "value": src_name})
+        if card_props:
+            out["modelCard"] = {"properties": card_props}
+    if ctype == "data":
+        data_entry: dict[str, Any] = {"type": "configuration", "name": name}
+        src_name = _basename(src.get("path"))
+        if src_name:
+            data_entry["description"] = src_name
+        out["data"] = [data_entry]
     return out
 
 
 def to_cyclonedx(bom: dict[str, Any]) -> dict[str, Any]:
-    """CycloneDX 1.5 JSON from the internal AI-BOM. No custom `summary`.
+    """CycloneDX 1.7 JSON from the internal AI-BOM. No custom `summary`.
 
     Policy hits live in `properties` (`aibom:policyHits`), not `vulnerabilities`.
     Component licenses stay on each component.
@@ -220,6 +246,7 @@ def to_cyclonedx(bom: dict[str, Any]) -> dict[str, Any]:
     }
 
     return {
+        "$schema": f"http://cyclonedx.org/schema/bom-{CDX_SPEC_VERSION}.schema.json",
         "bomFormat": "CycloneDX",
         "specVersion": CDX_SPEC_VERSION,
         "serialNumber": f"urn:uuid:{serial}",
@@ -416,6 +443,26 @@ def _xml_component(comp: dict[str, Any], indent: int) -> str:
     licenses = comp.get("licenses")
     if isinstance(licenses, list) and licenses:
         parts.append(_xml_licenses(licenses, indent + 1))
+    model_card = comp.get("modelCard")
+    if isinstance(model_card, dict) and model_card:
+        parts.append(f"{pad}  <modelCard>\n")
+        mc_props = model_card.get("properties")
+        if isinstance(mc_props, list) and mc_props:
+            parts.append(_xml_properties(mc_props, indent + 2))
+        parts.append(f"{pad}  </modelCard>\n")
+    data_list = comp.get("data")
+    if isinstance(data_list, list):
+        for d in data_list:
+            if not isinstance(d, dict):
+                continue
+            parts.append(f"{pad}  <data>\n")
+            if d.get("type") not in (None, ""):
+                parts.append(_xml_elem("type", d.get("type"), indent + 2))
+            if d.get("name") not in (None, ""):
+                parts.append(_xml_elem("name", d.get("name"), indent + 2))
+            if d.get("description") not in (None, ""):
+                parts.append(_xml_elem("description", d.get("description"), indent + 2))
+            parts.append(f"{pad}  </data>\n")
     parts.append(f"{pad}</component>\n")
     return "".join(parts)
 
@@ -434,9 +481,9 @@ def _xml_properties(props: list[Any], indent: int) -> str:
 
 
 def to_cyclonedx_xml(bom: dict[str, Any]) -> str:
-    """CycloneDX 1.5 XML from the same model as to_cyclonedx. No extra deps.
+    """CycloneDX 1.7 XML from the same model as to_cyclonedx. No extra deps.
 
-    Root is `<bom xmlns="http://cyclonedx.org/schema/bom/1.5" version="1" serialNumber=...>`.
+    Root is `<bom xmlns="http://cyclonedx.org/schema/bom/1.7" version="1" serialNumber=...>`.
     Empty scan still emits `<components>` (empty) and is valid XML.
     """
     cdx = to_cyclonedx(bom)

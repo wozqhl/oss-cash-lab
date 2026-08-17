@@ -1,0 +1,7 @@
+{
+  "name": "cra-license-fail",
+  "version": "0.0.1",
+  "private": true,
+  "description": "CRA license-policy gate FAIL fixture (planted GPL-3.0)",
+  "license": "GPL-3.0"
+}

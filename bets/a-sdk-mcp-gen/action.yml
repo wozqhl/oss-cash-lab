@@ -1,0 +1,64 @@
+name: sdk-mcp-gen
+description: Generate multi-lang SDK + stdio MCP servers from an OpenAPI spec (runs generate; not a drift check)
+inputs:
+  spec:
+    description: Path to an OpenAPI file (relative to the workspace). XOR with url.
+    required: false
+    default: ""
+  url:
+    description: http(s) or file:// URL of an OpenAPI spec. XOR with spec.
+    required: false
+    default: ""
+  output:
+    description: Directory to write the generated SDK + MCP tree
+    required: false
+    default: sdk
+  langs:
+    description: Optional comma-separated langs (ts,python,go,java,rust,csharp,kotlin,swift,ruby,php). Empty = CLI default (all ten).
+    required: false
+    default: ""
+outputs:
+  output:
+    description: Output directory passed to generate --out
+    value: ${{ inputs.output }}
+runs:
+  using: composite
+  steps:
+    - name: Generate SDK + MCP
+      shell: bash
+      env:
+        INPUT_SPEC: ${{ inputs.spec }}
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_LANGS: ${{ inputs.langs }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        CLI="${ACTION_PATH}/src/cli.js"
+        if [[ ! -f "$CLI" ]]; then
+          echo "::error::sdk-mcp-gen CLI not found at ${CLI}"
+          exit 1
+        fi
+        if [[ -n "${INPUT_SPEC}" && -n "${INPUT_URL}" ]]; then
+          echo "::error::spec and url are XOR (pass one, not both)"
+          exit 2
+        fi
+        if [[ -z "${INPUT_SPEC}" && -z "${INPUT_URL}" ]]; then
+          echo "::error::provide spec (file path) or url"
+          exit 2
+        fi
+        if [[ -z "${INPUT_OUTPUT}" ]]; then
+          echo "::error::output directory is required"
+          exit 2
+        fi
+        args=(generate)
+        if [[ -n "${INPUT_URL}" ]]; then
+          args+=(--url "${INPUT_URL}")
+        else
+          args+=("${INPUT_SPEC}")
+        fi
+        args+=(--out "${INPUT_OUTPUT}")
+        if [[ -n "${INPUT_LANGS}" ]]; then
+          args+=(--lang "${INPUT_LANGS}")
+        fi
+        node "$CLI" "${args[@]}"

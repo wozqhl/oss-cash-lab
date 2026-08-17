@@ -1,6 +1,6 @@
-# GitHub Actions examples · A OpenAPI drift + C JUnit + run-vs-run diff + D SARIF + E GHA annotations
+# GitHub Actions examples · A OpenAPI generate + drift + C JUnit + run-vs-run diff + D SARIF + E GHA annotations
 
-Copy-paste workflows so a consumer repo can drop **A (sdk-mcp-gen OpenAPI drift)**, **C (agent-ci JUnit + optional run-vs-run Markdown diff)**, **D (ai-bom SARIF)**, and **E (otel-ai-cost budget `::error`)** into CI.
+Copy-paste workflows so a consumer repo can drop **A (sdk-mcp-gen generate + OpenAPI drift)**, **C (agent-ci JUnit + optional run-vs-run Markdown diff)**, **D (ai-bom SARIF)**, and **E (otel-ai-cost budget `::error`)** into CI.
 
 These files live here on purpose. They are **not** required workflows on this portfolio (no live runner gate for OpenAPI drift / agent eval / run-vs-run diff / whole-monorepo BOM scan / cost budget). Keep [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) as the only push/PR gate. Do **not** enable GitHub code scanning on *this* repo from these examples.
 
@@ -21,6 +21,7 @@ If you run the same YAML against *this* tree, set `working-directory` and artifa
 
 | Example | `working-directory` | Output path |
 |---------|---------------------|-------------|
+| A generate | `bets/a-sdk-mcp-gen` | `sdk/` artifact (composite `wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main`) |
 | A drift | `bets/a-sdk-mcp-gen` | `sdk/` baseline + `sdk-new/` (exit 1 on removed/renamed tools) |
 | C JUnit | `bets/c-agent-ci` | `bets/c-agent-ci/junit.xml` |
 | D SARIF | `bets/d-ai-bom` | `bets/d-ai-bom/ai-bom.sarif` |
@@ -57,6 +58,24 @@ node src/cli.js generate examples/petstore.openapi.json --out sdk-new --check-ba
 C also accepts stdout XML: `run --format junit` (same suite). Optional Markdown job summary: `run --format md >> "$GITHUB_STEP_SUMMARY"` (HTTP `GET /v1/runs/{id}/report.md` on serve). Optional run-vs-run Markdown diff: `diff --from run-a.json --to run-b.json --format md >> "$GITHUB_STEP_SUMMARY"` (two completed-run JSON dumps, same shape as `GET /v1/runs/{id}`; identical demo dumps → “no changes”, exit 0; HTTP `GET /v1/runs/{id}/diff.md?against=`). Optional log annotations: `run --format gha` (prints `::error title=<suite>/<case>::…` workflow commands; HTTP `GET /v1/runs/{id}/annotations.txt`). D GitHub upload uses **`--sarif PATH`** (this workflow). Optional elsewhere: `scan --format sarif` (same SARIF 2.1.0 to stdout/`--out`) and HTTP `GET /v1/bom?format=sarif` (or `/v1/bom.sarif`) on `serve` / stack-demo — not a substitute for `upload-sarif`. Optional D log annotations: `scan --format gha` (prints `::error title=<component>::<license or rule>`; HTTP `GET /v1/bom?format=gha` / `/v1/bom.gha.txt`).
 
 E happy path (`--format gha`, no `--budget`) prints nothing and exits 0. Tight `--tenant-budget acme=0.0001` prints `::error title=tenant/acme::` and still exits 0. Tight `--budget policies/budget.json` prints `::error title=budget::` and **exits 1** (job fails; annotations still show in the log). Optional Markdown: `report --format md >> "$GITHUB_STEP_SUMMARY"` and `--out costs.md` for `upload-artifact`. HTTP: `GET /v1/costs.gha.txt` / `GET /v1/costs?format=gha`.
+
+## A · Generate
+
+[`sdk-mcp-gen-generate.yml`](./sdk-mcp-gen-generate.yml)
+
+Runs generation (not drift check) via the composite Action and uploads `sdk/`:
+
+    uses: wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main
+
+Same-repo path if you ever enable it here: `uses: ./bets/a-sdk-mcp-gen` with
+`spec: bets/a-sdk-mcp-gen/examples/petstore.openapi.json`.
+
+Equivalent CLI (also used by the Action):
+
+    node src/cli.js generate examples/petstore.openapi.json --out sdk
+
+Inputs: `spec` and/or `url` (XOR), `output` (default `sdk`), optional `langs`.
+Node 18+ via `actions/setup-node`. Artifact: `actions/upload-artifact@v4`.
 
 ## A · OpenAPI drift
 
@@ -100,9 +119,12 @@ Thin composite: [`agent-ci-junit/action.yml`](./agent-ci-junit/action.yml) (run 
 [`ai-bom-sarif.yml`](./ai-bom-sarif.yml)
 
 1. `python3 -m ai_bom scan examples/sample-app --policy policies/default.json --sarif ai-bom.sarif`
-2. `github/codeql-action/upload-sarif@v3` with `sarif_file: ai-bom.sarif`
+2. License-policy gate (existing `forbiddenLicenseIds`; exit 1 on GPL/AGPL/SSPL): `python3 -m ai_bom scan examples/sample-app --policy policies/default.json --gate-licenses`
+3. `github/codeql-action/upload-sarif@v3` with `sarif_file: ai-bom.sarif`
 
 **Code scanning must be enabled** on the consumer repo or the upload step fails. Permissions: `security-events: write` (+ `contents: read`, `actions: read`).
+
+`--gate-licenses` fails only on disallowed licenses (sample-app MIT is green). `--strict` also fails pickle / disclosure gaps. Committed fixtures in D: `examples/cra-fixtures/license-pass` (exit 0) and `examples/cra-fixtures/license-fail` (planted GPL-3.0, exit 1). See `bets/d-ai-bom/docs/cra.md`.
 
 Optional (not this workflow): `serve` HTTP `GET /v1/bom?format=sarif` returns the same SARIF 2.1.0 document for stack-demo without writing a file. Optional one-liner for log annotations: `python3 -m ai_bom scan examples/sample-app --policy policies/default.json --format gha`.
 
@@ -122,4 +144,4 @@ Thin composite: [`otel-ai-cost-gha/action.yml`](./otel-ai-cost-gha/action.yml) (
 
 ## Prove
 
-`scripts/check-gha-examples.sh` (hooked from `make smoke`): YAML `safe_load` (PyYAML) or the same indent subset as k8s manifests; workflows have `on` + `jobs`; composites have `name` + `runs`; README contains the exact CLI strings above; demo fixture CLI writes JUnit / SARIF 2.1.0 / E `::error` (tenant-budget) + empty happy-path gha + `costs.md`; C `diff --from/--to --format md` on two identical demo dumps → “no changes” (exit 0); A petstore generate twice (`--check-baseline` against the first, exit 0) plus `check --out NEW --baseline sdk`.
+`scripts/check-gha-examples.sh` (hooked from `make smoke`): YAML `safe_load` (PyYAML) or the same indent subset as k8s manifests; workflows have `on` + `jobs`; composites have `name` + `runs`; README contains the exact CLI strings above; demo fixture CLI writes JUnit / SARIF 2.1.0 / E `::error` (tenant-budget) + empty happy-path gha + `costs.md`; C `diff --from/--to --format md` on two identical demo dumps → “no changes” (exit 0); A petstore generate twice (`--check-baseline` against the first, exit 0) plus `check --out NEW --baseline sdk`; A generate workflow + `bets/a-sdk-mcp-gen/action.yml` parse as composite (not a live workflow here).
