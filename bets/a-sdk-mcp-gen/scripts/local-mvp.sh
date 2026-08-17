@@ -157,6 +157,13 @@ grep -q 'listPets' out/petstore/client.ts
 grep -q 'createPet' out/petstore/client.ts
 grep -q 'getPet' out/petstore/client.ts
 grep -q 'deletePet' out/petstore/client.ts
+grep -q 'function retryDelayMs' out/petstore/client.ts
+grep -q '429' out/petstore/client.ts
+grep -q 'Retry-After' out/petstore/client.ts
+grep -q 'def _retry_delay_s' out/petstore/client.py
+grep -q '429' out/petstore/client.py
+grep -q 'func retryDelay' out/petstore/client.go
+grep -q '429' out/petstore/client.go
 
 echo "==> mcp-server.mjs stdio JSON-RPC tools/list"
 if grep -q '@modelcontextprotocol/sdk' out/petstore/mcp-server.mjs; then

@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Generated TypeScript / Python / Go clients retry 429, 5xx, and network throws (max 2 retries / 3 attempts, ~100ms exponential backoff, honor Retry-After when under 30s). Stdlib only. Public method / MCP tool names unchanged.
 - Composite GitHub Action at action.yml (spec path and/or url, output dir, optional langs).
   Consumers: uses wozqhl/oss-cash-lab/bets/a-sdk-mcp-gen@main. Fails on CLI error. Not the drift-check example.
 - Copy-paste workflow examples/github-actions/sdk-mcp-gen-generate.yml plus upload-artifact@v4.

@@ -1059,8 +1059,24 @@ if (cmd === "--version" || cmd === "-V") {
     console.error("smoke yaml subset failed", y);
     process.exit(1);
   }
+  const ts = generateTsClient(ops, "Demo API");
+  if (
+    !ts.includes("listPets") ||
+    !ts.includes("createPet") ||
+    !ts.includes("getPet") ||
+    !ts.includes("function retryDelayMs") ||
+    !ts.includes("429") ||
+    !ts.includes("Retry-After")
+  ) {
+    console.error("smoke ts client retry failed");
+    process.exit(1);
+  }
+  if (!/return \{\s*listPets,/.test(ts) || /return \{[^}]*retryDelayMs/.test(ts)) {
+    console.error("smoke ts public method names changed");
+    process.exit(1);
+  }
   const py = generatePyClient(ops, "Demo API");
-  if (!py.includes("def listPets") || !py.includes("urllib.request")) {
+  if (!py.includes("def listPets") || !py.includes("urllib.request") || !py.includes("429") || !py.includes("def _retry_delay_s")) {
     console.error("smoke python client failed");
     process.exit(1);
   }
@@ -1069,7 +1085,9 @@ if (cmd === "--version" || cmd === "-V") {
     !go.includes("package client") ||
     !go.includes("net/http") ||
     !go.includes("func (c *Client) ListPets") ||
-    !go.includes("func (c *Client) CreatePet")
+    !go.includes("func (c *Client) CreatePet") ||
+    !go.includes("func retryDelay") ||
+    !go.includes("429")
   ) {
     console.error("smoke go client failed");
     process.exit(1);
@@ -1182,6 +1200,11 @@ if (cmd === "--version" || cmd === "-V") {
     // checksum manifest: generate writes checksums.sha256; verify OK; tweak fails
     const sumDir = path.join(tmp, "sums");
     const sumResult = generateToDir(demoSpec, sumDir, ["ts", "python", "go", "java", "rust", "csharp", "kotlin", "swift", "ruby", "php"]);
+    const generatedTs = fs.readFileSync(path.join(sumDir, "client.ts"), "utf8");
+    if (!generatedTs.includes("function retryDelayMs") || !generatedTs.includes("429") || !generatedTs.includes("listPets")) {
+      console.error("smoke generated client.ts missing retry helper / 429");
+      process.exit(1);
+    }
     if (!fs.existsSync(path.join(sumDir, CHECKSUMS_FILE))) {
       console.error("smoke checksums.sha256 missing after generate");
       process.exit(1);

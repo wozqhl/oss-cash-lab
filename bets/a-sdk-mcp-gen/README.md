@@ -50,6 +50,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] `generate --zip` packs `--out` into `sdk.tgz` (tar -czf) or `sdk.zip` (store-only fallback) after checksums; dry-run lists the archive name; checksums omit the archive
 - [x] `generate` writes Apache-2.0 `LICENSE` + `NOTICE` (default on; always overwritten; `--no-license` skips; checksums + dry-run + zip; independent of `--no-mcp`)
 - [x] `generate` writes `.gitignore` (default on; always overwritten; `--no-gitignore` skips; checksums + dry-run + zip; independent of `--no-mcp` / `--no-license`)
+- [x] Generated TS / Python / Go clients retry 429 / 5xx / network throws (max 2 retries, ~100ms exponential backoff, honor `Retry-After` <30s; stdlib only)
 - [ ] Demo script in README
 
 ## Quick start
@@ -90,9 +91,20 @@ node src/cli.js generate examples/openapi-3.1-mini.json --out out/openapi-3.1-mi
 # client.ts / client.py + mcp tools/list includes listItems (webhooks are not tools)
 ```
 
+TypeScript note: generated `client.ts` uses Node 18+ `fetch` (injectable
+`fetchImpl`) and retries 429 / 5xx / network throws (max 2 retries, ~100ms
+exponential backoff, honor `Retry-After` when under 30s). Stdlib only. Public
+method names stay OpenAPI `operationId` (`listPets`, …).
+
 Go note: generated `client.go` uses `package client` and one exported method per
-operation (`ListPets`, …). local-mvp runs `gofmt -e` / `go vet` when the Go
-toolchain is installed; otherwise it still requires a valid-looking `client.go`.
+operation (`ListPets`, …). Same retry policy as the TypeScript client (429 / 5xx
+/ network; max 2 retries; `Retry-After` <30s). local-mvp runs `gofmt -e` /
+`go vet` when the Go toolchain is installed; otherwise it still requires a
+valid-looking `client.go`.
+
+Python note: generated `client.py` is stdlib `urllib` only (no `requests`) and
+uses the same retry policy as TypeScript (429 / 5xx / network; max 2 retries;
+`Retry-After` <30s). Public method names stay OpenAPI `operationId`.
 
 Java note: generated `Client.java` uses `package client` and one public method per
 operation (`listPets`, …) via `java.net.HttpURLConnection` (stdlib only). local-mvp
