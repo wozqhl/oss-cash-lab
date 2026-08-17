@@ -1,4 +1,4 @@
-# 私有化 · 等保 · 飞书审批（给信息化）
+# 私有化 · 等保 · 飞书 / 钉钉 / 企微审批（给信息化）
 
 > F · cn-work-agent **0.1.0 本地 MVP**。这是挂在 **Dify / n8n 前面**的飞书 / 钉钉 / 企微审批适配器，**不是** Dify 替代品，也**不是**等保认证产品。
 
@@ -22,13 +22,16 @@
 
 信息化通常已经选定 Dify 或 n8n 做 Agent 编排。缺的是：**办公 IM 入口 + 可审计的人工审批**，并且数据不出内网。本服务只做这一层。Dify 继续编排；本服务不提供对话 UI、不托管模型、不替代工作流引擎。
 
-## 飞书审批（本地可跑）
+## 三平台审批（本地可跑）
 
-本地 mock，**不连飞书公网**，不调厂商 SDK：
+本地 mock，**不连飞书 / 钉钉 / 企微公网**，不调厂商 SDK。请假 + 用印同一条路径：
 
-1. `POST /webhook/feishu`（本地验签）收到「请审批请假 / 用印」
+1. `POST /webhook/{feishu|dingtalk|wecom}`（本地验签）收到「请审批请假 / 用印」
 2. 写入 `data/approvals.jsonl`，`status=pending`
-3. `GET /v1/approvals/{id}/card?platform=feishu` 渲染 interactive 卡片 JSON（header / elements / 批准·驳回按钮）
+3. `GET /v1/approvals/{id}/card?platform=` 渲染平台卡片 JSON
+   - 飞书 `interactive`（header / elements / 批准·驳回）
+   - 钉钉 `actionCard`（`btns` 批准·驳回）
+   - 企微 `textcard`（`btntxt=Approve`，驳回 URL 在 description）
 4. `POST /approvals/{id}/decide` 批准或驳回
 5. `GET /v1/approvals?status=pending|approved|rejected|expired` 按状态过滤
 
@@ -37,9 +40,12 @@
 ```bash
 cd bets/f-cn-work-agent
 bash scripts/demo-feishu-approval.sh
+bash scripts/demo-dingtalk-approval.sh
+bash scripts/demo-wecom-approval.sh
+# 或：bash scripts/demo-feishu-approval.sh --platform all
 ```
 
-验签算法是仓库内 mock（`scripts/sign_feishu.py`），与飞书生产 Encrypt Key / 事件加密体不同。上线前对照飞书官方回调文档替换 `verify.py`。差异见 [intranet-demo.md](./intranet-demo.md) 的 DRAFT 表。
+验签算法是仓库内 mock（`scripts/sign_feishu.py` / `sign_dingtalk.py` / `sign_wecom.py`），与各厂商生产 Encrypt Key / 事件加密体不同。上线前对照官方回调文档替换 `verify.py`。差异见 [intranet-demo.md](./intranet-demo.md) 的 DRAFT 表。
 
 ## 私有化
 

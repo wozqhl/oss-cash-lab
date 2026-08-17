@@ -9,6 +9,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] 三平台本地 mock webhook + 共享意图路由（无厂商 SDK）
 - [x] 本地审批 JSONL、卡片、`?status=` 过滤、CSV/MD/HTML 审计
 - [x] 飞书请假 / 用印本地演示（`scripts/demo-feishu-approval.sh`，无公网）
+- [x] 钉钉 / 企微请假 / 用印本地演示（`demo-dingtalk-approval.sh` / `demo-wecom-approval.sh`，或 `--platform dingtalk|wecom|all`，无公网）
 - [x] `docs/cn-onprem.md`：私有化 + 等保诚实说明 + 与 Dify 的前后关系
 
 ## Still open

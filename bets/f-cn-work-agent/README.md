@@ -8,11 +8,14 @@
 
 **诚实边界：** 当前是 **0.1.0 本地 MVP**。**不是**等保认证产品。SSO、等保测评支持、厂商正式 SDK 属于付费项。无客户案例。
 
-三分钟本地演示（请假 + 用印，无真实飞书网络）：
+三分钟本地演示（请假 + 用印，无真实飞书 / 钉钉 / 企微网络）：
 
 ```bash
 cd bets/f-cn-work-agent
-bash scripts/demo-feishu-approval.sh
+bash scripts/demo-feishu-approval.sh                 # 飞书 interactive card
+bash scripts/demo-dingtalk-approval.sh               # 钉钉 actionCard
+bash scripts/demo-wecom-approval.sh                  # 企微 textcard
+# 或：bash scripts/demo-feishu-approval.sh --platform dingtalk|wecom|all
 ```
 
 私有化 / 等保 / 与 Dify 的前后关系：[docs/cn-onprem.md](./docs/cn-onprem.md)。内网 ask/reply 手册：[docs/intranet-demo.md](./docs/intranet-demo.md)。
@@ -304,9 +307,12 @@ PYTHONPATH=src python3 -m cn_work_agent serve --port 8790
 ```
 
 ```bash
-bash scripts/local-mvp.sh              # hits all three platforms (good + bad auth)
-bash scripts/demo-feishu-approval.sh   # 三分钟：飞书请假/用印审批（推荐给信息化）
-bash scripts/demo-ask-reply.sh         # config-driven ask/reply demo (optional)
+bash scripts/local-mvp.sh                 # hits all three platforms (good + bad auth)
+bash scripts/demo-feishu-approval.sh      # 三分钟：飞书请假/用印（推荐给信息化）
+bash scripts/demo-dingtalk-approval.sh    # 同上，钉钉 actionCard（无钉钉公网）
+bash scripts/demo-wecom-approval.sh       # 同上，企微 textcard（无企微公网）
+# bash scripts/demo-feishu-approval.sh --platform all
+bash scripts/demo-ask-reply.sh            # config-driven ask/reply demo (optional)
 ```
 
 内网手册（中文）：[docs/intranet-demo.md](./docs/intranet-demo.md) — 含 curl、审计日志与生产验签 **DRAFT** 差异说明。
