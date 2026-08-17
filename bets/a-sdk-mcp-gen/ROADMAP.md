@@ -11,6 +11,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Drift-check example remains CHECK only (examples/github-actions/sdk-mcp-gen-check.yml)
 - [x] Generated TS / Python / Go clients retry transient HTTP (429 / 5xx / network; max 2 retries; Retry-After <30s)
 - [x] Generated TS / Python / Go iterate* page helpers (page/cursor; cap 1000; existing names unchanged)
+- [x] Generated TS / Python / Go request timeout (default 10s; constructor / SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC; per attempt so retry still works)
 
 ## Still open
 

@@ -52,6 +52,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] `generate` writes `.gitignore` (default on; always overwritten; `--no-gitignore` skips; checksums + dry-run + zip; independent of `--no-mcp` / `--no-license`)
 - [x] Generated TS / Python / Go clients retry 429 / 5xx / network throws (max 2 retries, ~100ms exponential backoff, honor `Retry-After` <30s; stdlib only)
 - [x] Generated TS / Python / Go clients add `iterate*` helpers for GET ops with `page` / `pageSize` / `offset` / `limit` / `cursor` / `starting_after` (follow `next` / `next_cursor` / `nextPageToken` or increment page until empty/short; cap 1000; existing method names unchanged; not a Stainless pager)
+- [x] Generated TS / Python / Go clients apply a per-attempt request timeout (default 10s; AbortController / urllib timeout / context; override via constructor or env `SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`; stdlib only)
 - [ ] Demo script in README
 
 ## Quick start
@@ -94,7 +95,9 @@ node src/cli.js generate examples/openapi-3.1-mini.json --out out/openapi-3.1-mi
 
 TypeScript note: generated `client.ts` uses Node 18+ `fetch` (injectable
 `fetchImpl`) and retries 429 / 5xx / network throws (max 2 retries, ~100ms
-exponential backoff, honor `Retry-After` when under 30s). Stdlib only. Public
+exponential backoff, honor `Retry-After` when under 30s). Each attempt uses
+`AbortController` (default 10s; override `createClient({ timeoutMs })` or env
+`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Stdlib only. Public
 method names stay OpenAPI `operationId` (`listPets`, …). Pageable GET ops also
 get an `iterate*` async iterator (petstore `listPets` → `iterateListPets`) that
 follows a JSON next cursor (`next` / `next_cursor` / `nextPageToken`) or
@@ -102,14 +105,18 @@ increments `page` until an empty or short page. Cap 1000. Not a Stainless pager.
 
 Go note: generated `client.go` uses `package client` and one exported method per
 operation (`ListPets`, …). Same retry policy as the TypeScript client (429 / 5xx
-/ network; max 2 retries; `Retry-After` <30s). Pageable GET ops also get
+/ network; max 2 retries; `Retry-After` <30s). Each attempt uses
+`context.WithTimeout` (default 10s; override `Client.Timeout` or env
+`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Pageable GET ops also get
 `Iterate*` which collects pages (`[]any`) with the same page/cursor policy as
 TypeScript. local-mvp runs `gofmt -e` / `go vet` when the Go toolchain is
 installed; otherwise it still requires a valid-looking `client.go`.
 
 Python note: generated `client.py` is stdlib `urllib` only (no `requests`) and
 uses the same retry policy as TypeScript (429 / 5xx / network; max 2 retries;
-`Retry-After` <30s). Public method names stay OpenAPI `operationId`. Pageable
+`Retry-After` <30s). Each attempt uses `urlopen(..., timeout=)` (default 10s;
+override `Client(timeout=...)` / `create_client(timeout=...)` or env
+`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Public method names stay OpenAPI `operationId`. Pageable
 GET ops also get `iterate*` generators with the same page/cursor policy as
 TypeScript.
 

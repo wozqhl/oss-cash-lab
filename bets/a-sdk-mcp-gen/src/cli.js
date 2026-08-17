@@ -1068,9 +1068,13 @@ if (cmd === "--version" || cmd === "-V") {
     !ts.includes("getPet") ||
     !ts.includes("function retryDelayMs") ||
     !ts.includes("429") ||
-    !ts.includes("Retry-After")
+    !ts.includes("Retry-After") ||
+    !ts.includes("AbortController") ||
+    !ts.includes("timeoutMs") ||
+    !ts.includes("SDK_TIMEOUT_MS") ||
+    !ts.includes("SDK_TIMEOUT_SEC")
   ) {
-    console.error("smoke ts client retry failed");
+    console.error("smoke ts client retry/timeout failed");
     process.exit(1);
   }
   if (!/return \{\s*listPets,/.test(ts) || /return \{[^}]*retryDelayMs/.test(ts)) {
@@ -1082,7 +1086,15 @@ if (cmd === "--version" || cmd === "-V") {
     process.exit(1);
   }
   const py = generatePyClient(ops, "Demo API");
-  if (!py.includes("def listPets") || !py.includes("urllib.request") || !py.includes("429") || !py.includes("def _retry_delay_s")) {
+  if (
+    !py.includes("def listPets") ||
+    !py.includes("urllib.request") ||
+    !py.includes("429") ||
+    !py.includes("def _retry_delay_s") ||
+    !py.includes("timeout=self._timeout") ||
+    !py.includes("SDK_TIMEOUT_MS") ||
+    !py.includes("SDK_TIMEOUT_SEC")
+  ) {
     console.error("smoke python client failed");
     process.exit(1);
   }
@@ -1093,7 +1105,10 @@ if (cmd === "--version" || cmd === "-V") {
     !go.includes("func (c *Client) ListPets") ||
     !go.includes("func (c *Client) CreatePet") ||
     !go.includes("func retryDelay") ||
-    !go.includes("429")
+    !go.includes("429") ||
+    !go.includes("context.WithTimeout") ||
+    !go.includes("SDK_TIMEOUT_MS") ||
+    !go.includes("SDK_TIMEOUT_SEC")
   ) {
     console.error("smoke go client failed");
     process.exit(1);
@@ -1207,8 +1222,14 @@ if (cmd === "--version" || cmd === "-V") {
     const sumDir = path.join(tmp, "sums");
     const sumResult = generateToDir(demoSpec, sumDir, ["ts", "python", "go", "java", "rust", "csharp", "kotlin", "swift", "ruby", "php"]);
     const generatedTs = fs.readFileSync(path.join(sumDir, "client.ts"), "utf8");
-    if (!generatedTs.includes("function retryDelayMs") || !generatedTs.includes("429") || !generatedTs.includes("listPets")) {
-      console.error("smoke generated client.ts missing retry helper / 429");
+    if (
+      !generatedTs.includes("function retryDelayMs") ||
+      !generatedTs.includes("429") ||
+      !generatedTs.includes("listPets") ||
+      !generatedTs.includes("AbortController") ||
+      !generatedTs.includes("timeout")
+    ) {
+      console.error("smoke generated client.ts missing retry helper / AbortController timeout");
       process.exit(1);
     }
     if (!fs.existsSync(path.join(sumDir, CHECKSUMS_FILE))) {
@@ -1798,6 +1819,10 @@ if (cmd === "--version" || cmd === "-V") {
       console.error("smoke petstore client.ts missing listPets / iterateListPets helper");
       process.exit(1);
     }
+    if (!petTs.includes("AbortController") && !petTs.includes("timeout")) {
+      console.error("smoke petstore client.ts missing AbortController or timeout");
+      process.exit(1);
+    }
     if (!/return \{\s*listPets,/.test(petTs) || !petTs.includes("iterateListPets,")) {
       console.error("smoke petstore client.ts should keep listPets and export iterateListPets");
       process.exit(1);
@@ -1845,7 +1870,7 @@ if (cmd === "--version" || cmd === "-V") {
       "    def __exit__(self, *a):",
       "        return False",
       "class FakeOpener:",
-      "    def open(self, req):",
+      "    def open(self, req, timeout=None):",
       "        url = getattr(req, 'full_url', str(req))",
       "        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)",
       "        page = int((q.get('page') or ['1'])[0])",
@@ -1863,6 +1888,74 @@ if (cmd === "--version" || cmd === "-V") {
     const pageRun = spawnSync("python3", [pagePy], { encoding: "utf8", timeout: 8000, cwd: petClients, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
     if (pageRun.error || pageRun.status !== 0 || !String(pageRun.stdout || "").includes("page-iter-ok")) {
       console.error("smoke petstore iterateListPets runtime failed", pageRun.status, pageRun.stdout, pageRun.stderr, pageRun.error);
+      process.exit(1);
+    }
+    const timeoutPy = path.join(petClients, "_timeout_smoke.py");
+    fs.writeFileSync(timeoutPy, [
+      "from client import Client",
+      "class FakeRes:",
+      "    def __init__(self, body):",
+      "        self._b = __import__('json').dumps(body).encode()",
+      "    def read(self):",
+      "        return self._b",
+      "    def __enter__(self):",
+      "        return self",
+      "    def __exit__(self, *a):",
+      "        return False",
+      "class RecOpener:",
+      "    def __init__(self):",
+      "        self.n = 0",
+      "        self.timeouts = []",
+      "    def open(self, req, timeout=None):",
+      "        self.n += 1",
+      "        self.timeouts.append(timeout)",
+      "        if self.n == 1:",
+      "            raise TimeoutError('slow')",
+      "        return FakeRes([])",
+      "op = RecOpener()",
+      "c = Client('http://example.test', opener=op, timeout=1.5)",
+      "c.listPets({})",
+      "assert op.n == 2, op.n",
+      "assert op.timeouts == [1.5, 1.5], op.timeouts",
+      "print('timeout-retry-ok')",
+      "",
+    ].join("\n"));
+    const timeoutRun = spawnSync("python3", [timeoutPy], { encoding: "utf8", timeout: 8000, cwd: petClients, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+    if (timeoutRun.error || timeoutRun.status !== 0 || !String(timeoutRun.stdout || "").includes("timeout-retry-ok")) {
+      console.error("smoke petstore timeout-per-attempt retry failed", timeoutRun.status, timeoutRun.stdout, timeoutRun.stderr, timeoutRun.error);
+      process.exit(1);
+    }
+    const timeoutEnvPy = path.join(petClients, "_timeout_env_smoke.py");
+    fs.writeFileSync(timeoutEnvPy, [
+      "from client import Client",
+      "class FakeRes:",
+      "    def __init__(self, body):",
+      "        self._b = b'[]'",
+      "    def read(self):",
+      "        return self._b",
+      "    def __enter__(self):",
+      "        return self",
+      "    def __exit__(self, *a):",
+      "        return False",
+      "class RecOpener:",
+      "    def __init__(self):",
+      "        self.timeouts = []",
+      "    def open(self, req, timeout=None):",
+      "        self.timeouts.append(timeout)",
+      "        return FakeRes([])",
+      "op = RecOpener()",
+      "Client('http://example.test', opener=op).listPets({})",
+      "assert op.timeouts and float(op.timeouts[0]) == 2.5, op.timeouts",
+      "op2 = RecOpener()",
+      "Client('http://example.test', opener=op2, timeout=0.75).listPets({})",
+      "assert op2.timeouts == [0.75], op2.timeouts",
+      "print('timeout-env-ok')",
+      "",
+    ].join("\n"));
+    const timeoutEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1", SDK_TIMEOUT_MS: "2500", SDK_TIMEOUT_SEC: "99" };
+    const timeoutEnvRun = spawnSync("python3", [timeoutEnvPy], { encoding: "utf8", timeout: 8000, cwd: petClients, env: timeoutEnv });
+    if (timeoutEnvRun.error || timeoutEnvRun.status !== 0 || !String(timeoutEnvRun.stdout || "").includes("timeout-env-ok")) {
+      console.error("smoke timeout env/constructor override failed", timeoutEnvRun.status, timeoutEnvRun.stdout, timeoutEnvRun.stderr, timeoutEnvRun.error);
       process.exit(1);
     }
 
@@ -1907,7 +2000,7 @@ if (cmd === "--version" || cmd === "-V") {
       "    def __exit__(self, *a):",
       "        return False",
       "class FakeOpener:",
-      "    def open(self, req):",
+      "    def open(self, req, timeout=None):",
       "        url = getattr(req, 'full_url', str(req))",
       "        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)",
       "        cur = (q.get('cursor') or [''])[0]",
