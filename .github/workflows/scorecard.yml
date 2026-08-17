@@ -1,0 +1,67 @@
+# OpenSSF Scorecard — public-repo supply-chain checks.
+# Official pattern: https://github.com/ossf/scorecard-action
+# Example: https://github.com/ossf/scorecard/blob/main/.github/workflows/scorecard-analysis.yml
+#
+# Results:
+#   - Actions artifact (results.sarif)
+#   - GitHub code scanning (Security tab)
+#   - OpenSSF REST API when publish_results: true (needed for a future badge)
+
+name: Scorecard supply-chain security
+
+on:
+  # Branch-Protection check. Only the default branch is supported.
+  # https://github.com/ossf/scorecard/blob/main/docs/checks.md#branch-protection
+  branch_protection_rule:
+  # Maintained check needs an occasional run.
+  # https://github.com/ossf/scorecard/blob/main/docs/checks.md#maintained
+  schedule:
+    - cron: "30 1 * * 1" # weekly weekday: Monday 01:30 UTC
+  push:
+    branches: ["main"]
+
+# No workflow-level write permissions (scorecard-action requirement).
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    # publish_results: true only works from the default branch.
+    if: github.event.repository.default_branch == github.ref_name || github.event_name == 'pull_request'
+    permissions:
+      # Upload SARIF to the code-scanning dashboard.
+      security-events: write
+      # OIDC token for publish_results (public API + badge eligibility).
+      id-token: write
+      # Fetch repository contents / metadata.
+      contents: read
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: "Run analysis"
+        uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Public repo: publish to OpenSSF REST API (also required for a badge).
+          # Private repos force this to false regardless of the value here.
+          publish_results: true
+          # Optional PAT if Branch-Protection needs extra access on a public repo:
+          # repo_token: ${{ secrets.SCORECARD_TOKEN }}
+
+      - name: "Upload artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: "Upload to code-scanning"
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif

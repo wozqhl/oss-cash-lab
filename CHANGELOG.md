@@ -5,6 +5,12 @@ All notable changes to this portfolio are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- OpenSSF Scorecard GitHub Actions workflow (`.github/workflows/scorecard.yml`) so public-repo supply-chain results can appear in code scanning.
+
 ## [0.1.0] - 2026-08-13
 
 Local-MVP era: six bets green under `make smoke` / `make local-mvp` / `make stack-demo`.
