@@ -1512,7 +1512,133 @@ async function smokeStubLangClients(petstoreSpec, tmp) {
   }
 }
 
+
+function listenIdentityEcho() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push({
+      method: String(req.method || ""),
+      url: String(req.url || ""),
+      userAgent: String(req.headers["user-agent"] || ""),
+      requestId: String(req.headers["x-request-id"] || ""),
+    });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("[]");
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({ server, seen, url: `http://127.0.0.1:${addr.port}` });
+    });
+    server.on("error", reject);
+  });
+}
+
+async function smokeClientIdentity(petstoreSpec, petClients, tmp) {
+  const idDir = path.join(tmp, "identity-clients");
+  generateToDir(petstoreSpec, idDir, ["ts", "python", "go", "java"]);
+  const petTs = fs.readFileSync(path.join(idDir, "client.ts"), "utf8");
+  const petPy = fs.readFileSync(path.join(idDir, "client.py"), "utf8");
+  const petGo = fs.readFileSync(path.join(idDir, "client.go"), "utf8");
+  const petJava = fs.readFileSync(path.join(idDir, "Client.java"), "utf8");
+  for (const [label, blob] of [
+    ["ts", petTs],
+    ["py", petPy],
+    ["go", petGo],
+    ["java", petJava],
+  ]) {
+    if (!blob.includes("sdk-mcp-gen/0.1.0") || !blob.includes("SDK_REQUEST_ID") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id"))) {
+      console.error("smoke", label, "missing User-Agent / X-Request-Id identity headers");
+      process.exit(1);
+    }
+  }
+  const pkgDir = path.join(tmp, "pkg-ua");
+  generateToDir(petstoreSpec, pkgDir, ["ts", "python"], { packageName: "acme_pets" });
+  const pkgTs = fs.readFileSync(path.join(pkgDir, "client.ts"), "utf8");
+  const pkgPy = fs.readFileSync(path.join(pkgDir, "client.py"), "utf8");
+  if (!pkgTs.includes("acme_pets/0.1.0") || !pkgPy.includes("acme_pets/0.1.0")) {
+    console.error("smoke --package-name should set User-Agent acme_pets/0.1.0");
+    process.exit(1);
+  }
+
+  const echo = await listenIdentityEcho();
+  try {
+    const httpPy = path.join(idDir, "_identity_http_smoke.py");
+    fs.writeFileSync(httpPy, [
+      "import os",
+      "from client import Client",
+      "c = Client(os.environ['ID_BASE'])",
+      "c.listPets({})",
+      "print('ua-ok')",
+      "print('request-id-ok')",
+      "",
+    ].join("\n"));
+    const httpRun = await spawnArgvAsync("python3", [httpPy], {
+      cwd: idDir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ID_BASE: echo.url, SDK_REQUEST_ID: "" },
+    }, 8000);
+    if (httpRun.error || httpRun.status !== 0 || !String(httpRun.stdout || "").includes("ua-ok") || !String(httpRun.stdout || "").includes("request-id-ok")) {
+      console.error("smoke identity HTTP stub client failed", httpRun.status, httpRun.stdout, httpRun.stderr, httpRun.error);
+      process.exit(1);
+    }
+    if (!echo.seen.length) {
+      console.error("smoke identity HTTP stub saw no request");
+      process.exit(1);
+    }
+    const first = echo.seen[0];
+    if (!String(first.userAgent || "").includes("sdk-mcp-gen/0.1.0")) {
+      console.error("smoke listPets missing User-Agent sdk-mcp-gen/0.1.0", echo.seen);
+      process.exit(1);
+    }
+    if (!String(first.requestId || "").trim()) {
+      console.error("smoke listPets missing X-Request-Id", echo.seen);
+      process.exit(1);
+    }
+    echo.seen.length = 0;
+    const pinPy = path.join(idDir, "_identity_pin_smoke.py");
+    fs.writeFileSync(pinPy, [
+      "import os",
+      "from client import Client",
+      "c = Client(os.environ['ID_BASE'], request_id=os.environ['PIN_ID'])",
+      "c.listPets({})",
+      "print('request-id-ok')",
+      "",
+    ].join("\n"));
+    const pinRun = await spawnArgvAsync("python3", [pinPy], {
+      cwd: idDir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ID_BASE: echo.url, PIN_ID: "fixed-id-smoke", SDK_REQUEST_ID: "" },
+    }, 8000);
+    if (pinRun.error || pinRun.status !== 0 || !echo.seen.length || echo.seen[0].requestId !== "fixed-id-smoke") {
+      console.error("smoke SDK/ctor request id pin failed", pinRun.status, pinRun.stdout, pinRun.stderr, echo.seen);
+      process.exit(1);
+    }
+    echo.seen.length = 0;
+    const envPin = path.join(idDir, "_identity_env_smoke.py");
+    fs.writeFileSync(envPin, [
+      "import os",
+      "from client import Client",
+      "c = Client(os.environ['ID_BASE'])",
+      "c.listPets({})",
+      "print('request-id-ok')",
+      "",
+    ].join("\n"));
+    const envRun = await spawnArgvAsync("python3", [envPin], {
+      cwd: idDir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ID_BASE: echo.url, SDK_REQUEST_ID: "env-id-smoke" },
+    }, 8000);
+    if (envRun.error || envRun.status !== 0 || !echo.seen.length || echo.seen[0].requestId !== "env-id-smoke") {
+      console.error("smoke SDK_REQUEST_ID pin failed", envRun.status, envRun.stdout, envRun.stderr, echo.seen);
+      process.exit(1);
+    }
+    console.log("ua-ok");
+    console.log("request-id-ok");
+  } finally {
+    await new Promise((r) => echo.server.close(() => r()));
+  }
+}
+
 async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
+
   const petOps = listOperations(petstoreSpec);
   const listOp = petOps.find((o) => o.operationId === "listPets");
   const auth = collectClientAuth(petOps);
@@ -1850,7 +1976,11 @@ if (cmd === "--version" || cmd === "-V") {
     !ts.includes("AbortController") ||
     !ts.includes("timeoutMs") ||
     !ts.includes("SDK_TIMEOUT_MS") ||
-    !ts.includes("SDK_TIMEOUT_SEC")
+    !ts.includes("SDK_TIMEOUT_SEC") ||
+    !ts.includes("sdk-mcp-gen/0.1.0") ||
+    !ts.includes("user-agent") ||
+    !ts.includes("x-request-id") ||
+    !ts.includes("SDK_REQUEST_ID")
   ) {
     console.error("smoke ts client retry/timeout failed");
     process.exit(1);
@@ -1871,7 +2001,11 @@ if (cmd === "--version" || cmd === "-V") {
     !py.includes("def _retry_delay_s") ||
     !py.includes("timeout=self._timeout") ||
     !py.includes("SDK_TIMEOUT_MS") ||
-    !py.includes("SDK_TIMEOUT_SEC")
+    !py.includes("SDK_TIMEOUT_SEC") ||
+    !py.includes("sdk-mcp-gen/0.1.0") ||
+    !py.includes("User-Agent") ||
+    !py.includes("X-Request-Id") ||
+    !py.includes("SDK_REQUEST_ID")
   ) {
     console.error("smoke python client failed");
     process.exit(1);
@@ -1886,7 +2020,11 @@ if (cmd === "--version" || cmd === "-V") {
     !go.includes("429") ||
     !go.includes("context.WithTimeout") ||
     !go.includes("SDK_TIMEOUT_MS") ||
-    !go.includes("SDK_TIMEOUT_SEC")
+    !go.includes("SDK_TIMEOUT_SEC") ||
+    !go.includes("sdk-mcp-gen/0.1.0") ||
+    !go.includes("User-Agent") ||
+    !go.includes("X-Request-Id") ||
+    !go.includes("SDK_REQUEST_ID")
   ) {
     console.error("smoke go client failed");
     process.exit(1);
@@ -1901,7 +2039,11 @@ if (cmd === "--version" || cmd === "-V") {
     !java.includes("retryDelayMs") ||
     !java.includes("429") ||
     !java.includes("SDK_TIMEOUT_MS") ||
-    !java.includes("SDK_TIMEOUT_SEC")
+    !java.includes("SDK_TIMEOUT_SEC") ||
+    !java.includes("sdk-mcp-gen/0.1.0") ||
+    !java.includes("User-Agent") ||
+    !java.includes("X-Request-Id") ||
+    !java.includes("SDK_REQUEST_ID")
   ) {
     console.error("smoke java client failed");
     process.exit(1);
@@ -3045,6 +3187,7 @@ if (cmd === "--version" || cmd === "-V") {
     }
 
     await smokeGeneratedClientAuth(petstoreSpec, petClients, tmp);
+    await smokeClientIdentity(petstoreSpec, petClients, tmp);
     await smokeUrlAuthHeaders(cliPath, mini31Path, tmp);
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
@@ -3053,7 +3196,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

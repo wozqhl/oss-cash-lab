@@ -19,6 +19,8 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 
 - [x] Generated Rust / PHP / Swift / Ruby clients: per-attempt timeout + 429/5xx/network retry (Retry-After <30s) + per-op bearer/apiKey auth (same policy as TS/Python/Go/Java; Rust http:// TcpStream, no TLS)
 
+- [x] Generated clients send default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set, plus `X-Request-Id` new per HTTP attempt (pin via constructor / `SDK_REQUEST_ID`)
+
 ## Still open
 
 - [ ] Human upload of @oss-cash-lab/sdk-mcp-gen (needs org / access)

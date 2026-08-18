@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated clients send default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set, plus `X-Request-Id` new per HTTP attempt (`SDK_REQUEST_ID` pin). Smoke ua-ok / request-id-ok.
+
 - A generated Rust / PHP / Swift / Ruby clients: per-attempt timeout + 429/5xx retry + per-op bearer/apiKey auth (stdlib; Rust http-only TcpStream). Smoke rust-auth-ok / php-auth-ok.
 - E chargeback-lite: `GET /v1/tenants.csv` exports in-memory tenant totals (`tenant,spend_usd,budget_usd,remaining_usd,denied_count`); JSON `GET /v1/tenants` kept.
 - E optional UTC-day budget period (`BUDGET_PERIOD=day` / `--budget-period day`; default off) so remaining / deny / would-exceed reset at UTC midnight.

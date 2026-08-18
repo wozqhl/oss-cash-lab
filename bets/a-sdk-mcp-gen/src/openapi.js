@@ -1310,6 +1310,15 @@ func main() {
 
 export const DEFAULT_PACKAGE_NAME = "client";
 
+export const SDK_CLIENT_VERSION = "0.1.0";
+
+/** Default User-Agent: sdk-mcp-gen/0.1.0, or {packageName}/0.1.0 when --package-name is set. */
+function defaultUserAgent(opts) {
+  const pkg = pkgFromOpts(opts);
+  const name = pkg.customized ? pkg.ident : "sdk-mcp-gen";
+  return name + "/" + SDK_CLIENT_VERSION;
+}
+
 const PACKAGE_IDENT_KEYWORDS = new Set([
   "break", "case", "chan", "class", "const", "continue", "def", "default", "defer",
   "else", "for", "from", "func", "go", "goto", "if", "import", "interface", "map",
@@ -1587,12 +1596,14 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// API: ${title}`);
   lines.push(`// package: ${pkg.ident}`);
   lines.push(`export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };`);
-  const optFields = ["baseUrl?: string", "fetchImpl?: typeof fetch", "timeoutMs?: number"];
+  const optFields = ["baseUrl?: string", "fetchImpl?: typeof fetch", "timeoutMs?: number", "userAgent?: string", "requestId?: string"];
   if (auth.hasBearer) optFields.push("bearerToken?: string");
   if (auth.headerKeys.length || auth.queryKeys.length) optFields.push("apiKey?: string");
   lines.push(`export interface ClientOptions { ${optFields.join("; ")} }`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): AbortController. Override via ClientOptions.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via ClientOptions.requestId or env SDK_REQUEST_ID (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Constructor bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt (survives retry). Ops without security omit credentials. Values never logged.`);
@@ -1608,6 +1619,26 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  const sec = Number(env.SDK_TIMEOUT_SEC);`);
   lines.push(`  if (Number.isFinite(sec) && sec > 0) return Math.floor(sec * 1000);`);
   lines.push(`  return 10000;`);
+  lines.push(`}`);
+  lines.push(`function envRequestId(): string {`);
+  lines.push(`  const g = globalThis as { process?: { env?: { [k: string]: string | undefined } } };`);
+  lines.push(`  const env = (g.process && g.process.env) ? g.process.env : {};`);
+  lines.push(`  const v = env.SDK_REQUEST_ID;`);
+  lines.push(`  return v && String(v).trim() ? String(v).trim() : "";`);
+  lines.push(`}`);
+  lines.push(`function newRequestId(): string {`);
+  lines.push(`  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;`);
+  lines.push(`  if (c && typeof c.randomUUID === "function") return c.randomUUID();`);
+  lines.push(`  return Date.now().toString(16) + "-" + Math.random().toString(16).slice(2);`);
+  lines.push(`}`);
+  lines.push(`function hasHeader(headers: { [k: string]: string }, name: string): boolean {`);
+  lines.push(`  const want = name.toLowerCase();`);
+  lines.push(`  for (const k of Object.keys(headers)) if (k.toLowerCase() === want) return true;`);
+  lines.push(`  return false;`);
+  lines.push(`}`);
+  lines.push(`function applyIdentityHeaders(headers: { [k: string]: string }, userAgent: string, pinned: string): void {`);
+  lines.push(`  if (!hasHeader(headers, "user-agent") && userAgent) headers["user-agent"] = userAgent;`);
+  lines.push(`  if (!hasHeader(headers, "x-request-id")) headers["x-request-id"] = pinned || newRequestId();`);
   lines.push(`}`);
   if (auth.any) {
     lines.push(`function envAuthString(name: string): string {`);
@@ -1634,6 +1665,8 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  const baseUrl = (opts.baseUrl || "").replace(/\\/$/, "");`);
   lines.push(`  const f = opts.fetchImpl || fetch;`);
   lines.push(`  const timeoutMs = opts.timeoutMs != null && Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : envTimeoutMs();`);
+  lines.push(`  const userAgent = (opts.userAgent != null && String(opts.userAgent).trim()) ? String(opts.userAgent).trim() : ${JSON.stringify(defaultUserAgent(opts))};`);
+  lines.push(`  const pinnedRequestId = (opts.requestId != null && String(opts.requestId).trim()) ? String(opts.requestId).trim() : envRequestId();`);
   if (auth.hasBearer) {
     lines.push(`  const bearerToken = (opts.bearerToken != null && String(opts.bearerToken).trim()) ? String(opts.bearerToken).trim() : envAuthString("SDK_BEARER_TOKEN");`);
   }
@@ -1665,6 +1698,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`        for (const q of auth.query) url += (url.includes("?") ? "&" : "?") + encodeURIComponent(q) + "=" + encodeURIComponent(apiKey);`);
       lines.push(`      }`);
     }
+    lines.push(`      applyIdentityHeaders(headers, userAgent, pinnedRequestId);`);
     lines.push(`      const init = {`);
     lines.push(`        method,`);
     lines.push(`        headers: Object.keys(headers).length ? headers : undefined,`);
@@ -1675,9 +1709,12 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push(`      try {`);
     lines.push(`        res = await f(url, init);`);
   } else {
+    lines.push(`      const headers: { [k: string]: string } = {};`);
+    lines.push(`      if (body) headers["content-type"] = "application/json";`);
+    lines.push(`      applyIdentityHeaders(headers, userAgent, pinnedRequestId);`);
     lines.push(`      const init = {`);
     lines.push(`        method,`);
-    lines.push(`        headers: body ? { "content-type": "application/json" } : undefined,`);
+    lines.push(`        headers: Object.keys(headers).length ? headers : undefined,`);
     lines.push(`        body: body ? JSON.stringify(body) : undefined,`);
     lines.push(`        signal: ac.signal,`);
     lines.push(`      };`);
@@ -1849,6 +1886,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`import urllib.error`);
   lines.push(`import urllib.parse`);
   lines.push(`import urllib.request`);
+  lines.push(`import uuid`);
   lines.push(`from email.utils import parsedate_to_datetime`);
   lines.push(`from typing import Any, Mapping, MutableMapping, Optional`);
   lines.push(``);
@@ -1856,6 +1894,8 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(``);
   lines.push(`# Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`# Per-attempt request timeout (default 10s): urllib timeout. Override via Client(timeout=...) or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`# Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`# X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client(request_id=...) or env SDK_REQUEST_ID (tests).`);
   if (auth.any) {
     lines.push(`# Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`# Constructor bearer_token / api_key or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -1878,6 +1918,25 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        except (TypeError, ValueError):`);
   lines.push(`            pass`);
   lines.push(`    return 10.0`);
+  lines.push(``);
+  lines.push(`def _env_request_id() -> str:`);
+  lines.push(`    raw = os.environ.get("SDK_REQUEST_ID")`);
+  lines.push(`    if raw and str(raw).strip():`);
+  lines.push(`        return str(raw).strip()`);
+  lines.push(`    return ""`);
+  lines.push(``);
+  lines.push(`def _new_request_id() -> str:`);
+  lines.push(`    return str(uuid.uuid4())`);
+  lines.push(``);
+  lines.push(`def _has_header(headers: dict, name: str) -> bool:`);
+  lines.push(`    want = name.lower()`);
+  lines.push(`    return any(str(k).lower() == want for k in headers)`);
+  lines.push(``);
+  lines.push(`def _apply_identity(headers: dict, user_agent: str, pinned: str) -> None:`);
+  lines.push(`    if not _has_header(headers, "User-Agent") and user_agent:`);
+  lines.push(`        headers["User-Agent"] = user_agent`);
+  lines.push(`    if not _has_header(headers, "X-Request-Id"):`);
+  lines.push(`        headers["X-Request-Id"] = pinned or _new_request_id()`);
   lines.push(``);
   lines.push(`def _retry_delay_s(headers: Any, attempt: int) -> float:`);
   lines.push(`    raw = headers.get("Retry-After") if headers is not None else None`);
@@ -1908,7 +1967,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`class Client:`);
   lines.push(`    """Sync HTTP client stub generated from OpenAPI."""`);
   lines.push(``);
-  const initArgs = ["self", "base_url: str = \"\"", "opener: Any = None", "timeout: Any = None"];
+  const initArgs = ["self", "base_url: str = \"\"", "opener: Any = None", "timeout: Any = None", "user_agent: Any = None", "request_id: Any = None"];
   if (auth.hasBearer) initArgs.push("bearer_token: Any = None");
   if (auth.headerKeys.length || auth.queryKeys.length) initArgs.push("api_key: Any = None");
   lines.push(`    def __init__(${initArgs.join(", ")}) -> None:`);
@@ -1922,6 +1981,14 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                self._timeout = _env_timeout_s()`);
   lines.push(`        else:`);
   lines.push(`            self._timeout = _env_timeout_s()`);
+  lines.push(`        if user_agent is not None and str(user_agent).strip():`);
+  lines.push(`            self._user_agent = str(user_agent).strip()`);
+  lines.push(`        else:`);
+  lines.push(`            self._user_agent = ${JSON.stringify(defaultUserAgent(opts))}`);
+  lines.push(`        if request_id is not None and str(request_id).strip():`);
+  lines.push(`            self._request_id = str(request_id).strip()`);
+  lines.push(`        else:`);
+  lines.push(`            self._request_id = _env_request_id()`);
   if (auth.hasBearer) {
     lines.push(`        if bearer_token is not None and str(bearer_token).strip():`);
     lines.push(`            self._bearer_token = str(bearer_token).strip()`);
@@ -1962,9 +2029,12 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`                for q in (auth.get("query") or []):`);
       lines.push(`                    req_url = req_url + ("&" if "?" in req_url else "?") + urllib.parse.quote(q, safe="") + "=" + urllib.parse.quote(self._api_key, safe="")`);
     }
+    lines.push(`            _apply_identity(hdrs, self._user_agent, self._request_id)`);
     lines.push(`            req = urllib.request.Request(req_url, data=data, headers=hdrs, method=method)`);
   } else {
-    lines.push(`            req = urllib.request.Request(url, data=data, headers=headers, method=method)`);
+    lines.push(`            hdrs = dict(headers)`);
+    lines.push(`            _apply_identity(hdrs, self._user_agent, self._request_id)`);
+    lines.push(`            req = urllib.request.Request(url, data=data, headers=hdrs, method=method)`);
   }
   lines.push(`            try:`);
   lines.push(`                with open_url(req, timeout=self._timeout) as res:`);
@@ -2021,8 +2091,8 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
     if (hit) emitPyIterate(lines, op, hit.info, hit.iter);
   }
   lines.push(``);
-  const createArgs = ["base_url: str = \"\"", "opener: Any = None", "timeout: Any = None"];
-  const createCall = ["base_url=base_url", "opener=opener", "timeout=timeout"];
+  const createArgs = ["base_url: str = \"\"", "opener: Any = None", "timeout: Any = None", "user_agent: Any = None", "request_id: Any = None"];
+  const createCall = ["base_url=base_url", "opener=opener", "timeout=timeout", "user_agent=user_agent", "request_id=request_id"];
   if (auth.hasBearer) {
     createArgs.push("bearer_token: Any = None");
     createCall.push("bearer_token=bearer_token");
@@ -2198,6 +2268,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`import (`);
   lines.push(`\t"bytes"`);
   lines.push(`\t"context"`);
+  lines.push(`\t"crypto/rand"`);
   lines.push(`\t"encoding/json"`);
   lines.push(`\t"fmt"`);
   lines.push(`\t"io"`);
@@ -2214,6 +2285,8 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\tBaseURL    string`);
   lines.push(`\tHTTPClient *http.Client`);
   lines.push(`\tTimeout    time.Duration`);
+  lines.push(`\tUserAgent  string`);
+  lines.push(`\tRequestID  string`);
   if (auth.hasBearer) {
     lines.push(`\tBearerToken string`);
   }
@@ -2236,6 +2309,33 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push(`}`);
   }
   lines.push(``);
+  lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client.RequestID or env SDK_REQUEST_ID (tests).`);
+  lines.push(`func envRequestID() string {`);
+  lines.push(`\treturn strings.TrimSpace(os.Getenv("SDK_REQUEST_ID"))`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func newRequestID() string {`);
+  lines.push(`\tvar b [16]byte`);
+  lines.push(`\tif _, err := rand.Read(b[:]); err != nil {`);
+  lines.push(`\t\treturn fmt.Sprintf("%d", time.Now().UnixNano())`);
+  lines.push(`\t}`);
+  lines.push(`\treturn fmt.Sprintf("%x", b[:])`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func applyIdentityHeaders(req *http.Request, userAgent, pinned string) {`);
+  lines.push(`\tif req.Header.Get("User-Agent") == "" && userAgent != "" {`);
+  lines.push(`\t\treq.Header.Set("User-Agent", userAgent)`);
+  lines.push(`\t}`);
+  lines.push(`\tif req.Header.Get("X-Request-Id") == "" {`);
+  lines.push(`\t\tid := pinned`);
+  lines.push(`\t\tif id == "" {`);
+  lines.push(`\t\t\tid = newRequestID()`);
+  lines.push(`\t\t}`);
+  lines.push(`\t\treq.Header.Set("X-Request-Id", id)`);
+  lines.push(`\t}`);
+  lines.push(`}`);
+  lines.push(``);
   lines.push(`// envTimeout is the per-attempt request timeout (default 10s). Constructor Timeout or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`func envTimeout() time.Duration {`);
   lines.push(`\tif raw := os.Getenv("SDK_TIMEOUT_MS"); raw != "" {`);
@@ -2257,6 +2357,8 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\tBaseURL:    strings.TrimRight(baseURL, "/"),`);
   lines.push(`\t\tHTTPClient: http.DefaultClient,`);
   lines.push(`\t\tTimeout:    envTimeout(),`);
+  lines.push(`\t\tUserAgent:  ${JSON.stringify(defaultUserAgent(opts))},`);
+  lines.push(`\t\tRequestID:  envRequestID(),`);
   lines.push(`\t}`);
   if (auth.hasBearer) {
     lines.push(`\tc.BearerToken = envAuth("SDK_BEARER_TOKEN")`);
@@ -2349,6 +2451,11 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push(`\t\t\t}`);
     lines.push(`\t\t}`);
   }
+  lines.push(`\t\tua := strings.TrimSpace(c.UserAgent)`);
+  lines.push(`\t\tif ua == "" {`);
+  lines.push(`\t\t\tua = ${JSON.stringify(defaultUserAgent(opts))}`);
+  lines.push(`\t\t}`);
+  lines.push(`\t\tapplyIdentityHeaders(req, ua, strings.TrimSpace(c.RequestID))`);
   lines.push(`\t\tres, err := hc.Do(req)`);
   lines.push(`\t\tif err != nil {`);
   lines.push(`\t\t\tcancel()`);
@@ -2845,10 +2952,13 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   }
   lines.push(`import java.util.Map;`);
   lines.push(`import java.util.StringJoiner;`);
+  lines.push(`import java.util.UUID;`);
   lines.push(``);
   lines.push(`/** Minimal HTTP client stub generated from OpenAPI (java.net.HttpURLConnection). */`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via Client.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client.requestId or env SDK_REQUEST_ID (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -2856,6 +2966,8 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`public class Client {`);
   lines.push(`    private final String baseUrl;`);
   lines.push(`    public int timeoutMs;`);
+  lines.push(`    public String userAgent;`);
+  lines.push(`    public String requestId;`);
   if (auth.hasBearer) {
     lines.push(`    public String bearerToken;`);
   }
@@ -2878,6 +2990,8 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            this.baseUrl = baseUrl.substring(0, n);`);
   lines.push(`        }`);
   lines.push(`        this.timeoutMs = envTimeoutMs();`);
+  lines.push(`        this.userAgent = ${JSON.stringify(defaultUserAgent(opts))};`);
+  lines.push(`        this.requestId = envRequestId();`);
   if (auth.hasBearer) {
     lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN");`);
   }
@@ -2908,6 +3022,14 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            }`);
   lines.push(`        }`);
   lines.push(`        return 10000;`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static String envRequestId() {`);
+  lines.push(`        String v = System.getenv("SDK_REQUEST_ID");`);
+  lines.push(`        if (v == null) {`);
+  lines.push(`            return "";`);
+  lines.push(`        }`);
+  lines.push(`        return v.trim();`);
   lines.push(`    }`);
   lines.push(``);
   if (auth.any) {
@@ -2972,6 +3094,17 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                conn.setConnectTimeout(timeout);`);
   lines.push(`                conn.setReadTimeout(timeout);`);
   lines.push(`                conn.setUseCaches(false);`);
+  lines.push(`                if (conn.getRequestProperty("User-Agent") == null) {`);
+  lines.push(`                    String ua = this.userAgent != null && this.userAgent.trim().length() > 0 ? this.userAgent.trim() : ${JSON.stringify(defaultUserAgent(opts))};`);
+  lines.push(`                    conn.setRequestProperty("User-Agent", ua);`);
+  lines.push(`                }`);
+  lines.push(`                if (conn.getRequestProperty("X-Request-Id") == null) {`);
+  lines.push(`                    String rid = this.requestId != null && this.requestId.trim().length() > 0 ? this.requestId.trim() : envRequestId();`);
+  lines.push(`                    if (rid == null || rid.length() == 0) {`);
+  lines.push(`                        rid = UUID.randomUUID().toString();`);
+  lines.push(`                    }`);
+  lines.push(`                    conn.setRequestProperty("X-Request-Id", rid);`);
+  lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                if (authBearer && this.bearerToken != null && this.bearerToken.trim().length() > 0) {`);
     lines.push(`                    conn.setRequestProperty("Authorization", "Bearer " + this.bearerToken.trim());`);
@@ -3210,6 +3343,7 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`/// Minimal HTTP/1.1 client stub generated from OpenAPI (std::net::TcpStream; http:// only, no TLS).`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): connect + read/write. Override via Client.timeout_ms or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already present. X-Request-Id new per attempt; pin via request_id or env SDK_REQUEST_ID.`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearer_token / api_key or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -3217,6 +3351,8 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`pub struct Client {`);
   lines.push(`    pub base_url: String,`);
   lines.push(`    pub timeout_ms: u64,`);
+  lines.push(`    pub user_agent: String,`);
+  lines.push(`    pub request_id: String,`);
   if (auth.hasBearer) {
     lines.push(`    pub bearer_token: String,`);
   }
@@ -3234,6 +3370,8 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        Self {`);
   lines.push(`            base_url,`);
   lines.push(`            timeout_ms: env_timeout_ms(),`);
+  lines.push(`            user_agent: ${JSON.stringify(defaultUserAgent(opts))}.to_string(),`);
+  lines.push(`            request_id: env_request_id(),`);
   if (auth.hasBearer) {
     lines.push(`            bearer_token: env_auth("SDK_BEARER_TOKEN"),`);
   }
@@ -3360,6 +3498,24 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push(`            }`);
     lines.push(`        }`);
   }
+  lines.push(`        let ua = {`);
+  lines.push(`            let t = self.user_agent.trim();`);
+  lines.push(`            if t.is_empty() { ${JSON.stringify(defaultUserAgent(opts))}.to_string() } else { t.to_string() }`);
+  lines.push(`        };`);
+  lines.push(`        if !req.to_ascii_lowercase().contains("user-agent:") {`);
+  lines.push(`            req.push_str("User-Agent: ");`);
+  lines.push(`            req.push_str(&ua);`);
+  lines.push(`            req.push_str("\\r\\n");`);
+  lines.push(`        }`);
+  lines.push(`        let rid = {`);
+  lines.push(`            let t = self.request_id.trim();`);
+  lines.push(`            if !t.is_empty() { t.to_string() } else { new_request_id() }`);
+  lines.push(`        };`);
+  lines.push(`        if !req.to_ascii_lowercase().contains("x-request-id:") {`);
+  lines.push(`            req.push_str("X-Request-Id: ");`);
+  lines.push(`            req.push_str(&rid);`);
+  lines.push(`            req.push_str("\\r\\n");`);
+  lines.push(`        }`);
   lines.push(`        if let Some(b) = body {`);
   lines.push(`            req.push_str("Content-Type: application/json\\r\\n");`);
   lines.push(`            req.push_str(&format!("Content-Length: {}\\r\\n", b.len()));`);
@@ -3438,6 +3594,19 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        }`);
   lines.push(`    }`);
   lines.push(`    10000`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn env_request_id() -> String {`);
+  lines.push(`    match env::var("SDK_REQUEST_ID") {`);
+  lines.push(`        Ok(v) => v.trim().to_string(),`);
+  lines.push(`        Err(_) => String::new(),`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn new_request_id() -> String {`);
+  lines.push(`    use std::time::{SystemTime, UNIX_EPOCH};`);
+  lines.push(`    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);`);
+  lines.push(`    format!("{:x}", t)`);
   lines.push(`}`);
   lines.push(``);
   if (auth.any) {
@@ -4079,6 +4248,8 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`using System.Text;`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): CancellationToken. Override via Client.TimeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// X-Request-Id: new id per HTTP attempt. Pin via Client.RequestId or env SDK_REQUEST_ID (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set BearerToken / APIKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -4092,6 +4263,8 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`        private readonly string baseUrl;`);
   lines.push(`        private readonly HttpClient http;`);
   lines.push(`        public int TimeoutMs;`);
+  lines.push(`        public string UserAgent;`);
+  lines.push(`        public string RequestId;`);
   if (auth.hasBearer) {
     lines.push(`        public string BearerToken;`);
   }
@@ -4119,6 +4292,8 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`            }`);
   lines.push(`            this.http = http ?? new HttpClient();`);
   lines.push(`            this.TimeoutMs = EnvTimeoutMs();`);
+  lines.push(`            this.UserAgent = ${JSON.stringify(defaultUserAgent(opts))};`);
+  lines.push(`            this.RequestId = EnvRequestId();`);
   if (auth.hasBearer) {
     lines.push(`            this.BearerToken = EnvAuth("SDK_BEARER_TOKEN");`);
   }
@@ -4142,6 +4317,12 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`                return parsedSec * 1000;`);
   lines.push(`            }`);
   lines.push(`            return 10000;`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static string EnvRequestId()`);
+  lines.push(`        {`);
+  lines.push(`            string v = Environment.GetEnvironmentVariable("SDK_REQUEST_ID");`);
+  lines.push(`            return string.IsNullOrWhiteSpace(v) ? "" : v.Trim();`);
   lines.push(`        }`);
   lines.push(``);
   if (auth.any) {
@@ -4201,6 +4382,20 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
     lines.push(`                }`);
   }
   lines.push(`                HttpRequestMessage req = new HttpRequestMessage(new HttpMethod(method), reqUrl);`);
+  lines.push(`                if (!req.Headers.Contains("User-Agent"))`);
+  lines.push(`                {`);
+  lines.push(`                    string ua = string.IsNullOrWhiteSpace(this.UserAgent) ? ${JSON.stringify(defaultUserAgent(opts))} : this.UserAgent.Trim();`);
+  lines.push(`                    req.Headers.TryAddWithoutValidation("User-Agent", ua);`);
+  lines.push(`                }`);
+  lines.push(`                if (!req.Headers.Contains("X-Request-Id"))`);
+  lines.push(`                {`);
+  lines.push(`                    string rid = string.IsNullOrWhiteSpace(this.RequestId) ? EnvRequestId() : this.RequestId.Trim();`);
+  lines.push(`                    if (string.IsNullOrWhiteSpace(rid))`);
+  lines.push(`                    {`);
+  lines.push(`                        rid = Guid.NewGuid().ToString();`);
+  lines.push(`                    }`);
+  lines.push(`                    req.Headers.TryAddWithoutValidation("X-Request-Id", rid);`);
+  lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                if (authBearer && !string.IsNullOrWhiteSpace(this.BearerToken))`);
     lines.push(`                {`);
@@ -4854,6 +5049,8 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`/** Minimal HTTP client stub generated from OpenAPI (java.net.HttpURLConnection). */`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// X-Request-Id: new id per HTTP attempt. Pin via requestId or env SDK_REQUEST_ID (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -4861,6 +5058,8 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`class Client {`);
   lines.push(`    private val baseUrl: String`);
   lines.push(`    var timeoutMs: Int`);
+  lines.push(`    var userAgent: String`);
+  lines.push(`    var requestId: String`);
   if (auth.hasBearer) {
     lines.push(`    var bearerToken: String`);
   }
@@ -4871,6 +5070,8 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`    constructor() {`);
   lines.push(`        this.baseUrl = ""`);
   lines.push(`        this.timeoutMs = envTimeoutMs()`);
+  lines.push(`        this.userAgent = ${JSON.stringify(defaultUserAgent(opts))}`);
+  lines.push(`        this.requestId = envRequestId()`);
   if (auth.hasBearer) {
     lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN")`);
   }
@@ -4890,6 +5091,8 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`            this.baseUrl = baseUrl.substring(0, n)`);
   lines.push(`        }`);
   lines.push(`        this.timeoutMs = envTimeoutMs()`);
+  lines.push(`        this.userAgent = ${JSON.stringify(defaultUserAgent(opts))}`);
+  lines.push(`        this.requestId = envRequestId()`);
   if (auth.hasBearer) {
     lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN")`);
   }
@@ -4920,6 +5123,14 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`            }`);
   lines.push(`        }`);
   lines.push(`        return 10000`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun envRequestId(): String {`);
+  lines.push(`        val v = System.getenv("SDK_REQUEST_ID")`);
+  lines.push(`        if (v == null) {`);
+  lines.push(`            return ""`);
+  lines.push(`        }`);
+  lines.push(`        return v.trim()`);
   lines.push(`    }`);
   lines.push(``);
   if (auth.any) {
@@ -4985,6 +5196,17 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`                conn.connectTimeout = timeout`);
   lines.push(`                conn.readTimeout = timeout`);
   lines.push(`                conn.useCaches = false`);
+  lines.push(`                if (conn.getRequestProperty("User-Agent") == null) {`);
+  lines.push(`                    val ua = if (this.userAgent != null && this.userAgent.trim().isNotEmpty()) this.userAgent.trim() else ${JSON.stringify(defaultUserAgent(opts))}`);
+  lines.push(`                    conn.setRequestProperty("User-Agent", ua)`);
+  lines.push(`                }`);
+  lines.push(`                if (conn.getRequestProperty("X-Request-Id") == null) {`);
+  lines.push(`                    var rid = if (this.requestId != null && this.requestId.trim().isNotEmpty()) this.requestId.trim() else envRequestId()`);
+  lines.push(`                    if (rid.isEmpty()) {`);
+  lines.push(`                        rid = java.util.UUID.randomUUID().toString()`);
+  lines.push(`                    }`);
+  lines.push(`                    conn.setRequestProperty("X-Request-Id", rid)`);
+  lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                val tok = this.bearerToken`);
     lines.push(`                if (authBearer && tok != null && tok.trim().isNotEmpty()) {`);
@@ -5225,6 +5447,7 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`/// Minimal HTTP client stub generated from OpenAPI (Foundation URLSession).`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): URLRequest.timeoutInterval. Override via timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already set. X-Request-Id new per attempt; pin via requestId or env SDK_REQUEST_ID.`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -5233,6 +5456,8 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    public let baseUrl: String`);
   lines.push(`    public let session: URLSession`);
   lines.push(`    public var timeoutMs: Int`);
+  lines.push(`    public var userAgent: String`);
+  lines.push(`    public var requestId: String`);
   if (auth.hasBearer) {
     lines.push(`    public var bearerToken: String`);
   }
@@ -5248,6 +5473,8 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        self.baseUrl = trimmed`);
   lines.push(`        self.session = session`);
   lines.push(`        self.timeoutMs = Client.envTimeoutMs()`);
+  lines.push(`        self.userAgent = ${JSON.stringify(defaultUserAgent(opts))}`);
+  lines.push(`        self.requestId = Client.envRequestId()`);
   if (auth.hasBearer) {
     lines.push(`        self.bearerToken = Client.envAuth("SDK_BEARER_TOKEN")`);
   }
@@ -5270,6 +5497,11 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            }`);
   lines.push(`        }`);
   lines.push(`        return 10000`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static func envRequestId() -> String {`);
+  lines.push(`        let v = ProcessInfo.processInfo.environment["SDK_REQUEST_ID"] ?? ""`);
+  lines.push(`        return v.trimmingCharacters(in: .whitespacesAndNewlines)`);
   lines.push(`    }`);
   lines.push(``);
   if (auth.any) {
@@ -5317,6 +5549,16 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                var req = URLRequest(url: url)`);
   lines.push(`                req.httpMethod = method`);
   lines.push(`                req.timeoutInterval = TimeInterval(Double(timeout) / 1000.0)`);
+  lines.push(`                if req.value(forHTTPHeaderField: "User-Agent") == nil {`);
+  lines.push(`                    let ua = self.userAgent.trimmingCharacters(in: .whitespacesAndNewlines)`);
+  lines.push(`                    req.setValue(ua.isEmpty ? ${JSON.stringify(defaultUserAgent(opts))} : ua, forHTTPHeaderField: "User-Agent")`);
+  lines.push(`                }`);
+  lines.push(`                if req.value(forHTTPHeaderField: "X-Request-Id") == nil {`);
+  lines.push(`                    var rid = self.requestId.trimmingCharacters(in: .whitespacesAndNewlines)`);
+  lines.push(`                    if rid.isEmpty { rid = Client.envRequestId() }`);
+  lines.push(`                    if rid.isEmpty { rid = UUID().uuidString }`);
+  lines.push(`                    req.setValue(rid, forHTTPHeaderField: "X-Request-Id")`);
+  lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                if authBearer {`);
     lines.push(`                    let tok = self.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)`);
@@ -5483,16 +5725,20 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`require "uri"`);
   lines.push(`require "json"`);
   lines.push(`require "time"`);
+  lines.push(`require "securerandom"`);
   lines.push(``);
   lines.push(`# Minimal HTTP client stub generated from OpenAPI (stdlib Net::HTTP).`);
   lines.push(`# Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`# Per-attempt request timeout (default 10s): open/read timeout. Override via timeout_ms or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  lines.push(`# Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already set. X-Request-Id new per attempt; pin via request_id or env SDK_REQUEST_ID.`);
   if (auth.any) {
     lines.push(`# Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`# Set bearer_token / api_key or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
   }
   lines.push(`class Client`);
   lines.push(`  attr_accessor :timeout_ms`);
+  lines.push(`  attr_accessor :user_agent`);
+  lines.push(`  attr_accessor :request_id`);
   if (auth.hasBearer) {
     lines.push(`  attr_accessor :bearer_token`);
   }
@@ -5504,6 +5750,8 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    s = s.sub(%r{/+\\z}, "")`);
   lines.push(`    @base_url = s`);
   lines.push(`    @timeout_ms = self.class.env_timeout_ms`);
+  lines.push(`    @user_agent = ${JSON.stringify(defaultUserAgent(opts))}`);
+  lines.push(`    @request_id = self.class.env_request_id`);
   if (auth.hasBearer) {
     lines.push(`    @bearer_token = self.class.env_auth("SDK_BEARER_TOKEN")`);
   }
@@ -5547,6 +5795,12 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`      return sec * 1000 if sec > 0`);
   lines.push(`    end`);
   lines.push(`    10000`);
+  lines.push(`  end`);
+  lines.push(``);
+  lines.push(`  def self.env_request_id`);
+  lines.push(`    v = ENV["SDK_REQUEST_ID"]`);
+  lines.push(`    return "" if v.nil?`);
+  lines.push(`    v.to_s.strip`);
   lines.push(`  end`);
   lines.push(``);
   if (auth.any) {
@@ -5605,6 +5859,16 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        }[method]`);
   lines.push(`        raise "unsupported HTTP method: " + method.to_s if klass.nil?`);
   lines.push(`        req = klass.new(uri.request_uri)`);
+  lines.push(`        if req["User-Agent"].to_s.empty?`);
+  lines.push(`          ua = @user_agent.to_s.strip`);
+  lines.push(`          req["User-Agent"] = ua.empty? ? ${JSON.stringify(defaultUserAgent(opts))} : ua`);
+  lines.push(`        end`);
+  lines.push(`        if req["X-Request-Id"].to_s.empty?`);
+  lines.push(`          rid = @request_id.to_s.strip`);
+  lines.push(`          rid = self.class.env_request_id if rid.empty?`);
+  lines.push(`          rid = SecureRandom.uuid if rid.empty?`);
+  lines.push(`          req["X-Request-Id"] = rid`);
+  lines.push(`        end`);
   if (auth.hasBearer) {
     lines.push(`        if auth_bearer && @bearer_token && !@bearer_token.to_s.strip.empty?`);
     lines.push(`          req["Authorization"] = "Bearer " + @bearer_token.to_s.strip`);
@@ -5724,6 +5988,7 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("/**");
   lines.push(" * Minimal HTTP client stub generated from OpenAPI (stdlib fopen / stream wrappers; curl-extension-free).");
   lines.push(" * Retry 429 / 5xx / network (Retry-After <30s). Per-attempt timeout default 10s (timeoutMs / SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC).");
+  lines.push(" * Default User-Agent " + defaultUserAgent(opts) + " unless already set. X-Request-Id new per attempt; pin via requestId or env SDK_REQUEST_ID.");
   if (auth.any) {
     lines.push(" * Auth: bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Per-op security; unsecured ops omit credentials. Values never logged.");
   }
@@ -5731,6 +5996,8 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("class Client {");
   lines.push("    private $baseUrl;");
   lines.push("    public $timeoutMs;");
+  lines.push("    public $userAgent;");
+  lines.push("    public $requestId;");
   if (auth.hasBearer) {
     lines.push("    public $bearerToken;");
   }
@@ -5742,6 +6009,8 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("        $s = $baseUrl === null ? \"\" : (string) $baseUrl;");
   lines.push("        $this->baseUrl = rtrim($s, \"/\");");
   lines.push("        $this->timeoutMs = self::envTimeoutMs();");
+  lines.push("        $this->userAgent = " + JSON.stringify(defaultUserAgent(opts)) + ";");
+  lines.push("        $this->requestId = self::envRequestId();");
   if (auth.hasBearer) {
     lines.push("        $this->bearerToken = self::envAuth(\"SDK_BEARER_TOKEN\");");
   }
@@ -5766,6 +6035,14 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("            }");
   lines.push("        }");
   lines.push("        return 10000;");
+  lines.push("    }");
+  lines.push("");
+  lines.push("    private static function envRequestId() {");
+  lines.push("        $v = getenv(\"SDK_REQUEST_ID\");");
+  lines.push("        if ($v === false) {");
+  lines.push("            return \"\";");
+  lines.push("        }");
+  lines.push("        return trim((string) $v);");
   lines.push("    }");
   lines.push("");
   if (auth.any) {
@@ -5868,6 +6145,17 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push("                }");
     lines.push("            }");
   }
+  lines.push("            if (stripos($headers, \"User-Agent:\") === false) {");
+  lines.push("                $ua = is_string($this->userAgent) && trim($this->userAgent) !== \"\" ? trim($this->userAgent) : " + JSON.stringify(defaultUserAgent(opts)) + ";");
+  lines.push("                $headers .= \"User-Agent: \" . $ua . \"\\r\\n\";");
+  lines.push("            }");
+  lines.push("            if (stripos($headers, \"X-Request-Id:\") === false) {");
+  lines.push("                $rid = is_string($this->requestId) && trim($this->requestId) !== \"\" ? trim($this->requestId) : self::envRequestId();");
+  lines.push("                if ($rid === \"\") {");
+  lines.push("                    $rid = function_exists(\"random_bytes\") ? bin2hex(random_bytes(16)) : uniqid(\"\", true);");
+  lines.push("                }");
+  lines.push("                $headers .= \"X-Request-Id: \" . $rid . \"\\r\\n\";");
+  lines.push("            }");
   lines.push("            if ($body !== null) {");
   lines.push("                $content = json_encode($body);");
   lines.push("                $headers .= \"Content-Type: application/json\\r\\n\";");
@@ -6027,6 +6315,8 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     ``,
     ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
     ...(auth.any ? [`Auth: constructor bearerToken / apiKey (or bearer_token / api_key / Client.BearerToken / APIKey) or env SDK_BEARER_TOKEN / SDK_API_KEY, attached per OpenAPI operation security (optional schemes when creds are set; ops without security omit credentials). MCP servers read MCP_BEARER_TOKEN / MCP_API_KEY (same SDK_* fallback). oauth2 / openIdConnect skipped (no fake tokens). Values never logged.`, ``] : []),
+    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID).`,
+    ``,
     `Files:`,
     ...files,
     ``,

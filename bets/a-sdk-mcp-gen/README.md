@@ -59,6 +59,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] Generated Java / Kotlin / C# clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; timeoutMs / TimeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query; env SDK_*; unsecured ops omit credentials). Stdlib HttpURLConnection / HttpClient. Public method names unchanged.
 - [x] Generated Java / Kotlin / C# clients add `iterate*` helpers for GET ops with `page` / `pageSize` / `offset` / `limit` / `cursor` / `starting_after` (follow `next` / `next_cursor` / `nextPageToken` or increment page until empty/short; cap 1000; existing method names unchanged; not a Stainless pager)
 - [x] Generated Rust / PHP / Swift / Ruby clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; timeout_ms / timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query; env SDK_*; unsecured ops omit credentials). Stdlib only. Public method names unchanged. Rust stays TcpStream http:// (no TLS); headers/timeout/retry attach on that stack.
+- [x] Generated TS / Python / Go / Java (and Kotlin / C# / Rust / PHP / Swift / Ruby) clients send default User-Agent `sdk-mcp-gen/0.1.0` (or `--package-name`) unless already set, plus `X-Request-Id` new per HTTP attempt (pin via constructor / env `SDK_REQUEST_ID`). Smoke prints ua-ok / request-id-ok.
 - [x] Demo script in README (`scripts/demo.sh`)
 
 ## Demo
@@ -114,7 +115,9 @@ TypeScript note: generated `client.ts` uses Node 18+ `fetch` (injectable
 `fetchImpl`) and retries 429 / 5xx / network throws (max 2 retries, ~100ms
 exponential backoff, honor `Retry-After` when under 30s). Each attempt uses
 `AbortController` (default 10s; override `createClient({ timeoutMs })` or env
-`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). When the spec has http bearer or apiKey (header/query), pass `bearerToken` / `apiKey` or env `SDK_BEARER_TOKEN` / `SDK_API_KEY` (attached only on operations that declare that scheme; on every retry; values never logged). oauth2 / openIdConnect skipped. Stdlib only. Public
+`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Default User-Agent `sdk-mcp-gen/0.1.0`
+(or `--package-name`) unless already set; `X-Request-Id` is new per attempt
+(`createClient({ requestId })` or env `SDK_REQUEST_ID` pins a fixed test id). When the spec has http bearer or apiKey (header/query), pass `bearerToken` / `apiKey` or env `SDK_BEARER_TOKEN` / `SDK_API_KEY` (attached only on operations that declare that scheme; on every retry; values never logged). oauth2 / openIdConnect skipped. Stdlib only. Public
 method names stay OpenAPI `operationId` (`listPets`, …). Pageable GET ops also
 get an `iterate*` async iterator (petstore `listPets` → `iterateListPets`) that
 follows a JSON next cursor (`next` / `next_cursor` / `nextPageToken`) or

@@ -124,6 +124,7 @@
 - [x] A GitHub Actions OpenAPI drift example (`examples/github-actions/sdk-mcp-gen-check.yml`; `generate --out sdk-new --check-baseline sdk`; exit 1 on removed/renamed tools; parse-only smoke hook + petstore generate twice; not a live workflow here)
 
 - [x] A generated Rust / PHP / Swift / Ruby timeout + 429/5xx retry + per-op bearer/apiKey auth (same policy as TS/Python/Go/Java; Rust TcpStream http://)
+- [x] A generated clients default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set + `X-Request-Id` per HTTP attempt (`SDK_REQUEST_ID` pin; smoke ua-ok / request-id-ok)
 ### D · AI-BOM (Python) scaffold→MVP
 - [x] Scan dir for model IDs, prompts, MCP deps
 - [x] CycloneDX-like JSON
