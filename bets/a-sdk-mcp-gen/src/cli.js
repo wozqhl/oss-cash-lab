@@ -1786,6 +1786,7 @@ function listenMcpIdentityEcho() {
       userAgent: String(req.headers["user-agent"] || ""),
       requestId: String(req.headers["x-request-id"] || ""),
       idempotencyKey: String(req.headers["idempotency-key"] || ""),
+      accept: String(req.headers["accept"] || ""),
     });
     res.writeHead(200, { "content-type": "application/json" });
     res.end("[]");
@@ -1814,6 +1815,10 @@ function assertMcpIdentitySeen(label, seen) {
     console.error("smoke mcp", label, "listPets missing X-Request-Id", seen);
     process.exit(1);
   }
+  if (!String(gets[0].accept || "").toLowerCase().includes("application/json")) {
+    console.error("smoke mcp", label, "listPets missing Accept application/json", seen);
+    process.exit(1);
+  }
   if (gets.some((x) => String(x.idempotencyKey || "").trim())) {
     console.error("smoke mcp", label, "listPets GET must not send Idempotency-Key", seen);
     process.exit(1);
@@ -1834,6 +1839,10 @@ function assertMcpIdentitySeen(label, seen) {
     console.error("smoke mcp", label, "createPet missing X-Request-Id", seen);
     process.exit(1);
   }
+  if (!String(posts[0].accept || "").toLowerCase().includes("application/json")) {
+    console.error("smoke mcp", label, "createPet missing Accept application/json", seen);
+    process.exit(1);
+  }
 }
 
 async function smokeMcpIdentity(petstoreSpec, tmp) {
@@ -1845,7 +1854,7 @@ async function smokeMcpIdentity(petstoreSpec, tmp) {
     ["go", MCP_SERVER_GO_FILE],
   ]) {
     const blob = fs.readFileSync(path.join(idDir, name), "utf8");
-    if (!blob.includes("sdk-mcp-gen/0.1.0") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id")) || (!blob.includes("Idempotency-Key") && !blob.includes("idempotency-key"))) {
+    if (!blob.includes("sdk-mcp-gen/0.1.0") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id")) || (!blob.includes("Idempotency-Key") && !blob.includes("idempotency-key")) || (!blob.includes("Accept") && !blob.includes("accept"))) {
       console.error("smoke mcp", label, "missing identity headers");
       process.exit(1);
     }
@@ -1891,6 +1900,7 @@ async function smokeMcpIdentity(petstoreSpec, tmp) {
       assertMcpIdentitySeen("go", echo.seen);
     }
     console.log("mcp-id-ok");
+    console.log("mcp-accept-ok");
   } finally {
     await new Promise((r) => echo.server.close(() => r()));
   }
@@ -3700,7 +3710,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-retry-ok, mcp-timeout-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

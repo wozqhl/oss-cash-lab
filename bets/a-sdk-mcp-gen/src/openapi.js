@@ -494,6 +494,7 @@ function emitJsMcpIdentityFns() {
   lines.push("}");
   lines.push("");
   lines.push("function applyIdentityHeaders(headers, method, opIdem) {");
+  lines.push('  if (!hasHeader(headers, "accept")) headers["accept"] = "application/json";');
   lines.push('  if (!hasHeader(headers, "user-agent") && DEFAULT_USER_AGENT) headers["user-agent"] = DEFAULT_USER_AGENT;');
   lines.push('  if (!hasHeader(headers, "x-request-id")) headers["x-request-id"] = envIdentity("MCP_REQUEST_ID", "SDK_REQUEST_ID") || newRequestId();');
   lines.push('  const m = String(method || "").toUpperCase();');
@@ -525,7 +526,7 @@ function emitJsMcpIdentityFns() {
  * Stdio MCP server (Node, no extra deps). JSON-RPC 2.0 newline frames:
  * initialize, tools/list, tools/call — same subset B mock-upstream / stdio proxy uses.
  * Runtime HTTP backend: env MCP_BASE_URL (wins) or baked --base-url.
- * Identity headers on tools/call upstream HTTP: User-Agent, X-Request-Id per attempt, Idempotency-Key on writes (reused across retries).
+ * Identity headers on tools/call upstream HTTP: Accept application/json unless already set, User-Agent, X-Request-Id per attempt, Idempotency-Key on writes (reused across retries).
  * Retry transient HTTP (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.
  * Per-attempt timeout (default 10s): AbortController. Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*.
  */
@@ -541,7 +542,7 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push(" * API: " + safeTitle);
   lines.push(" * Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call");
   lines.push(" * HTTP backend: env MCP_BASE_URL or baked --base-url");
-  lines.push(" * Identity: default User-Agent " + userAgent + " unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.");
+  lines.push(" * Identity: Accept application/json unless already set; default User-Agent " + userAgent + " unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.");
   lines.push(" * Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).");
   lines.push(" * Timeout: per-attempt 10s (AbortController). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.");
   if (auth.any) {
@@ -829,7 +830,7 @@ export function generateMcpServerPy(ops, title = "API", { baseUrl = "", packageN
 # API: ${safeTitle}
 # Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 # HTTP backend: env MCP_BASE_URL or baked --base-url
-# Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
+# Identity: Accept application/json unless already set; default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 # Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
 # Timeout: per-attempt 10s (urllib timeout). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.
 # Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
@@ -929,6 +930,8 @@ def _has_header(headers, name):
 
 
 def _apply_identity(headers, method, op_idem=""):
+    if not _has_header(headers, "Accept"):
+        headers["Accept"] = "application/json"
     if not _has_header(headers, "User-Agent") and DEFAULT_USER_AGENT:
         headers["User-Agent"] = DEFAULT_USER_AGENT
     if not _has_header(headers, "X-Request-Id"):
@@ -1215,7 +1218,7 @@ export function generateMcpServerGo(ops, title = "API", { baseUrl = "", packageN
 // API: ${safeTitle}
 // Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 // HTTP backend: env MCP_BASE_URL or baked --base-url
-// Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
+// Identity: Accept application/json unless already set; default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 // Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
 // Timeout: per-attempt 10s (context.WithTimeout). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.
 // Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
@@ -1340,6 +1343,9 @@ func newRequestID() string {
 func applyIdentityHeaders(req *http.Request, method, opIdem string) {
 	if req == nil {
 		return
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
 	}
 	if req.Header.Get("User-Agent") == "" && defaultUserAgent != "" {
 		req.Header.Set("User-Agent", defaultUserAgent)

@@ -23,6 +23,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 
 - [x] Generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new key per logical call; retries reuse; pin via constructor / `SDK_IDEMPOTENCY_KEY`)
 - [x] Generated stdio MCP servers send User-Agent + X-Request-Id + Idempotency-Key on tools/call (same policy as clients; smoke mcp-id-ok)
+- [x] Generated stdio MCP servers send Accept: application/json on tools/call unless already set (same policy as clients; smoke mcp-accept-ok)
 - [x] Generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries, Retry-After <30s; Idempotency-Key reused; smoke mcp-retry-ok)
 - [x] Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*; smoke mcp-timeout-ok)
 

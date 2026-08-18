@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A generated clients send `Accept: application/json` unless already set. Smoke accept-ok.
+- A generated stdio MCP servers send `Accept: application/json` on tools/call upstream HTTP unless already set. Smoke mcp-accept-ok.
 - A generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (AbortController / urllib timeout / context.WithTimeout; MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*). Smoke mcp-timeout-ok.
 - A generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries, Retry-After <30s; Idempotency-Key reused). Smoke mcp-retry-ok.
 - A generated stdio MCP servers send User-Agent / X-Request-Id / Idempotency-Key on tools/call upstream HTTP. Smoke mcp-id-ok.
