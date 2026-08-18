@@ -357,11 +357,11 @@ function generateToDir(spec, absOut, langs, opts = {}) {
   const mcp = opts.mcp !== false;
   let mcpConfig = null;
   if (mcp) {
-    fs.writeFileSync(path.join(absOut, MCP_SERVER_FILE), generateMcpServer(ops, title, { baseUrl }));
+    fs.writeFileSync(path.join(absOut, MCP_SERVER_FILE), generateMcpServer(ops, title, { baseUrl, packageName }));
     files.push(MCP_SERVER_FILE);
-    fs.writeFileSync(path.join(absOut, MCP_SERVER_PY_FILE), generateMcpServerPy(ops, title, { baseUrl }));
+    fs.writeFileSync(path.join(absOut, MCP_SERVER_PY_FILE), generateMcpServerPy(ops, title, { baseUrl, packageName }));
     files.push(MCP_SERVER_PY_FILE);
-    fs.writeFileSync(path.join(absOut, MCP_SERVER_GO_FILE), generateMcpServerGo(ops, title, { baseUrl }));
+    fs.writeFileSync(path.join(absOut, MCP_SERVER_GO_FILE), generateMcpServerGo(ops, title, { baseUrl, packageName }));
     files.push(MCP_SERVER_GO_FILE);
     mcpConfig = generateMcpClientConfig(spec, {
       packageName,
@@ -1765,6 +1765,125 @@ async function smokeClientIdempotency(petstoreSpec, tmp) {
       process.exit(1);
     }
     console.log("idem-ok");
+  } finally {
+    await new Promise((r) => echo.server.close(() => r()));
+  }
+}
+
+function listenMcpIdentityEcho() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push({
+      method: String(req.method || ""),
+      url: String(req.url || ""),
+      userAgent: String(req.headers["user-agent"] || ""),
+      requestId: String(req.headers["x-request-id"] || ""),
+      idempotencyKey: String(req.headers["idempotency-key"] || ""),
+    });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("[]");
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({ server, seen, url: `http://127.0.0.1:${addr.port}` });
+    });
+    server.on("error", reject);
+  });
+}
+
+function assertMcpIdentitySeen(label, seen) {
+  const gets = seen.filter((x) => String(x.method).toUpperCase() === "GET");
+  const posts = seen.filter((x) => String(x.method).toUpperCase() === "POST");
+  if (!gets.length) {
+    console.error("smoke mcp", label, "listPets GET was not seen", seen);
+    process.exit(1);
+  }
+  if (!String(gets[0].userAgent || "").includes("sdk-mcp-gen/0.1.0")) {
+    console.error("smoke mcp", label, "listPets missing User-Agent sdk-mcp-gen/0.1.0", seen);
+    process.exit(1);
+  }
+  if (!String(gets[0].requestId || "").trim()) {
+    console.error("smoke mcp", label, "listPets missing X-Request-Id", seen);
+    process.exit(1);
+  }
+  if (gets.some((x) => String(x.idempotencyKey || "").trim())) {
+    console.error("smoke mcp", label, "listPets GET must not send Idempotency-Key", seen);
+    process.exit(1);
+  }
+  if (!posts.length) {
+    console.error("smoke mcp", label, "createPet POST was not seen", seen);
+    process.exit(1);
+  }
+  if (!String(posts[0].userAgent || "").includes("sdk-mcp-gen/0.1.0")) {
+    console.error("smoke mcp", label, "createPet missing User-Agent", seen);
+    process.exit(1);
+  }
+  if (!String(posts[0].idempotencyKey || "").trim()) {
+    console.error("smoke mcp", label, "createPet missing Idempotency-Key", seen);
+    process.exit(1);
+  }
+  if (!String(posts[0].requestId || "").trim()) {
+    console.error("smoke mcp", label, "createPet missing X-Request-Id", seen);
+    process.exit(1);
+  }
+}
+
+async function smokeMcpIdentity(petstoreSpec, tmp) {
+  const idDir = path.join(tmp, "mcp-identity");
+  generateToDir(petstoreSpec, idDir, ["ts"]);
+  for (const [label, name] of [
+    ["js", MCP_SERVER_FILE],
+    ["py", MCP_SERVER_PY_FILE],
+    ["go", MCP_SERVER_GO_FILE],
+  ]) {
+    const blob = fs.readFileSync(path.join(idDir, name), "utf8");
+    if (!blob.includes("sdk-mcp-gen/0.1.0") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id")) || (!blob.includes("Idempotency-Key") && !blob.includes("idempotency-key"))) {
+      console.error("smoke mcp", label, "missing identity headers");
+      process.exit(1);
+    }
+  }
+  const rpc = [
+    JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "listPets", arguments: {} } }),
+    JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "createPet", arguments: { name: "x" } } }),
+  ].join("\n") + "\n";
+  const echo = await listenMcpIdentityEcho();
+  try {
+    const jsRun = await spawnArgvAsync(process.execPath, [path.join(idDir, MCP_SERVER_FILE)], {
+      input: rpc,
+      env: { ...process.env, MCP_BASE_URL: echo.url, SDK_REQUEST_ID: "", SDK_IDEMPOTENCY_KEY: "", MCP_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "" },
+    }, 8000);
+    if (jsRun.error || jsRun.status !== 0) {
+      console.error("smoke mcp js tools/call identity failed", jsRun.status, jsRun.stdout, jsRun.stderr, jsRun.error);
+      process.exit(1);
+    }
+    assertMcpIdentitySeen("js", echo.seen);
+    echo.seen.length = 0;
+
+    const pyRun = await spawnArgvAsync("python3", [path.join(idDir, MCP_SERVER_PY_FILE)], {
+      input: rpc,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", MCP_BASE_URL: echo.url, SDK_REQUEST_ID: "", SDK_IDEMPOTENCY_KEY: "", MCP_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "" },
+    }, 8000);
+    if (pyRun.error || pyRun.status !== 0) {
+      console.error("smoke mcp py tools/call identity failed", pyRun.status, pyRun.stdout, pyRun.stderr, pyRun.error);
+      process.exit(1);
+    }
+    assertMcpIdentitySeen("py", echo.seen);
+    echo.seen.length = 0;
+
+    const goVer = spawnSync("go", ["version"], { encoding: "utf8", timeout: 5000, env: { ...process.env } });
+    if (!goVer.error && goVer.status === 0) {
+      const goRun = await spawnArgvAsync("go", ["run", path.join(idDir, MCP_SERVER_GO_FILE)], {
+        input: rpc,
+        env: { ...process.env, MCP_BASE_URL: echo.url, SDK_REQUEST_ID: "", SDK_IDEMPOTENCY_KEY: "", MCP_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "" },
+      }, 30000);
+      if (goRun.error || goRun.status !== 0) {
+        console.error("smoke mcp go tools/call identity failed", goRun.status, goRun.stdout, goRun.stderr, goRun.error);
+        process.exit(1);
+      }
+      assertMcpIdentitySeen("go", echo.seen);
+    }
+    console.log("mcp-id-ok");
   } finally {
     await new Promise((r) => echo.server.close(() => r()));
   }
@@ -3330,6 +3449,7 @@ if (cmd === "--version" || cmd === "-V") {
     await smokeGeneratedClientAuth(petstoreSpec, petClients, tmp);
     await smokeClientIdentity(petstoreSpec, petClients, tmp);
     await smokeClientIdempotency(petstoreSpec, tmp);
+    await smokeMcpIdentity(petstoreSpec, tmp);
     await smokeUrlAuthHeaders(cliPath, mini31Path, tmp);
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
@@ -3338,7 +3458,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok, mcp-id-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

@@ -459,14 +459,48 @@ export function buildMcpServerTools(ops) {
 }
 
 
+function emitJsMcpIdentityFns() {
+  const lines = [];
+  lines.push("function envIdentity(mcpName, sdkName) {");
+  lines.push("  const a = process.env[mcpName];");
+  lines.push("  if (a && String(a).trim()) return String(a).trim();");
+  lines.push("  const b = process.env[sdkName];");
+  lines.push("  if (b && String(b).trim()) return String(b).trim();");
+  lines.push('  return "";');
+  lines.push("}");
+  lines.push("");
+  lines.push("function newRequestId() {");
+  lines.push("  const c = globalThis.crypto;");
+  lines.push('  if (c && typeof c.randomUUID === "function") return c.randomUUID();');
+  lines.push('  return Date.now().toString(16) + "-" + Math.random().toString(16).slice(2);');
+  lines.push("}");
+  lines.push("");
+  lines.push("function hasHeader(headers, name) {");
+  lines.push("  const want = name.toLowerCase();");
+  lines.push("  for (const k of Object.keys(headers)) if (k.toLowerCase() === want) return true;");
+  lines.push("  return false;");
+  lines.push("}");
+  lines.push("");
+  lines.push("function applyIdentityHeaders(headers, method, opIdem) {");
+  lines.push('  if (!hasHeader(headers, "user-agent") && DEFAULT_USER_AGENT) headers["user-agent"] = DEFAULT_USER_AGENT;');
+  lines.push('  if (!hasHeader(headers, "x-request-id")) headers["x-request-id"] = envIdentity("MCP_REQUEST_ID", "SDK_REQUEST_ID") || newRequestId();');
+  lines.push('  const m = String(method || "").toUpperCase();');
+  lines.push('  if ((m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE") && opIdem && !hasHeader(headers, "idempotency-key")) headers["idempotency-key"] = opIdem;');
+  lines.push("}");
+  lines.push("");
+  return lines;
+}
+
 /**
  * Stdio MCP server (Node, no extra deps). JSON-RPC 2.0 newline frames:
  * initialize, tools/list, tools/call — same subset B mock-upstream / stdio proxy uses.
  * Runtime HTTP backend: env MCP_BASE_URL (wins) or baked --base-url.
+ * Identity headers on tools/call upstream HTTP: User-Agent, X-Request-Id per attempt, Idempotency-Key on writes.
  */
-export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
+export function generateMcpServer(ops, title = "API", { baseUrl = "", packageName } = {}) {
   const tools = buildMcpServerTools(ops);
   const auth = authFlags(ops);
+  const userAgent = defaultUserAgent({ packageName });
   const safeTitle = String(title || "API").replace(/\*\//g, "");
   const lines = [];
   lines.push("#!/usr/bin/env node");
@@ -475,6 +509,7 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   lines.push(" * API: " + safeTitle);
   lines.push(" * Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call");
   lines.push(" * HTTP backend: env MCP_BASE_URL or baked --base-url");
+  lines.push(" * Identity: default User-Agent " + userAgent + " unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused if this path retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.");
   if (auth.any) {
     lines.push(" * Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.");
   }
@@ -483,6 +518,7 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   lines.push('import readline from "node:readline";');
   lines.push("");
   lines.push('const VERSION = "0.1.0";');
+  lines.push("const DEFAULT_USER_AGENT = " + JSON.stringify(userAgent) + ";");
   lines.push("const SERVER_NAME = " + JSON.stringify(safeTitle + " MCP") + ";");
   lines.push("const DEFAULT_BASE_URL = " + JSON.stringify(String(baseUrl || "")) + ";");
   lines.push("const TOOLS = " + JSON.stringify(tools, null, 2) + ";");
@@ -526,6 +562,7 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
     lines.push("}");
     lines.push("");
   }
+  for (const ln of emitJsMcpIdentityFns()) lines.push(ln);
   lines.push("function applyPath(pathTpl, args) {");
   lines.push("  const used = new Set();");
   lines.push("  const path = String(pathTpl).replace(/\\{([^}]+)\\}/g, (_, k) => {");
@@ -575,6 +612,9 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   lines.push("    body = JSON.stringify(payload);");
   lines.push('    headers["content-type"] = "application/json";');
   lines.push("  }");
+  lines.push('  const mutating = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";');
+  lines.push('  const opIdem = mutating ? (envIdentity("MCP_IDEMPOTENCY_KEY", "SDK_IDEMPOTENCY_KEY") || newRequestId()) : "";');
+  lines.push("  applyIdentityHeaders(headers, method, opIdem);");
   lines.push("  try {");
   lines.push("    const res = await fetch(url, { method, headers, body });");
   lines.push("    const text = await res.text();");
@@ -721,10 +761,11 @@ function emitPyMcpAuth(auth) {
  * initialize, tools/list, tools/call — newline frames on stdin/stdout.
  * Runtime HTTP backend: env MCP_BASE_URL (wins) or baked --base-url (urllib).
  */
-export function generateMcpServerPy(ops, title = "API", { baseUrl = "" } = {}) {
+export function generateMcpServerPy(ops, title = "API", { baseUrl = "", packageName } = {}) {
   const tools = buildMcpServerTools(ops);
   const auth = authFlags(ops);
   const pyAuthFns = emitPyMcpAuth(auth);
+  const userAgent = defaultUserAgent({ packageName });
   const safeTitle = String(title || "API")
     .replace(/\r?\n/g, " ")
     .replace(/#/g, "")
@@ -736,6 +777,7 @@ export function generateMcpServerPy(ops, title = "API", { baseUrl = "" } = {}) {
 # API: ${safeTitle}
 # Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 # HTTP backend: env MCP_BASE_URL or baked --base-url
+# Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused if this path retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 # Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 # Stdlib only (urllib). Compatible with B gateway stdio upstream.
 
@@ -745,11 +787,13 @@ import json
 import os
 import re
 import sys
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
 
 VERSION = "0.1.0"
+DEFAULT_USER_AGENT = ${JSON.stringify(userAgent)}
 SERVER_NAME = ${JSON.stringify(safeTitle + " MCP")}
 DEFAULT_BASE_URL = ${JSON.stringify(String(baseUrl || ""))}
 TOOLS = json.loads(${JSON.stringify(toolsJson)})
@@ -771,6 +815,35 @@ def base_url():
     if env and str(env).strip():
         return str(env).strip().rstrip("/")
     return str(DEFAULT_BASE_URL or "").rstrip("/")
+
+
+def _env_identity(mcp_name, sdk_name):
+    raw = os.environ.get(mcp_name)
+    if raw and str(raw).strip():
+        return str(raw).strip()
+    raw = os.environ.get(sdk_name)
+    if raw and str(raw).strip():
+        return str(raw).strip()
+    return ""
+
+
+def _new_request_id():
+    return str(uuid.uuid4())
+
+
+def _has_header(headers, name):
+    want = name.lower()
+    return any(str(k).lower() == want for k in headers)
+
+
+def _apply_identity(headers, method, op_idem=""):
+    if not _has_header(headers, "User-Agent") and DEFAULT_USER_AGENT:
+        headers["User-Agent"] = DEFAULT_USER_AGENT
+    if not _has_header(headers, "X-Request-Id"):
+        headers["X-Request-Id"] = _env_identity("MCP_REQUEST_ID", "SDK_REQUEST_ID") or _new_request_id()
+    m = str(method or "").upper()
+    if m in ("POST", "PUT", "PATCH", "DELETE") and op_idem and not _has_header(headers, "Idempotency-Key"):
+        headers["Idempotency-Key"] = op_idem
 
 
 ${pyAuthFns}def apply_path(path_tpl, args):
@@ -818,6 +891,9 @@ def invoke_http(tool, args):
             payload[k] = v
         data = json.dumps(payload).encode("utf-8")
         headers["content-type"] = "application/json"
+    mutating = method in ("POST", "PUT", "PATCH", "DELETE")
+    op_idem = (_env_identity("MCP_IDEMPOTENCY_KEY", "SDK_IDEMPOTENCY_KEY") or _new_request_id()) if mutating else ""
+    _apply_identity(headers, method, op_idem)
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         try:
@@ -987,10 +1063,11 @@ function emitGoMcpAuth(auth) {
  * Runtime HTTP backend: env MCP_BASE_URL (wins) or baked --base-url (net/http).
  * package main so `go run mcp_server.go` works next to client.go (package client).
  */
-export function generateMcpServerGo(ops, title = "API", { baseUrl = "" } = {}) {
+export function generateMcpServerGo(ops, title = "API", { baseUrl = "", packageName } = {}) {
   const tools = buildMcpServerTools(ops);
   const auth = authFlags(ops);
   const goAuthFns = emitGoMcpAuth(auth);
+  const userAgent = defaultUserAgent({ packageName });
   const safeTitle = String(title || "API")
     .replace(/\r?\n/g, " ")
     .replace(/\*\//g, "* /");
@@ -1001,6 +1078,7 @@ export function generateMcpServerGo(ops, title = "API", { baseUrl = "" } = {}) {
 // API: ${safeTitle}
 // Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 // HTTP backend: env MCP_BASE_URL or baked --base-url
+// Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused if this path retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 // Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 // Stdlib only (net/http). Compatible with B gateway stdio upstream.
 // Run: go run mcp_server.go   (Go 1.21+; no extra modules)
@@ -1009,6 +1087,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1016,9 +1095,11 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 const version = "0.1.0"
+const defaultUserAgent = ${JSON.stringify(userAgent)}
 const serverName = ${nameGo}
 
 var defaultBaseURL = ${baseGo}
@@ -1074,6 +1155,42 @@ func baseURL() string {
 }
 
 ${goAuthFns}
+func envIdentity(mcpName, sdkName string) string {
+	v := strings.TrimSpace(os.Getenv(mcpName))
+	if v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(sdkName))
+}
+
+func newRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", b[:])
+}
+
+func applyIdentityHeaders(req *http.Request, method, opIdem string) {
+	if req == nil {
+		return
+	}
+	if req.Header.Get("User-Agent") == "" && defaultUserAgent != "" {
+		req.Header.Set("User-Agent", defaultUserAgent)
+	}
+	if req.Header.Get("X-Request-Id") == "" {
+		id := envIdentity("MCP_REQUEST_ID", "SDK_REQUEST_ID")
+		if id == "" {
+			id = newRequestID()
+		}
+		req.Header.Set("X-Request-Id", id)
+	}
+	m := strings.ToUpper(method)
+	if (m == "POST" || m == "PUT" || m == "PATCH" || m == "DELETE") && opIdem != "" && req.Header.Get("Idempotency-Key") == "" {
+		req.Header.Set("Idempotency-Key", opIdem)
+	}
+}
+
 func applyPath(pathTpl string, args map[string]any) (string, map[string]struct{}) {
 	used := map[string]struct{}{}
 	var b strings.Builder
@@ -1163,6 +1280,15 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	_ = applyAuth(req, urlStr, tool.Security)
+	mutating := method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
+	opIdem := ""
+	if mutating {
+		opIdem = envIdentity("MCP_IDEMPOTENCY_KEY", "SDK_IDEMPOTENCY_KEY")
+		if opIdem == "" {
+			opIdem = newRequestID()
+		}
+	}
+	applyIdentityHeaders(req, method, opIdem)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
@@ -6514,7 +6640,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     ``,
     ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
     ...(auth.any ? [`Auth: constructor bearerToken / apiKey (or bearer_token / api_key / Client.BearerToken / APIKey) or env SDK_BEARER_TOKEN / SDK_API_KEY, attached per OpenAPI operation security (optional schemes when creds are set; ops without security omit credentials). MCP servers read MCP_BEARER_TOKEN / MCP_API_KEY (same SDK_* fallback). oauth2 / openIdConnect skipped (no fake tokens). Values never logged.`, ``] : []),
-    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY).`,
+    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY). Stdio MCP servers send the same headers on tools/call upstream HTTP.`,
     ``,
     `Files:`,
     ...files,

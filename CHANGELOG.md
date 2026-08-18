@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated stdio MCP servers send User-Agent / X-Request-Id / Idempotency-Key on tools/call upstream HTTP. Smoke mcp-id-ok.
 - A generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (retries reuse; `SDK_IDEMPOTENCY_KEY` pin). Smoke idem-ok.
 
 - A generated clients send default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set, plus `X-Request-Id` new per HTTP attempt (`SDK_REQUEST_ID` pin). Smoke ua-ok / request-id-ok.

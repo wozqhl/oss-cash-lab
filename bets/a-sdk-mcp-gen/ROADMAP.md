@@ -22,6 +22,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Generated clients send default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set, plus `X-Request-Id` new per HTTP attempt (pin via constructor / `SDK_REQUEST_ID`)
 
 - [x] Generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new key per logical call; retries reuse; pin via constructor / `SDK_IDEMPOTENCY_KEY`)
+- [x] Generated stdio MCP servers send User-Agent + X-Request-Id + Idempotency-Key on tools/call (same policy as clients; smoke mcp-id-ok)
 
 ## Still open
 
