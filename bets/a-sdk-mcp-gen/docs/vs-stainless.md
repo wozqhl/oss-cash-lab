@@ -24,14 +24,14 @@ This tree does **not** publish there.
 |---|---|---|---|---|---|
 | Runs where | Local CLI / composite GitHub Action. Node 18+, stdlib only. | Self-hosted CLI (Java). | Commercial CLI / platform. Speakeasy documents a standalone binary. | Hosted platform. Wound down after the May 2026 acquisition. | Commercial SDK + docs platform (Postman). |
 | Input | OpenAPI 3.0.x / 3.1.x (paths; cheap 3.1 diffs; webhooks ignored). | OpenAPI (broad). | OpenAPI-native (their docs). | API spec to hosted generate. | OpenAPI and/or Fern IDL (vendor docs). |
-| Output | Stub clients in 10 langs + mcp-tools.json + stdio MCP (mcp-server.mjs / mcp_server.py / mcp_server.go) + mcp.json. | Many language generators (widest OSS coverage). | Idiomatic SDKs; MCP is a Speakeasy product surface, not something this note scores. | Idiomatic SDKs + MCP tooling (historical). Existing generated SDKs stay with customers. | Idiomatic SDKs + API docs. |
-| Deps in generated clients | Stdlib-only stubs (no SDK runtime, no retry/auth stack). | Varies by generator; often a language HTTP stack. | Vendor-documented runtime (not measured here). | Vendor-documented (historical). | Vendor-documented. |
+| Output | Stdlib clients in 10 langs + mcp-tools.json + stdio MCP (mcp-server.mjs / mcp_server.py / mcp_server.go) + mcp.json. MCP servers send the same identity headers on upstream HTTP. | Many language generators (widest OSS coverage). | Idiomatic SDKs; MCP is a Speakeasy product surface, not something this note scores. | Idiomatic SDKs + MCP tooling (historical). Existing generated SDKs stay with customers. | Idiomatic SDKs + API docs. |
+| Deps in generated clients | Stdlib only (no vendor SDK runtime). All 10 langs: 10s timeout, 429/5xx retry, per-op bearer/apiKey. iterate* page helpers on TS/Python/Go/Java/Kotlin/C# (not Rust; not a Stainless pager). User-Agent, per-attempt X-Request-Id, Idempotency-Key on writes (retries reuse the key). | Varies by generator; often a language HTTP stack. | Vendor-documented runtime (not measured here). | Vendor-documented (historical). | Vendor-documented. |
 | Cost model | Apache-2.0 in this portfolio. | Apache-2.0. You maintain templates/forks. | Commercial (see their pricing). | Hosted product wound down. | Commercial (see Postman/Fern). |
 | CI | Composite Action runs generate (this bet). Separate example checks drift. | Typical openapi-generator-cli job. | Vendor GitHub Action / CLI. | Hosted pipeline (historical). | Vendor pipeline. |
 
 ## What this generator is not
 
-- Not a drop-in Stainless replacement. Stainless sold idiomatic, maintained SDKs. This emits minimal stubs plus MCP wiring.
+- Not a drop-in Stainless replacement. Stainless sold idiomatic, maintained SDKs. This emits stdlib clients plus MCP wiring — timeout/retry/auth/identity headers, not a Stainless-class SDK.
 - Not OpenAPI Generator. We do not wrap their templates or claim their language count.
 - Not a hosted service. No SLA, no private registry, no official MCP listing.
 - Not a full JSON Schema 2020-12 / OpenAPI 3.1 rewrite. See the A README.
