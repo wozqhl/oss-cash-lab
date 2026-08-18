@@ -8,6 +8,8 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries, Retry-After <30s; Idempotency-Key reused). Smoke prints mcp-retry-ok.
+
 - Generated stdio MCP servers send User-Agent / X-Request-Id / Idempotency-Key on tools/call upstream HTTP. Smoke prints mcp-id-ok.
 
 - Generated TS / Python / Go / Java (plus other langs) clients send `Idempotency-Key` on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Constructor / env `SDK_IDEMPOTENCY_KEY` pins a test key. Smoke prints idem-ok.

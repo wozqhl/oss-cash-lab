@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries, Retry-After <30s; Idempotency-Key reused). Smoke mcp-retry-ok.
 - A generated stdio MCP servers send User-Agent / X-Request-Id / Idempotency-Key on tools/call upstream HTTP. Smoke mcp-id-ok.
 - A generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (retries reuse; `SDK_IDEMPOTENCY_KEY` pin). Smoke idem-ok.
 

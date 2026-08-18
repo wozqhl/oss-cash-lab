@@ -127,6 +127,7 @@
 - [x] A generated clients default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set + `X-Request-Id` per HTTP attempt (`SDK_REQUEST_ID` pin; smoke ua-ok / request-id-ok)
 - [x] A generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (retries reuse; SDK_IDEMPOTENCY_KEY pin; smoke idem-ok)
 - [x] A generated stdio MCP servers send User-Agent + X-Request-Id + Idempotency-Key on tools/call (smoke mcp-id-ok)
+- [x] A generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries; Idempotency-Key reused; smoke mcp-retry-ok)
 ### D · AI-BOM (Python) scaffold→MVP
 - [x] Scan dir for model IDs, prompts, MCP deps
 - [x] CycloneDX-like JSON

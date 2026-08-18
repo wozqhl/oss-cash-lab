@@ -1889,6 +1889,115 @@ async function smokeMcpIdentity(petstoreSpec, tmp) {
   }
 }
 
+function listenMcpRetryStub() {
+  const seen = [];
+  const state = { posts: 0 };
+  const server = http.createServer((req, res) => {
+    seen.push({
+      method: String(req.method || ""),
+      url: String(req.url || ""),
+      idempotencyKey: String(req.headers["idempotency-key"] || ""),
+      requestId: String(req.headers["x-request-id"] || ""),
+    });
+    if (String(req.method || "").toUpperCase() === "POST") {
+      state.posts += 1;
+      if (state.posts === 1) {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "0" });
+        res.end("{\"error\":\"rate\"}");
+        return;
+      }
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("[]");
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({
+        server,
+        seen,
+        url: `http://127.0.0.1:${addr.port}`,
+        reset() {
+          seen.length = 0;
+          state.posts = 0;
+        },
+      });
+    });
+    server.on("error", reject);
+  });
+}
+
+function assertMcpRetrySeen(label, seen) {
+  const posts = seen.filter((x) => String(x.method).toUpperCase() === "POST");
+  if (posts.length < 2) {
+    console.error("smoke mcp retry", label, "createPet 429 was not retried", seen);
+    process.exit(1);
+  }
+  const k0 = String(posts[0].idempotencyKey || "").trim();
+  const k1 = String(posts[1].idempotencyKey || "").trim();
+  if (!k0 || k0 !== k1) {
+    console.error("smoke mcp retry", label, "createPet retries must reuse the same Idempotency-Key", seen);
+    process.exit(1);
+  }
+}
+
+async function smokeMcpRetry(petstoreSpec, tmp) {
+  const idDir = path.join(tmp, "mcp-retry");
+  generateToDir(petstoreSpec, idDir, ["ts"]);
+  for (const [label, name] of [
+    ["js", MCP_SERVER_FILE],
+    ["py", MCP_SERVER_PY_FILE],
+    ["go", MCP_SERVER_GO_FILE],
+  ]) {
+    const blob = fs.readFileSync(path.join(idDir, name), "utf8");
+    if (!blob.includes("429") || (!blob.includes("Retry-After") && !blob.includes("retry-after"))) {
+      console.error("smoke mcp retry", label, "missing 429 / Retry-After");
+      process.exit(1);
+    }
+  }
+  const rpc = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "createPet", arguments: { name: "x" } } }) + "\n";
+  const echo = await listenMcpRetryStub();
+  try {
+    const jsRun = await spawnArgvAsync(process.execPath, [path.join(idDir, MCP_SERVER_FILE)], {
+      input: rpc,
+      env: { ...process.env, MCP_BASE_URL: echo.url, SDK_REQUEST_ID: "", SDK_IDEMPOTENCY_KEY: "", MCP_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "" },
+    }, 8000);
+    if (jsRun.error || jsRun.status !== 0) {
+      console.error("smoke mcp js tools/call retry failed", jsRun.status, jsRun.stdout, jsRun.stderr, jsRun.error);
+      process.exit(1);
+    }
+    assertMcpRetrySeen("js", echo.seen);
+    echo.reset();
+
+    const pyRun = await spawnArgvAsync("python3", [path.join(idDir, MCP_SERVER_PY_FILE)], {
+      input: rpc,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", MCP_BASE_URL: echo.url, SDK_REQUEST_ID: "", SDK_IDEMPOTENCY_KEY: "", MCP_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "" },
+    }, 8000);
+    if (pyRun.error || pyRun.status !== 0) {
+      console.error("smoke mcp py tools/call retry failed", pyRun.status, pyRun.stdout, pyRun.stderr, pyRun.error);
+      process.exit(1);
+    }
+    assertMcpRetrySeen("py", echo.seen);
+    echo.reset();
+
+    const goVer = spawnSync("go", ["version"], { encoding: "utf8", timeout: 5000, env: { ...process.env } });
+    if (!goVer.error && goVer.status === 0) {
+      const goRun = await spawnArgvAsync("go", ["run", path.join(idDir, MCP_SERVER_GO_FILE)], {
+        input: rpc,
+        env: { ...process.env, MCP_BASE_URL: echo.url, SDK_REQUEST_ID: "", SDK_IDEMPOTENCY_KEY: "", MCP_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "" },
+      }, 30000);
+      if (goRun.error || goRun.status !== 0) {
+        console.error("smoke mcp go tools/call retry failed", goRun.status, goRun.stdout, goRun.stderr, goRun.error);
+        process.exit(1);
+      }
+      assertMcpRetrySeen("go", echo.seen);
+    }
+    console.log("mcp-retry-ok");
+  } finally {
+    await new Promise((r) => echo.server.close(() => r()));
+  }
+}
+
 async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
 
   const petOps = listOperations(petstoreSpec);
@@ -3450,6 +3559,7 @@ if (cmd === "--version" || cmd === "-V") {
     await smokeClientIdentity(petstoreSpec, petClients, tmp);
     await smokeClientIdempotency(petstoreSpec, tmp);
     await smokeMcpIdentity(petstoreSpec, tmp);
+    await smokeMcpRetry(petstoreSpec, tmp);
     await smokeUrlAuthHeaders(cliPath, mini31Path, tmp);
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
@@ -3458,7 +3568,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok, mcp-id-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok, mcp-id-ok, mcp-retry-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

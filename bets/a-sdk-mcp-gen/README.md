@@ -62,6 +62,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] Generated TS / Python / Go / Java (and Kotlin / C# / Rust / PHP / Swift / Ruby) clients send default User-Agent `sdk-mcp-gen/0.1.0` (or `--package-name`) unless already set, plus `X-Request-Id` new per HTTP attempt (pin via constructor / env `SDK_REQUEST_ID`). Smoke prints ua-ok / request-id-ok.
 - [x] Generated TS / Python / Go / Java (and other langs) clients send `Idempotency-Key` on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via constructor / env `SDK_IDEMPOTENCY_KEY`. Smoke prints idem-ok.
 - [x] Generated stdio MCP servers send the same identity headers on tools/call upstream HTTP (`User-Agent` sdk-mcp-gen/0.1.0 unless set, `X-Request-Id` per attempt, `Idempotency-Key` on POST/PUT/PATCH/DELETE). Smoke prints mcp-id-ok.
+- [x] Generated stdio MCP servers retry 429 / 5xx / network on tools/call upstream HTTP (max 2 retries, ~100ms backoff, honor Retry-After <30s; Idempotency-Key reused). Smoke prints mcp-retry-ok.
 - [x] Demo script in README (`scripts/demo.sh`)
 
 ## Demo

@@ -488,6 +488,24 @@ function emitJsMcpIdentityFns() {
   lines.push('  if ((m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE") && opIdem && !hasHeader(headers, "idempotency-key")) headers["idempotency-key"] = opIdem;');
   lines.push("}");
   lines.push("");
+  lines.push("function sleep(ms) {");
+  lines.push("  return new Promise((r) => setTimeout(r, ms));");
+  lines.push("}");
+  lines.push("");
+  lines.push("function retryDelayMs(res, attempt) {");
+  lines.push('  const raw = res && res.headers && typeof res.headers.get === "function" ? res.headers.get("retry-after") : null;');
+  lines.push("  if (raw) {");
+  lines.push("    const sec = Number(raw);");
+  lines.push("    if (Number.isFinite(sec) && sec >= 0 && sec < 30) return Math.floor(sec * 1000);");
+  lines.push("    const when = Date.parse(raw);");
+  lines.push("    if (!Number.isNaN(when)) {");
+  lines.push("      const delta = when - Date.now();");
+  lines.push("      if (delta >= 0 && delta < 30000) return delta;");
+  lines.push("    }");
+  lines.push("  }");
+  lines.push("  return 100 * Math.pow(2, attempt);");
+  lines.push("}");
+  lines.push("");
   return lines;
 }
 
@@ -495,7 +513,8 @@ function emitJsMcpIdentityFns() {
  * Stdio MCP server (Node, no extra deps). JSON-RPC 2.0 newline frames:
  * initialize, tools/list, tools/call — same subset B mock-upstream / stdio proxy uses.
  * Runtime HTTP backend: env MCP_BASE_URL (wins) or baked --base-url.
- * Identity headers on tools/call upstream HTTP: User-Agent, X-Request-Id per attempt, Idempotency-Key on writes.
+ * Identity headers on tools/call upstream HTTP: User-Agent, X-Request-Id per attempt, Idempotency-Key on writes (reused across retries).
+ * Retry transient HTTP (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.
  */
 export function generateMcpServer(ops, title = "API", { baseUrl = "", packageName } = {}) {
   const tools = buildMcpServerTools(ops);
@@ -509,7 +528,8 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push(" * API: " + safeTitle);
   lines.push(" * Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call");
   lines.push(" * HTTP backend: env MCP_BASE_URL or baked --base-url");
-  lines.push(" * Identity: default User-Agent " + userAgent + " unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused if this path retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.");
+  lines.push(" * Identity: default User-Agent " + userAgent + " unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.");
+  lines.push(" * Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).");
   if (auth.any) {
     lines.push(" * Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.");
   }
@@ -595,12 +615,10 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push('    if (qs) url += "?" + qs;');
   lines.push("  }");
   if (auth.any) {
-    lines.push("  const headers = {};");
-    lines.push("  let urlWithAuth = url;");
-    lines.push("  urlWithAuth = applyAuth(headers, url, tool.security);");
-    lines.push("  url = urlWithAuth;");
+    lines.push("  const headersBase = {};");
+    lines.push("  url = applyAuth(headersBase, url, tool.security);");
   } else {
-    lines.push("  const headers = {};");
+    lines.push("  const headersBase = {};");
   }
   lines.push("  let body;");
   lines.push("  if (isBodyMethod) {");
@@ -610,24 +628,39 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push("      payload[k] = v;");
   lines.push("    }");
   lines.push("    body = JSON.stringify(payload);");
-  lines.push('    headers["content-type"] = "application/json";');
   lines.push("  }");
   lines.push('  const mutating = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";');
   lines.push('  const opIdem = mutating ? (envIdentity("MCP_IDEMPOTENCY_KEY", "SDK_IDEMPOTENCY_KEY") || newRequestId()) : "";');
-  lines.push("  applyIdentityHeaders(headers, method, opIdem);");
-  lines.push("  try {");
-  lines.push("    const res = await fetch(url, { method, headers, body });");
-  lines.push("    const text = await res.text();");
-  lines.push("    let parsed = text;");
-  lines.push("    if (text) {");
-  lines.push("      try { parsed = JSON.parse(text); } catch { parsed = text; }");
-  lines.push("    } else {");
-  lines.push("      parsed = null;");
+  lines.push("  const maxAttempts = 3;");
+  lines.push("  let lastErr;");
+  lines.push("  for (let attempt = 0; attempt < maxAttempts; attempt++) {");
+  lines.push("    const headers = { ...headersBase };");
+  lines.push('    if (isBodyMethod) headers["content-type"] = "application/json";');
+  lines.push("    applyIdentityHeaders(headers, method, opIdem);");
+  lines.push("    try {");
+  lines.push("      const res = await fetch(url, { method, headers, body });");
+  lines.push("      const text = await res.text();");
+  lines.push("      let parsed = text;");
+  lines.push("      if (text) {");
+  lines.push("        try { parsed = JSON.parse(text); } catch { parsed = text; }");
+  lines.push("      } else {");
+  lines.push("        parsed = null;");
+  lines.push("      }");
+  lines.push("      if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts - 1) {");
+  lines.push("        await sleep(retryDelayMs(res, attempt));");
+  lines.push("        continue;");
+  lines.push("      }");
+  lines.push("      return { ok: res.ok, status: res.status, body: parsed };");
+  lines.push("    } catch (err) {");
+  lines.push("      lastErr = err;");
+  lines.push("      if (attempt < maxAttempts - 1) {");
+  lines.push("        await sleep(100 * Math.pow(2, attempt));");
+  lines.push("        continue;");
+  lines.push("      }");
+  lines.push('      return { ok: false, error: "fetch_failed", message: String(err && err.message ? err.message : err) };');
   lines.push("    }");
-  lines.push("    return { ok: res.ok, status: res.status, body: parsed };");
-  lines.push("  } catch (err) {");
-  lines.push('    return { ok: false, error: "fetch_failed", message: String(err && err.message ? err.message : err) };');
   lines.push("  }");
+  lines.push('  return { ok: false, error: "fetch_failed", message: String(lastErr && lastErr.message ? lastErr.message : lastErr || "network") };');
   lines.push("}");
   lines.push("");
   lines.push("function rpcResult(id, result) {");
@@ -777,7 +810,8 @@ export function generateMcpServerPy(ops, title = "API", { baseUrl = "", packageN
 # API: ${safeTitle}
 # Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 # HTTP backend: env MCP_BASE_URL or baked --base-url
-# Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused if this path retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
+# Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
+# Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
 # Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 # Stdlib only (urllib). Compatible with B gateway stdio upstream.
 
@@ -787,10 +821,12 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+from email.utils import parsedate_to_datetime
 
 VERSION = "0.1.0"
 DEFAULT_USER_AGENT = ${JSON.stringify(userAgent)}
@@ -846,6 +882,29 @@ def _apply_identity(headers, method, op_idem=""):
         headers["Idempotency-Key"] = op_idem
 
 
+def _retry_delay_s(headers, attempt):
+    raw = None
+    if headers is not None:
+        try:
+            raw = headers.get("Retry-After")
+        except Exception:
+            raw = None
+    if raw:
+        try:
+            sec = float(str(raw).strip())
+            if 0 <= sec < 30:
+                return sec
+        except (TypeError, ValueError):
+            try:
+                when = parsedate_to_datetime(str(raw))
+                delta = when.timestamp() - time.time()
+                if 0 <= delta < 30:
+                    return delta
+            except (TypeError, ValueError, OverflowError, OSError):
+                pass
+    return 0.1 * (2 ** attempt)
+
+
 ${pyAuthFns}def apply_path(path_tpl, args):
     used = set()
 
@@ -881,8 +940,8 @@ def invoke_http(tool, args):
         if q:
             url += "?" + urllib.parse.urlencode(q)
     data = None
-    headers = {}
-    url = apply_auth(headers, url, (tool or {}).get("security"))
+    headers_base = {}
+    url = apply_auth(headers_base, url, (tool or {}).get("security"))
     if is_body_method:
         payload = {}
         for k, v in a.items():
@@ -890,34 +949,56 @@ def invoke_http(tool, args):
                 continue
             payload[k] = v
         data = json.dumps(payload).encode("utf-8")
-        headers["content-type"] = "application/json"
     mutating = method in ("POST", "PUT", "PATCH", "DELETE")
     op_idem = (_env_identity("MCP_IDEMPOTENCY_KEY", "SDK_IDEMPOTENCY_KEY") or _new_request_id()) if mutating else ""
-    _apply_identity(headers, method, op_idem)
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
+    last_err = None
+    last_result = None
+    for attempt in range(3):
+        headers = dict(headers_base)
+        if is_body_method:
+            headers["content-type"] = "application/json"
+        _apply_identity(headers, method, op_idem)
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as res:
-                raw = res.read()
-                status = getattr(res, "status", None) or res.getcode()
-                text = raw.decode("utf-8") if raw else ""
-                ok = 200 <= int(status) < 300
-        except urllib.error.HTTPError as e:
-            raw = e.read() if e.fp else b""
-            status = e.code
-            text = raw.decode("utf-8") if raw else ""
-            ok = False
-        parsed = text
-        if text:
             try:
-                parsed = json.loads(text)
-            except Exception:
-                parsed = text
-        else:
-            parsed = None
-        return {"ok": ok, "status": status, "body": parsed}
-    except Exception as err:
-        return {"ok": False, "error": "fetch_failed", "message": str(err)}
+                with urllib.request.urlopen(req) as res:
+                    raw = res.read()
+                    status = getattr(res, "status", None) or res.getcode()
+                    text = raw.decode("utf-8") if raw else ""
+                    ok = 200 <= int(status) < 300
+                    retry_headers = getattr(res, "headers", None)
+            except urllib.error.HTTPError as e:
+                raw = e.read() if e.fp else b""
+                status = e.code
+                text = raw.decode("utf-8") if raw else ""
+                ok = False
+                retry_headers = e.headers
+                try:
+                    e.close()
+                except Exception:
+                    pass
+            parsed = text
+            if text:
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    parsed = text
+            else:
+                parsed = None
+            last_result = {"ok": ok, "status": status, "body": parsed}
+            if (int(status) == 429 or int(status) >= 500) and attempt < 2:
+                time.sleep(_retry_delay_s(retry_headers, attempt))
+                continue
+            return last_result
+        except Exception as err:
+            last_err = err
+            if attempt < 2:
+                time.sleep(0.1 * (2 ** attempt))
+                continue
+            return {"ok": False, "error": "fetch_failed", "message": str(err)}
+    if last_result is not None:
+        return last_result
+    return {"ok": False, "error": "fetch_failed", "message": str(last_err or "network")}
 
 
 def rpc_result(rpc_id, result):
@@ -1078,7 +1159,8 @@ export function generateMcpServerGo(ops, title = "API", { baseUrl = "", packageN
 // API: ${safeTitle}
 // Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 // HTTP backend: env MCP_BASE_URL or baked --base-url
-// Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused if this path retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
+// Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
+// Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
 // Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 // Stdlib only (net/http). Compatible with B gateway stdio upstream.
 // Run: go run mcp_server.go   (Go 1.21+; no extra modules)
@@ -1094,6 +1176,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1191,6 +1274,24 @@ func applyIdentityHeaders(req *http.Request, method, opIdem string) {
 	}
 }
 
+// retryDelay honors Retry-After when sane (<30s); else ~100ms exponential backoff.
+func retryDelay(res *http.Response, attempt int) time.Duration {
+	if res != nil {
+		if raw := res.Header.Get("Retry-After"); raw != "" {
+			if sec, err := strconv.Atoi(raw); err == nil && sec >= 0 && sec < 30 {
+				return time.Duration(sec) * time.Second
+			}
+			if when, err := http.ParseTime(raw); err == nil {
+				d := time.Until(when)
+				if d >= 0 && d < 30*time.Second {
+					return d
+				}
+			}
+		}
+	}
+	return time.Duration(100*(1<<attempt)) * time.Millisecond
+}
+
 func applyPath(pathTpl string, args map[string]any) (string, map[string]struct{}) {
 	used := map[string]struct{}{}
 	var b strings.Builder
@@ -1256,30 +1357,22 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 			urlStr += "?" + enc
 		}
 	}
-	var body io.Reader
+	var payload []byte
 	if isBody {
-		payload := map[string]any{}
+		bodyMap := map[string]any{}
 		for k, v := range args {
 			if _, skip := pathParamSet[k]; skip {
 				continue
 			}
-			payload[k] = v
+			bodyMap[k] = v
 		}
-		raw, err := json.Marshal(payload)
+		raw, err := json.Marshal(bodyMap)
 		if err != nil {
 			return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
 		}
-		body = bytes.NewReader(raw)
+		payload = raw
 	}
 	urlStr = applyAuth(nil, urlStr, tool.Security)
-	req, err := http.NewRequest(method, urlStr, body)
-	if err != nil {
-		return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
-	}
-	if isBody {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	_ = applyAuth(req, urlStr, tool.Security)
 	mutating := method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
 	opIdem := ""
 	if mutating {
@@ -1288,24 +1381,63 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 			opIdem = newRequestID()
 		}
 	}
-	applyIdentityHeaders(req, method, opIdem)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
+	var lastErr error
+	var last map[string]any
+	for attempt := 0; attempt < 3; attempt++ {
+		var body io.Reader
+		if payload != nil {
+			body = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequest(method, urlStr, body)
+		if err != nil {
+			return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
+		}
+		if isBody {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		_ = applyAuth(req, urlStr, tool.Security)
+		applyIdentityHeaders(req, method, opIdem)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < 2 {
+				time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
+				continue
+			}
+			return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
+		}
+		data, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			lastErr = err
+			if attempt < 2 {
+				time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
+				continue
+			}
+			return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
+		}
+		var parsed any
+		if len(data) == 0 {
+			parsed = nil
+		} else if err := json.Unmarshal(data, &parsed); err != nil {
+			parsed = string(data)
+		}
+		ok := res.StatusCode >= 200 && res.StatusCode < 300
+		last = map[string]any{"ok": ok, "status": res.StatusCode, "body": parsed}
+		if !ok && (res.StatusCode == 429 || res.StatusCode >= 500) && attempt < 2 {
+			time.Sleep(retryDelay(res, attempt))
+			continue
+		}
+		return last
 	}
-	defer res.Body.Close()
-	data, err := io.ReadAll(res.Body)
-	if err != nil {
-		return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
+	if last != nil {
+		return last
 	}
-	var parsed any
-	if len(data) == 0 {
-		parsed = nil
-	} else if err := json.Unmarshal(data, &parsed); err != nil {
-		parsed = string(data)
+	msg := "network"
+	if lastErr != nil {
+		msg = lastErr.Error()
 	}
-	ok := res.StatusCode >= 200 && res.StatusCode < 300
-	return map[string]any{"ok": ok, "status": res.StatusCode, "body": parsed}
+	return map[string]any{"ok": false, "error": "fetch_failed", "message": msg}
 }
 
 func rpcResult(rpcID any, result any) map[string]any {
@@ -6619,9 +6751,9 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
   }
   files.push(`- \`mcp-tools.json\` — MCP tools list`);
   if (mcp) {
-    files.push(`- \`mcp-server.mjs\` — stdio MCP server (JSON-RPC initialize / tools/list / tools/call; Node, no extra deps)`);
-    files.push(`- \`mcp_server.py\` — stdio MCP server (same JSON-RPC; Python 3 stdlib urllib, no extra deps)`);
-    files.push(`- \`mcp_server.go\` — stdio MCP server (same JSON-RPC; Go 1.21+ stdlib net/http, package main, no extra deps)`);
+    files.push(`- \`mcp-server.mjs\` — stdio MCP server (JSON-RPC initialize / tools/list / tools/call; Node, no extra deps; 429/5xx/network retry)`);
+    files.push(`- \`mcp_server.py\` — stdio MCP server (same JSON-RPC; Python 3 stdlib urllib, no extra deps; 429/5xx/network retry)`);
+    files.push(`- \`mcp_server.go\` — stdio MCP server (same JSON-RPC; Go 1.21+ stdlib net/http, package main, no extra deps; 429/5xx/network retry)`);
     files.push(`- \`mcp.json\` — MCP servers config JSON snippet (paste into Cursor / Claude Desktop / Claude Code)`);
   }
   if (opts.license !== false) {
@@ -6640,7 +6772,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     ``,
     ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
     ...(auth.any ? [`Auth: constructor bearerToken / apiKey (or bearer_token / api_key / Client.BearerToken / APIKey) or env SDK_BEARER_TOKEN / SDK_API_KEY, attached per OpenAPI operation security (optional schemes when creds are set; ops without security omit credentials). MCP servers read MCP_BEARER_TOKEN / MCP_API_KEY (same SDK_* fallback). oauth2 / openIdConnect skipped (no fake tokens). Values never logged.`, ``] : []),
-    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY). Stdio MCP servers send the same headers on tools/call upstream HTTP.`,
+    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY). Stdio MCP servers send the same headers on tools/call upstream HTTP and retry 429 / 5xx / network (max 2 retries; Idempotency-Key reused).`,
     ``,
     `Files:`,
     ...files,
