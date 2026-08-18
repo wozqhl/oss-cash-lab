@@ -17,6 +17,8 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Generated Java / Kotlin / C# clients: per-attempt timeout + 429/5xx/network retry (Retry-After <30s) + per-op bearer/apiKey auth (same policy as TS/Python/Go)
 - [x] Generated Java / Kotlin / C# iterate* page helpers (page/cursor; cap 1000; existing names unchanged)
 
+- [x] Generated Rust / PHP / Swift / Ruby clients: per-attempt timeout + 429/5xx/network retry (Retry-After <30s) + per-op bearer/apiKey auth (same policy as TS/Python/Go/Java; Rust http:// TcpStream, no TLS)
+
 ## Still open
 
 - [ ] Human upload of @oss-cash-lab/sdk-mcp-gen (needs org / access)

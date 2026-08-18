@@ -58,6 +58,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] Generated TS / Python / Go clients + stdio MCP servers send auth from OpenAPI securitySchemes per operation `security` (http bearer, apiKey header/query; env SDK_BEARER_TOKEN / SDK_API_KEY / MCP_*; optional attach-if-set; ops without security omit credentials; oauth2 / openIdConnect skipped)
 - [x] Generated Java / Kotlin / C# clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; timeoutMs / TimeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query; env SDK_*; unsecured ops omit credentials). Stdlib HttpURLConnection / HttpClient. Public method names unchanged.
 - [x] Generated Java / Kotlin / C# clients add `iterate*` helpers for GET ops with `page` / `pageSize` / `offset` / `limit` / `cursor` / `starting_after` (follow `next` / `next_cursor` / `nextPageToken` or increment page until empty/short; cap 1000; existing method names unchanged; not a Stainless pager)
+- [x] Generated Rust / PHP / Swift / Ruby clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; timeout_ms / timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query; env SDK_*; unsecured ops omit credentials). Stdlib only. Public method names unchanged. Rust stays TcpStream http:// (no TLS); headers/timeout/retry attach on that stack.
 - [x] Demo script in README (`scripts/demo.sh`)
 
 ## Demo
@@ -143,9 +144,12 @@ valid-looking `Client.java`. `--lang ts` does not emit Java.
 
 Rust note: generated `client.rs` is std-only (`std::net::TcpStream` HTTP/1.1 for
 `http://` URLs; no TLS/https). One `pub fn` per operation in snake_case
-(`list_pets`, …). local-mvp runs `rustc --crate-type lib` when present; otherwise
-a brace/heuristic check still requires a valid-looking `client.rs`. `--lang ts`
-does not emit Rust. Alias: `--lang rs`.
+(`list_pets`, …). Same retry (429 / 5xx / network; Retry-After <30s), per-attempt
+timeout (default 10s; `timeout_ms` / SDK_TIMEOUT_*), and per-op bearer / apiKey
+auth as TS/Python/Go/Java — attached on the TcpStream stack (no TLS). local-mvp
+runs `rustc --crate-type lib` when present; otherwise a brace/heuristic check
+still requires a valid-looking `client.rs`. `--lang ts` does not emit Rust.
+Alias: `--lang rs`.
 
 C# note: generated `Client.cs` uses classic `namespace Client` and one public
 PascalCase method per operation (`ListPets`, …) via `System.Net.Http.HttpClient`
@@ -163,21 +167,26 @@ Java). `--lang ts` does not emit Kotlin. Alias: `--lang kt`.
 
 Swift note: generated `Client.swift` is a single-file `public class Client`
 (Foundation `URLSession`; Alamofire-free, no SPM). One `public func` per OpenAPI
-operation (`listPets`, …). local-mvp runs `swiftc -typecheck` when present;
-otherwise a brace/heuristic check still requires a valid-looking `Client.swift`.
-`--lang ts` does not emit Swift.
+operation (`listPets`, …). Same retry / per-attempt timeout / per-op auth as
+TS/Python/Go/Java (`timeoutMs`, `bearerToken` / `apiKey`, env SDK_*). local-mvp
+runs `swiftc -typecheck` when present; otherwise a brace/heuristic check still
+requires a valid-looking `Client.swift`. `--lang ts` does not emit Swift.
 
 Ruby note: generated `client.rb` is a single-file `class Client`
 (stdlib `Net::HTTP`; gem-free, no httparty/faraday). One public method per
-OpenAPI operation in snake_case (`list_pets`, …). local-mvp runs `ruby -c`
-when present; otherwise a brace/heuristic check still requires a valid-looking
-`client.rb`. `--lang ts` does not emit Ruby. Alias: `--lang rb`.
+OpenAPI operation in snake_case (`list_pets`, …). Same retry / per-attempt
+timeout / per-op auth as TS/Python/Go/Java (`timeout_ms`, `bearer_token` /
+`api_key`, env SDK_*). local-mvp runs `ruby -c` when present; otherwise a
+brace/heuristic check still requires a valid-looking `client.rb`. `--lang ts`
+does not emit Ruby. Alias: `--lang rb`.
 
 PHP note: generated `Client.php` is a single-file `class Client`
 (stdlib `fopen` / stream wrappers; curl-extension-free). One public method per
-OpenAPI operation in camelCase (`listPets`, …). local-mvp runs `php -l`
-when present; otherwise a brace/heuristic check still requires a valid-looking
-`Client.php`. `--lang ts` does not emit PHP.
+OpenAPI operation in camelCase (`listPets`, …). Same retry / per-attempt
+timeout / per-op auth as TS/Python/Go/Java (`timeoutMs`, `bearerToken` /
+`apiKey`, env SDK_*). local-mvp runs `php -l` when present; otherwise a
+brace/heuristic check still requires a valid-looking `Client.php`. `--lang ts`
+does not emit PHP.
 
 ## Stdio MCP servers
 

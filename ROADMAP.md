@@ -123,6 +123,7 @@
 - [x] A generated `.gitignore` (default on; always overwrite; `--no-gitignore` skips; checksums + dry-run + zip; independent of `--no-mcp` / `--no-license`; smoke + local-mvp)
 - [x] A GitHub Actions OpenAPI drift example (`examples/github-actions/sdk-mcp-gen-check.yml`; `generate --out sdk-new --check-baseline sdk`; exit 1 on removed/renamed tools; parse-only smoke hook + petstore generate twice; not a live workflow here)
 
+- [x] A generated Rust / PHP / Swift / Ruby timeout + 429/5xx retry + per-op bearer/apiKey auth (same policy as TS/Python/Go/Java; Rust TcpStream http://)
 ### D · AI-BOM (Python) scaffold→MVP
 - [x] Scan dir for model IDs, prompts, MCP deps
 - [x] CycloneDX-like JSON

@@ -16,7 +16,7 @@ See [docs/thesis.md](./docs/thesis.md), [ROADMAP.md](./ROADMAP.md), and [docs/pi
 
 | ID | Dir | Lang | One-liner | Phase |
 |----|-----|------|-----------|-------|
-| A | bets/a-sdk-mcp-gen | TS (+Py/Go/Java/Rust/C#/Kt/Swift/Ruby/PHP) | OpenAPI 3.0/3.1 (JSON/YAML) to multi-lang SDK + stdio MCP servers (Node + Python) + generate Action | 2 |
+| A | bets/a-sdk-mcp-gen | TS (+Py/Go/Java/Rust/C#/Kt/Swift/Ruby/PHP) | OpenAPI 3.0/3.1 (JSON/YAML) to multi-lang SDK (timeout/429-retry/per-op auth) + stdio MCP servers (Node + Python) + generate Action | 2 |
 | B | bets/b-mcp-gateway | TS | Enterprise MCP gateway + serve `--watch` + HTML audit | **1** |
 | C | bets/c-agent-ci | Py | Deterministic agent CI + queue + CORS + rate-limit + X-Request-Id + OpenAPI + Prometheus `/metrics` + serve `--watch` + HTML run report | **1** |
 | D | bets/d-ai-bom | Py | AI-BOM + policy/evidence + SPDX + CycloneDX 1.7/SPDX 2.3 export + CRA license gate + `.aibomignore` + local BOM HTTP serve + CORS + rate-limit + X-Request-Id + OpenAPI + `/ready` + Prometheus `/metrics` + `--watch` + `GET /v1/config` | 2 |

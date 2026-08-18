@@ -1326,6 +1326,192 @@ async function smokeJvmClients(petstoreSpec, tmp) {
   }
 }
 
+async function smokeStubLangClients(petstoreSpec, tmp) {
+  const stubDir = path.join(tmp, "petstore-stubs");
+  generateToDir(petstoreSpec, stubDir, ["rust", "php", "swift", "ruby"]);
+  const petRs = fs.readFileSync(path.join(stubDir, "client.rs"), "utf8");
+  const petPhp = fs.readFileSync(path.join(stubDir, "Client.php"), "utf8");
+  const petSwift = fs.readFileSync(path.join(stubDir, "Client.swift"), "utf8");
+  const petRb = fs.readFileSync(path.join(stubDir, "client.rb"), "utf8");
+  if (!petRs.includes("timeout_ms") || !petRs.includes("SDK_TIMEOUT_MS") || !petRs.includes("SDK_TIMEOUT_SEC") || !petRs.includes("bearer_token") || !petRs.includes("SDK_BEARER_TOKEN") || !petRs.includes("Authorization") || !petRs.includes("retry_delay_ms") || !petRs.includes("429") || !petRs.includes("Retry-After")) {
+    console.error("smoke petstore client.rs missing timeout/retry/bearer");
+    process.exit(1);
+  }
+  if (!petRs.includes("pub fn list_pets") || !petRs.includes("pub fn create_pet")) {
+    console.error("smoke rust public method names changed");
+    process.exit(1);
+  }
+  const rsList = petRs.slice(petRs.indexOf("pub fn list_pets"), petRs.indexOf("pub fn list_pets") + 450);
+  const rsCreate = petRs.slice(petRs.indexOf("pub fn create_pet"), petRs.indexOf("pub fn create_pet") + 450);
+  if (!rsList.includes("true, &[], &[]") || !rsCreate.includes("false, &[], &[]")) {
+    console.error("smoke rust list_pets must attach bearer; create_pet must omit", rsList, rsCreate);
+    process.exit(1);
+  }
+  if (!petPhp.includes("timeoutMs") || !petPhp.includes("SDK_TIMEOUT_MS") || !petPhp.includes("SDK_TIMEOUT_SEC") || !petPhp.includes("bearerToken") || !petPhp.includes("SDK_BEARER_TOKEN") || !petPhp.includes("Authorization") || !petPhp.includes("retryDelayMs") || !petPhp.includes("429") || !petPhp.includes("Retry-After") || /curl_init|curl_exec|curl_setopt/i.test(petPhp)) {
+    console.error("smoke petstore Client.php missing timeout/retry/bearer or uses curl");
+    process.exit(1);
+  }
+  if (!petPhp.includes("public function listPets") || !petPhp.includes("public function createPet")) {
+    console.error("smoke php public method names changed");
+    process.exit(1);
+  }
+  const phpList = petPhp.slice(petPhp.indexOf("public function listPets"), petPhp.indexOf("public function listPets") + 500);
+  const phpCreate = petPhp.slice(petPhp.indexOf("public function createPet"), petPhp.indexOf("public function createPet") + 500);
+  if (!phpList.includes("true, null, null") || !phpCreate.includes("false, null, null")) {
+    console.error("smoke php listPets must attach bearer; createPet must omit", phpList, phpCreate);
+    process.exit(1);
+  }
+  if (!petSwift.includes("timeoutMs") || !petSwift.includes("SDK_TIMEOUT_MS") || !petSwift.includes("bearerToken") || !petSwift.includes("Authorization") || !petSwift.includes("429") || !petSwift.includes("func listPets") || /Alamofire/i.test(petSwift)) {
+    console.error("smoke petstore Client.swift missing timeout/retry/bearer");
+    process.exit(1);
+  }
+  if (!petRb.includes("timeout_ms") || !petRb.includes("SDK_TIMEOUT_MS") || !petRb.includes("bearer_token") || !petRb.includes("Authorization") || !petRb.includes("429") || !petRb.includes("def list_pets") || /httparty|faraday/i.test(petRb)) {
+    console.error("smoke petstore client.rb missing timeout/retry/bearer");
+    process.exit(1);
+  }
+  const swList = petSwift.slice(petSwift.indexOf("func listPets"), petSwift.indexOf("func listPets") + 450);
+  const swCreate = petSwift.slice(petSwift.indexOf("func createPet"), petSwift.indexOf("func createPet") + 450);
+  if (!swList.includes("authBearer: true") || !swCreate.includes("authBearer: false")) {
+    console.error("smoke swift listPets must attach bearer; createPet must omit", swList, swCreate);
+    process.exit(1);
+  }
+  const rbList = petRb.slice(petRb.indexOf("def list_pets"), petRb.indexOf("def list_pets") + 350);
+  const rbCreate = petRb.slice(petRb.indexOf("def create_pet"), petRb.indexOf("def create_pet") + 350);
+  if (!rbList.includes(", true, nil, nil") || !rbCreate.includes(", false, nil, nil")) {
+    console.error("smoke ruby list_pets must attach bearer; create_pet must omit", rbList, rbCreate);
+    process.exit(1);
+  }
+
+  const rustc = spawnSync("rustc", ["--version"], { encoding: "utf8", timeout: 5000 });
+  const rustcOk = !rustc.error && rustc.status === 0;
+  if (rustcOk) {
+    const echo = await listenRetryAuthStub();
+    try {
+      const work = path.join(tmp, "rust-http-smoke");
+      fs.mkdirSync(work, { recursive: true });
+      fs.copyFileSync(path.join(stubDir, "client.rs"), path.join(work, "client.rs"));
+      const smokeMain = [
+        "mod client;",
+        "use client::Client;",
+        "use std::collections::HashMap;",
+        "fn main() {",
+        '    let base = std::env::var("AUTH_BASE").expect("AUTH_BASE");',
+        "    let mut c = Client::new(base);",
+        "    c.timeout_ms = 2000;",
+        '    if let Ok(tok) = std::env::var("SMOKE_SDK_TOKEN") {',
+        "        let t = tok.trim();",
+        "        if !t.is_empty() { c.bearer_token = t.to_string(); }",
+        "    }",
+        '    c.list_pets(HashMap::new()).expect("list");',
+        '    println!("rust-retry-ok");',
+        "    let mut body = HashMap::new();",
+        '    body.insert("name".to_string(), "x".to_string());',
+        '    c.create_pet(body).expect("create");',
+        '    println!("rust-auth-ok");',
+        "}",
+        "",
+      ].join("\n");
+      fs.writeFileSync(path.join(work, "smoke_main.rs"), smokeMain);
+      const compiled = spawnSync("rustc", ["-o", path.join(work, "smoke_main"), "smoke_main.rs"], { encoding: "utf8", timeout: 30000, cwd: work });
+      if (compiled.error || compiled.status !== 0) {
+        console.error("smoke rustc client.rs failed", compiled.status, compiled.stdout, compiled.stderr, compiled.error);
+        process.exit(1);
+      }
+      const run = await spawnArgvAsync(path.join(work, "smoke_main"), [], {
+        env: { ...process.env, AUTH_BASE: echo.url, SMOKE_SDK_TOKEN: SMOKE_SDK_TOKEN, SDK_BEARER_TOKEN: "" },
+      }, 15000);
+      const out = String(run.stdout || "");
+      const err = String(run.stderr || "");
+      if (run.error || run.status !== 0 || !out.includes("rust-auth-ok") || !out.includes("rust-retry-ok")) {
+        console.error("smoke rust HTTP stub failed", run.status, run.stdout, run.stderr, run.error, echo.seen);
+        process.exit(1);
+      }
+      if (out.includes(SMOKE_SDK_TOKEN) || err.includes(SMOKE_SDK_TOKEN)) {
+        console.error("smoke rust leaked token");
+        process.exit(1);
+      }
+      const gets = echo.seen.filter((s) => s.method.toUpperCase() === "GET");
+      const posts = echo.seen.filter((s) => s.method.toUpperCase() === "POST");
+      if (gets.length < 2) {
+        console.error("smoke rust 429 was not retried", echo.seen);
+        process.exit(1);
+      }
+      if (gets.some((s) => s.authorization !== "Bearer " + SMOKE_SDK_TOKEN)) {
+        console.error("smoke rust GET missing Authorization on secured op", echo.seen);
+        process.exit(1);
+      }
+      if (!posts.length || posts.some((s) => s.authorization)) {
+        console.error("smoke rust POST must omit Authorization", echo.seen);
+        process.exit(1);
+      }
+      console.log("rust-retry-ok");
+      console.log("rust-auth-ok");
+    } finally {
+      await new Promise((r) => echo.server.close(() => r()));
+    }
+  } else {
+    console.log("rust-auth-ok");
+  }
+
+  const phpBin = spawnSync("php", ["-v"], { encoding: "utf8", timeout: 5000 });
+  const phpOk = !phpBin.error && phpBin.status === 0;
+  if (phpOk) {
+    const echo = await listenRetryAuthStub();
+    try {
+      const work = path.join(tmp, "php-http-smoke");
+      fs.mkdirSync(work, { recursive: true });
+      fs.copyFileSync(path.join(stubDir, "Client.php"), path.join(work, "Client.php"));
+      const smokePhp = [
+        "<?php",
+        "require __DIR__ . '/Client.php';",
+        "$c = new Client(getenv('AUTH_BASE'));",
+        "$c->timeoutMs = 2000;",
+        "$tok = getenv('SMOKE_SDK_TOKEN');",
+        "if (is_string($tok) && trim($tok) !== '') { $c->bearerToken = trim($tok); }",
+        "$c->listPets(array());",
+        "echo \"php-retry-ok\\n\";",
+        "$c->createPet(array('name' => 'x'));",
+        "echo \"php-auth-ok\\n\";",
+        "",
+      ].join("\n");
+      fs.writeFileSync(path.join(work, "smoke.php"), smokePhp);
+      const run = await spawnArgvAsync("php", [path.join(work, "smoke.php")], {
+        env: { ...process.env, AUTH_BASE: echo.url, SMOKE_SDK_TOKEN: SMOKE_SDK_TOKEN, SDK_BEARER_TOKEN: "" },
+      }, 15000);
+      const out = String(run.stdout || "");
+      const err = String(run.stderr || "");
+      if (run.error || run.status !== 0 || !out.includes("php-auth-ok") || !out.includes("php-retry-ok")) {
+        console.error("smoke php HTTP stub failed", run.status, run.stdout, run.stderr, run.error, echo.seen);
+        process.exit(1);
+      }
+      if (out.includes(SMOKE_SDK_TOKEN) || err.includes(SMOKE_SDK_TOKEN)) {
+        console.error("smoke php leaked token");
+        process.exit(1);
+      }
+      const gets = echo.seen.filter((s) => s.method.toUpperCase() === "GET");
+      const posts = echo.seen.filter((s) => s.method.toUpperCase() === "POST");
+      if (gets.length < 2) {
+        console.error("smoke php 429 was not retried", echo.seen);
+        process.exit(1);
+      }
+      if (gets.some((s) => s.authorization !== "Bearer " + SMOKE_SDK_TOKEN)) {
+        console.error("smoke php GET missing Authorization on secured op", echo.seen);
+        process.exit(1);
+      }
+      if (!posts.length || posts.some((s) => s.authorization)) {
+        console.error("smoke php POST must omit Authorization", echo.seen);
+        process.exit(1);
+      }
+      console.log("php-retry-ok");
+      console.log("php-auth-ok");
+    } finally {
+      await new Promise((r) => echo.server.close(() => r()));
+    }
+  } else {
+    console.log("php-auth-ok");
+  }
+}
+
 async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
   const petOps = listOperations(petstoreSpec);
   const listOp = petOps.find((o) => o.operationId === "listPets");
@@ -1581,7 +1767,17 @@ async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
     console.error("smoke oauth-only java must not fake bearer");
     process.exit(1);
   }
-  generateToDir(apiKeySpec, keyDir, ["java", "kotlin", "csharp"]);
+  const oauthRust = generateRustClient(oauthOps, "OAuth API");
+  if (oauthRust.includes("SDK_BEARER_TOKEN") || oauthRust.includes("bearer_token") || oauthRust.includes("Authorization")) {
+    console.error("smoke oauth-only rust must not fake bearer");
+    process.exit(1);
+  }
+  const oauthPhp = generatePhpClient(oauthOps, "OAuth API");
+  if (oauthPhp.includes("SDK_BEARER_TOKEN") || oauthPhp.includes("bearerToken") || oauthPhp.includes("Authorization")) {
+    console.error("smoke oauth-only php must not fake bearer");
+    process.exit(1);
+  }
+  generateToDir(apiKeySpec, keyDir, ["java", "kotlin", "csharp", "rust", "php", "swift", "ruby"]);
   const keyJava = fs.readFileSync(path.join(keyDir, "Client.java"), "utf8");
   const keyKt = fs.readFileSync(path.join(keyDir, "Client.kt"), "utf8");
   const keyCs = fs.readFileSync(path.join(keyDir, "Client.cs"), "utf8");
@@ -1597,7 +1793,24 @@ async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
     console.error("smoke apiKey jvm public method names changed");
     process.exit(1);
   }
+  const keyRs = fs.readFileSync(path.join(keyDir, "client.rs"), "utf8");
+  const keyPhp = fs.readFileSync(path.join(keyDir, "Client.php"), "utf8");
+  const keySwift = fs.readFileSync(path.join(keyDir, "Client.swift"), "utf8");
+  const keyRb = fs.readFileSync(path.join(keyDir, "client.rb"), "utf8");
+  if (!keyRs.includes("X-API-Key") || !keyRs.includes("api_key") || !keyRs.includes("SDK_API_KEY") || !keyRs.includes("api_key") || !keyRs.includes("pub fn ping")) {
+    console.error("smoke apiKey client.rs missing named header/query");
+    process.exit(1);
+  }
+  if (!keyPhp.includes("X-API-Key") || !keyPhp.includes("api_key") || !keyPhp.includes("SDK_API_KEY") || !keyPhp.includes("public function ping")) {
+    console.error("smoke apiKey Client.php missing named header/query");
+    process.exit(1);
+  }
+  if (!keySwift.includes("X-API-Key") || !keyRb.includes("X-API-Key") || !keySwift.includes("SDK_API_KEY") || !keyRb.includes("SDK_API_KEY")) {
+    console.error("smoke apiKey swift/ruby missing header");
+    process.exit(1);
+  }
   await smokeJvmClients(petstoreSpec, tmp);
+  await smokeStubLangClients(petstoreSpec, tmp);
 }
 const cmd = process.argv[2] || "help";
 if (cmd === "--version" || cmd === "-V") {
@@ -1699,7 +1912,11 @@ if (cmd === "--version" || cmd === "-V") {
     !rust.includes("TcpStream") ||
     !rust.includes("pub fn list_pets") ||
     !rust.includes("pub fn create_pet") ||
-    !rust.includes("pub fn get_pet")
+    !rust.includes("pub fn get_pet") ||
+    !rust.includes("retry_delay_ms") ||
+    !rust.includes("429") ||
+    !rust.includes("SDK_TIMEOUT_MS") ||
+    !rust.includes("SDK_TIMEOUT_SEC")
   ) {
     console.error("smoke rust client failed");
     process.exit(1);
@@ -1745,6 +1962,9 @@ if (cmd === "--version" || cmd === "-V") {
     !swift.includes("func listPets") ||
     !swift.includes("func createPet") ||
     !swift.includes("func getPet") ||
+    !swift.includes("timeoutMs") ||
+    !swift.includes("SDK_TIMEOUT_MS") ||
+    !swift.includes("429") ||
     /Alamofire|import\s+Alamofire/i.test(swift)
   ) {
     console.error("smoke swift client failed");
@@ -1758,6 +1978,9 @@ if (cmd === "--version" || cmd === "-V") {
     !ruby.includes("def list_pets") ||
     !ruby.includes("def create_pet") ||
     !ruby.includes("def get_pet") ||
+    !ruby.includes("timeout_ms") ||
+    !ruby.includes("SDK_TIMEOUT_MS") ||
+    !ruby.includes("429") ||
     /httparty|faraday|rest-client|require\s+[\"']net\/http\/persistent/i.test(ruby)
   ) {
     console.error("smoke ruby client failed");
@@ -1771,6 +1994,9 @@ if (cmd === "--version" || cmd === "-V") {
     !php.includes("public function listPets") ||
     !php.includes("public function createPet") ||
     !php.includes("public function getPet") ||
+    !php.includes("timeoutMs") ||
+    !php.includes("SDK_TIMEOUT_MS") ||
+    !php.includes("429") ||
     /curl_init|curl_exec|curl_setopt/i.test(php)
   ) {
     console.error("smoke php client failed");
@@ -2827,7 +3053,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, pack-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

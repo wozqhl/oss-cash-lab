@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Generated Rust / PHP / Swift / Ruby clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query). Stdlib only. Public method names unchanged. Rust stays TcpStream http:// (no TLS). Smoke prints rust-auth-ok, php-auth-ok.
 - Generated Java / Kotlin / C# clients add iterate* helpers for GET ops with page / pageSize / offset / limit / cursor / starting_after. Follows next / next_cursor / nextPageToken or increments page until empty/short. Cap 1000. Existing operation / MCP tool names unchanged. Not a Stainless pager. Smoke prints java-page-ok.
 - Generated Java / Kotlin / C# clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query). Stdlib only. Public method names unchanged.
 - Demo script: `scripts/demo.sh` generates the petstore SDK+MCP into `out/demo` and prints `client.ts`, `mcp-server.mjs`, `mcp.json`.

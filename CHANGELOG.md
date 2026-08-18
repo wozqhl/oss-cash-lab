@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated Rust / PHP / Swift / Ruby clients: per-attempt timeout + 429/5xx retry + per-op bearer/apiKey auth (stdlib; Rust http-only TcpStream). Smoke rust-auth-ok / php-auth-ok.
 - E chargeback-lite: `GET /v1/tenants.csv` exports in-memory tenant totals (`tenant,spend_usd,budget_usd,remaining_usd,denied_count`); JSON `GET /v1/tenants` kept.
 - E optional UTC-day budget period (`BUDGET_PERIOD=day` / `--budget-period day`; default off) so remaining / deny / would-exceed reset at UTC midnight.
 - OpenSSF Scorecard GitHub Actions workflow (`.github/workflows/scorecard.yml`) so public-repo supply-chain results can appear in code scanning.
@@ -22,6 +23,7 @@ Portfolio version source of truth: root [`VERSION`](./VERSION) (`make version`).
 
 ### Added
 
+- A generated Rust / PHP / Swift / Ruby clients: per-attempt timeout + 429/5xx retry + per-op bearer/apiKey auth (stdlib; Rust http-only TcpStream). Smoke rust-auth-ok / php-auth-ok.
 #### A · sdk-mcp-gen
 - OpenAPI 3.x → TypeScript + Python + Go + Java + Rust + C# + Kotlin + Swift + Ruby + PHP SDK stubs + MCP tool registry + stdio MCP server（JSON / built-in YAML subset）
 - `generate` with `--lang ts,python,go,java,rust,csharp,kotlin,swift,ruby,php` (default all ten); petstore fixtures; `scripts/wire-a-to-b.sh` loads tools into B
