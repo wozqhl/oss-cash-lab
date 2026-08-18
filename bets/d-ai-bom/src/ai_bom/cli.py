@@ -1322,6 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
             print("smoke failed evidence-pack", pack_err)
             return 1
         print("evidence-pack-ok")
+        print("evidence-zip-ok")
 
         sarif_doc = to_sarif(bom, tool_version=__version__)
         empty_sarif = to_sarif(
