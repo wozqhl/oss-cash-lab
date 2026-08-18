@@ -1521,6 +1521,7 @@ function listenIdentityEcho() {
       url: String(req.url || ""),
       userAgent: String(req.headers["user-agent"] || ""),
       requestId: String(req.headers["x-request-id"] || ""),
+      accept: String(req.headers["accept"] || ""),
     });
     res.writeHead(200, { "content-type": "application/json" });
     res.end("[]");
@@ -1547,8 +1548,8 @@ async function smokeClientIdentity(petstoreSpec, petClients, tmp) {
     ["go", petGo],
     ["java", petJava],
   ]) {
-    if (!blob.includes("sdk-mcp-gen/0.1.0") || !blob.includes("SDK_REQUEST_ID") || !blob.includes("SDK_IDEMPOTENCY_KEY") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id")) || (!blob.includes("Idempotency-Key") && !blob.includes("idempotency-key"))) {
-      console.error("smoke", label, "missing User-Agent / X-Request-Id / Idempotency-Key identity headers");
+    if (!blob.includes("sdk-mcp-gen/0.1.0") || !blob.includes("SDK_REQUEST_ID") || !blob.includes("SDK_IDEMPOTENCY_KEY") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id")) || (!blob.includes("Idempotency-Key") && !blob.includes("idempotency-key")) || (!blob.includes("Accept") && !blob.includes("accept"))) {
+      console.error("smoke", label, "missing User-Agent / X-Request-Id / Idempotency-Key / Accept identity headers");
       process.exit(1);
     }
   }
@@ -1571,13 +1572,14 @@ async function smokeClientIdentity(petstoreSpec, petClients, tmp) {
       "c.listPets({})",
       "print('ua-ok')",
       "print('request-id-ok')",
+      "print('accept-ok')",
       "",
     ].join("\n"));
     const httpRun = await spawnArgvAsync("python3", [httpPy], {
       cwd: idDir,
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ID_BASE: echo.url, SDK_REQUEST_ID: "" },
     }, 8000);
-    if (httpRun.error || httpRun.status !== 0 || !String(httpRun.stdout || "").includes("ua-ok") || !String(httpRun.stdout || "").includes("request-id-ok")) {
+    if (httpRun.error || httpRun.status !== 0 || !String(httpRun.stdout || "").includes("ua-ok") || !String(httpRun.stdout || "").includes("request-id-ok") || !String(httpRun.stdout || "").includes("accept-ok")) {
       console.error("smoke identity HTTP stub client failed", httpRun.status, httpRun.stdout, httpRun.stderr, httpRun.error);
       process.exit(1);
     }
@@ -1592,6 +1594,10 @@ async function smokeClientIdentity(petstoreSpec, petClients, tmp) {
     }
     if (!String(first.requestId || "").trim()) {
       console.error("smoke listPets missing X-Request-Id", echo.seen);
+      process.exit(1);
+    }
+    if (!String(first.accept || "").toLowerCase().includes("application/json")) {
+      console.error("smoke listPets missing Accept application/json", echo.seen);
       process.exit(1);
     }
     echo.seen.length = 0;
@@ -1632,6 +1638,7 @@ async function smokeClientIdentity(petstoreSpec, petClients, tmp) {
     }
     console.log("ua-ok");
     console.log("request-id-ok");
+    console.log("accept-ok");
   } finally {
     await new Promise((r) => echo.server.close(() => r()));
   }
@@ -2463,7 +2470,8 @@ if (cmd === "--version" || cmd === "-V") {
     !ts.includes("x-request-id") ||
     !ts.includes("SDK_REQUEST_ID") ||
     !ts.includes("SDK_IDEMPOTENCY_KEY") ||
-    !ts.includes("idempotency-key")
+    !ts.includes("idempotency-key") ||
+    !ts.includes("accept")
   ) {
     console.error("smoke ts client retry/timeout failed");
     process.exit(1);
@@ -2490,7 +2498,8 @@ if (cmd === "--version" || cmd === "-V") {
     !py.includes("X-Request-Id") ||
     !py.includes("SDK_REQUEST_ID") ||
     !py.includes("SDK_IDEMPOTENCY_KEY") ||
-    !py.includes("Idempotency-Key")
+    !py.includes("Idempotency-Key") ||
+    !py.includes('headers["Accept"] = "application/json"')
   ) {
     console.error("smoke python client failed");
     process.exit(1);
@@ -2511,7 +2520,8 @@ if (cmd === "--version" || cmd === "-V") {
     !go.includes("X-Request-Id") ||
     !go.includes("SDK_REQUEST_ID") ||
     !go.includes("SDK_IDEMPOTENCY_KEY") ||
-    !go.includes("Idempotency-Key")
+    !go.includes("Idempotency-Key") ||
+    !go.includes('Header.Set("Accept", "application/json")')
   ) {
     console.error("smoke go client failed");
     process.exit(1);
@@ -2532,7 +2542,8 @@ if (cmd === "--version" || cmd === "-V") {
     !java.includes("X-Request-Id") ||
     !java.includes("SDK_REQUEST_ID") ||
     !java.includes("SDK_IDEMPOTENCY_KEY") ||
-    !java.includes("Idempotency-Key")
+    !java.includes("Idempotency-Key") ||
+    !java.includes('setRequestProperty("Accept", "application/json")')
   ) {
     console.error("smoke java client failed");
     process.exit(1);
@@ -3689,7 +3700,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok, mcp-id-ok, mcp-retry-ok, mcp-timeout-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-retry-ok, mcp-timeout-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

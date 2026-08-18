@@ -1948,6 +1948,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): AbortController. Override via ClientOptions.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// Accept: application/json unless the caller already set Accept.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via ClientOptions.requestId or env SDK_REQUEST_ID (tests).`);
   lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via ClientOptions.idempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
@@ -1989,6 +1990,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  return false;`);
   lines.push(`}`);
   lines.push(`function applyIdentityHeaders(headers: { [k: string]: string }, userAgent: string, pinned: string, method: string, opIdem: string): void {`);
+  lines.push(`  if (!hasHeader(headers, "accept")) headers["accept"] = "application/json";`);
   lines.push(`  if (!hasHeader(headers, "user-agent") && userAgent) headers["user-agent"] = userAgent;`);
   lines.push(`  if (!hasHeader(headers, "x-request-id")) headers["x-request-id"] = pinned || newRequestId();`);
   lines.push(`  const m = String(method || "").toUpperCase();`);
@@ -2252,6 +2254,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`# Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`# Per-attempt request timeout (default 10s): urllib timeout. Override via Client(timeout=...) or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`# Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`# Accept: application/json unless the caller already set Accept.`);
   lines.push(`# X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client(request_id=...) or env SDK_REQUEST_ID (tests).`);
   lines.push(`# Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client(idempotency_key=...) or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
@@ -2297,6 +2300,8 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    return any(str(k).lower() == want for k in headers)`);
   lines.push(``);
   lines.push(`def _apply_identity(headers: dict, user_agent: str, pinned: str, method: str = "", op_idem: str = "") -> None:`);
+  lines.push(`    if not _has_header(headers, "Accept"):`);
+  lines.push(`        headers["Accept"] = "application/json"`);
   lines.push(`    if not _has_header(headers, "User-Agent") and user_agent:`);
   lines.push(`        headers["User-Agent"] = user_agent`);
   lines.push(`    if not _has_header(headers, "X-Request-Id"):`);
@@ -2685,6 +2690,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   }
   lines.push(``);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// Accept: application/json unless the caller already set Accept.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client.RequestID or env SDK_REQUEST_ID (tests).`);
   lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client.IdempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   lines.push(`func envRequestID() string {`);
@@ -2704,6 +2710,9 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`}`);
   lines.push(``);
   lines.push(`func applyIdentityHeaders(req *http.Request, userAgent, pinned, method, opIdem string) {`);
+  lines.push(`\tif req.Header.Get("Accept") == "" {`);
+  lines.push(`\t\treq.Header.Set("Accept", "application/json")`);
+  lines.push(`\t}`);
   lines.push(`\tif req.Header.Get("User-Agent") == "" && userAgent != "" {`);
   lines.push(`\t\treq.Header.Set("User-Agent", userAgent)`);
   lines.push(`\t}`);
@@ -3351,6 +3360,7 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via Client.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// Accept: application/json unless the caller already set Accept.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client.requestId or env SDK_REQUEST_ID (tests).`);
   lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client.idempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
@@ -3506,6 +3516,9 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                conn.setConnectTimeout(timeout);`);
   lines.push(`                conn.setReadTimeout(timeout);`);
   lines.push(`                conn.setUseCaches(false);`);
+  lines.push(`                if (conn.getRequestProperty("Accept") == null) {`);
+  lines.push(`                    conn.setRequestProperty("Accept", "application/json");`);
+  lines.push(`                }`);
   lines.push(`                if (conn.getRequestProperty("User-Agent") == null) {`);
   lines.push(`                    String ua = this.userAgent != null && this.userAgent.trim().length() > 0 ? this.userAgent.trim() : ${JSON.stringify(defaultUserAgent(opts))};`);
   lines.push(`                    conn.setRequestProperty("User-Agent", ua);`);
@@ -3759,6 +3772,7 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): connect + read/write. Override via Client.timeout_ms or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already present. X-Request-Id new per attempt; pin via request_id or env SDK_REQUEST_ID.`);
+  lines.push(`// Accept: application/json unless the caller already set Accept.`);
   lines.push(`// Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotency_key or env SDK_IDEMPOTENCY_KEY.`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
@@ -3929,6 +3943,9 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            let t = self.user_agent.trim();`);
   lines.push(`            if t.is_empty() { ${JSON.stringify(defaultUserAgent(opts))}.to_string() } else { t.to_string() }`);
   lines.push(`        };`);
+  lines.push(`        if !req.to_ascii_lowercase().contains("accept:") {`);
+  lines.push(`            req.push_str("Accept: application/json\\r\\n");`);
+  lines.push(`        }`);
   lines.push(`        if !req.to_ascii_lowercase().contains("user-agent:") {`);
   lines.push(`            req.push_str("User-Agent: ");`);
   lines.push(`            req.push_str(&ua);`);
@@ -4688,6 +4705,7 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): CancellationToken. Override via Client.TimeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// Accept: application/json unless the caller already set Accept.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt. Pin via Client.RequestId or env SDK_REQUEST_ID (tests).`);
   lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client.IdempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
@@ -4840,6 +4858,10 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
     lines.push(`                }`);
   }
   lines.push(`                HttpRequestMessage req = new HttpRequestMessage(new HttpMethod(method), reqUrl);`);
+  lines.push(`                if (!req.Headers.Contains("Accept"))`);
+  lines.push(`                {`);
+  lines.push(`                    req.Headers.TryAddWithoutValidation("Accept", "application/json");`);
+  lines.push(`                }`);
   lines.push(`                if (!req.Headers.Contains("User-Agent"))`);
   lines.push(`                {`);
   lines.push(`                    string ua = string.IsNullOrWhiteSpace(this.UserAgent) ? ${JSON.stringify(defaultUserAgent(opts))} : this.UserAgent.Trim();`);
@@ -5512,6 +5534,7 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
+  lines.push(`// Accept: application/json unless the caller already set Accept.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt. Pin via requestId or env SDK_REQUEST_ID (tests).`);
   lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via idempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
@@ -5678,6 +5701,9 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`                conn.connectTimeout = timeout`);
   lines.push(`                conn.readTimeout = timeout`);
   lines.push(`                conn.useCaches = false`);
+  lines.push(`                if (conn.getRequestProperty("Accept") == null) {`);
+  lines.push(`                    conn.setRequestProperty("Accept", "application/json")`);
+  lines.push(`                }`);
   lines.push(`                if (conn.getRequestProperty("User-Agent") == null) {`);
   lines.push(`                    val ua = if (this.userAgent != null && this.userAgent.trim().isNotEmpty()) this.userAgent.trim() else ${JSON.stringify(defaultUserAgent(opts))}`);
   lines.push(`                    conn.setRequestProperty("User-Agent", ua)`);
@@ -5933,6 +5959,7 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): URLRequest.timeoutInterval. Override via timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already set. X-Request-Id new per attempt; pin via requestId or env SDK_REQUEST_ID.`);
+  lines.push(`// Accept: application/json unless the caller already set Accept.`);
   lines.push(`// Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotencyKey or env SDK_IDEMPOTENCY_KEY.`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
@@ -6049,6 +6076,9 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                var req = URLRequest(url: url)`);
   lines.push(`                req.httpMethod = method`);
   lines.push(`                req.timeoutInterval = TimeInterval(Double(timeout) / 1000.0)`);
+  lines.push(`                if req.value(forHTTPHeaderField: "Accept") == nil {`);
+  lines.push(`                    req.setValue("application/json", forHTTPHeaderField: "Accept")`);
+  lines.push(`                }`);
   lines.push(`                if req.value(forHTTPHeaderField: "User-Agent") == nil {`);
   lines.push(`                    let ua = self.userAgent.trimmingCharacters(in: .whitespacesAndNewlines)`);
   lines.push(`                    req.setValue(ua.isEmpty ? ${JSON.stringify(defaultUserAgent(opts))} : ua, forHTTPHeaderField: "User-Agent")`);
@@ -6234,6 +6264,7 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`# Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`# Per-attempt request timeout (default 10s): open/read timeout. Override via timeout_ms or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`# Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already set. X-Request-Id new per attempt; pin via request_id or env SDK_REQUEST_ID.`);
+  lines.push(`# Accept: application/json unless the caller already set Accept.`);
   lines.push(`# Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotency_key or env SDK_IDEMPOTENCY_KEY.`);
   if (auth.any) {
     lines.push(`# Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
@@ -6378,6 +6409,9 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        }[method]`);
   lines.push(`        raise "unsupported HTTP method: " + method.to_s if klass.nil?`);
   lines.push(`        req = klass.new(uri.request_uri)`);
+  lines.push(`        if req["Accept"].to_s.empty?`);
+  lines.push(`          req["Accept"] = "application/json"`);
+  lines.push(`        end`);
   lines.push(`        if req["User-Agent"].to_s.empty?`);
   lines.push(`          ua = @user_agent.to_s.strip`);
   lines.push(`          req["User-Agent"] = ua.empty? ? ${JSON.stringify(defaultUserAgent(opts))} : ua`);
@@ -6511,6 +6545,7 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(" * Minimal HTTP client stub generated from OpenAPI (stdlib fopen / stream wrappers; curl-extension-free).");
   lines.push(" * Retry 429 / 5xx / network (Retry-After <30s). Per-attempt timeout default 10s (timeoutMs / SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC).");
   lines.push(" * Default User-Agent " + defaultUserAgent(opts) + " unless already set. X-Request-Id new per attempt; pin via requestId or env SDK_REQUEST_ID.");
+  lines.push(" * Accept: application/json unless the caller already set Accept.");
   lines.push(" * Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotencyKey or env SDK_IDEMPOTENCY_KEY.");
   if (auth.any) {
     lines.push(" * Auth: bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Per-op security; unsecured ops omit credentials. Values never logged.");
@@ -6686,6 +6721,9 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push("                }");
     lines.push("            }");
   }
+  lines.push("            if (stripos($headers, \"Accept:\") === false) {");
+  lines.push("                $headers .= \"Accept: application/json\\r\\n\";");
+  lines.push("            }");
   lines.push("            if (stripos($headers, \"User-Agent:\") === false) {");
   lines.push("                $ua = is_string($this->userAgent) && trim($this->userAgent) !== \"\" ? trim($this->userAgent) : " + JSON.stringify(defaultUserAgent(opts)) + ";");
   lines.push("                $headers .= \"User-Agent: \" . $ua . \"\\r\\n\";");
@@ -6859,7 +6897,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     ``,
     ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
     ...(auth.any ? [`Auth: constructor bearerToken / apiKey (or bearer_token / api_key / Client.BearerToken / APIKey) or env SDK_BEARER_TOKEN / SDK_API_KEY, attached per OpenAPI operation security (optional schemes when creds are set; ops without security omit credentials). MCP servers read MCP_BEARER_TOKEN / MCP_API_KEY (same SDK_* fallback). oauth2 / openIdConnect skipped (no fake tokens). Values never logged.`, ``] : []),
-    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY). Stdio MCP servers send the same headers on tools/call upstream HTTP, retry 429 / 5xx / network (max 2 retries; Idempotency-Key reused), and apply a per-attempt 10s timeout (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*).`,
+    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; Accept: application/json unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY). Stdio MCP servers send the same headers on tools/call upstream HTTP, retry 429 / 5xx / network (max 2 retries; Idempotency-Key reused), and apply a per-attempt 10s timeout (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*).`,
     ``,
     `Files:`,
     ...files,
