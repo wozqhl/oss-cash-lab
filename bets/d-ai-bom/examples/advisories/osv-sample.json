@@ -1,0 +1,28 @@
+[
+  {
+    "id": "OSV-2026-SAMPLE-OPENAI",
+    "summary": "Offline OSV sample for ai-bom convert-advisories. Not a real CVE.",
+    "affected": [
+      {
+        "package": {
+          "ecosystem": "PyPI",
+          "name": "openai",
+          "purl": "pkg:pypi/openai"
+        },
+        "ranges": [
+          {
+            "type": "ECOSYSTEM",
+            "events": [
+              {"introduced": "0"},
+              {"fixed": "9.9.9"}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "OSV-2026-SAMPLE-UNMAPPED",
+    "summary": "Unmappable sample: no package identity. Converter must skip."
+  }
+]

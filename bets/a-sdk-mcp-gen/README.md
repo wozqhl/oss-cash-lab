@@ -4,6 +4,8 @@
 
 Docs: [vs Stainless / Speakeasy / OpenAPI Generator](./docs/vs-stainless.md) · [PUBLISH.md](./PUBLISH.md) · [CHANGELOG](./CHANGELOG.md) · [ROADMAP](./ROADMAP.md)
 
+`npm pack` is the local proof the tarball is installable (smoke prints `pack-ok`); publish is still manual.
+
 ## Thesis / 立意
 
 Turn existing OpenAPI into TypeScript + Python + Go + Java + Rust + C# + Kotlin + Swift + Ruby + PHP SDK stubs + MCP tool registry + stdio MCP servers (Node + Python + Go).
@@ -53,7 +55,21 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] Generated TS / Python / Go clients retry 429 / 5xx / network throws (max 2 retries, ~100ms exponential backoff, honor `Retry-After` <30s; stdlib only)
 - [x] Generated TS / Python / Go clients add `iterate*` helpers for GET ops with `page` / `pageSize` / `offset` / `limit` / `cursor` / `starting_after` (follow `next` / `next_cursor` / `nextPageToken` or increment page until empty/short; cap 1000; existing method names unchanged; not a Stainless pager)
 - [x] Generated TS / Python / Go clients apply a per-attempt request timeout (default 10s; AbortController / urllib timeout / context; override via constructor or env `SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`; stdlib only)
-- [ ] Demo script in README
+- [x] Generated TS / Python / Go clients + stdio MCP servers send auth from OpenAPI securitySchemes per operation `security` (http bearer, apiKey header/query; env SDK_BEARER_TOKEN / SDK_API_KEY / MCP_*; optional attach-if-set; ops without security omit credentials; oauth2 / openIdConnect skipped)
+- [x] Generated Java / Kotlin / C# clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; timeoutMs / TimeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query; env SDK_*; unsecured ops omit credentials). Stdlib HttpURLConnection / HttpClient. Public method names unchanged.
+- [x] Generated Java / Kotlin / C# clients add `iterate*` helpers for GET ops with `page` / `pageSize` / `offset` / `limit` / `cursor` / `starting_after` (follow `next` / `next_cursor` / `nextPageToken` or increment page until empty/short; cap 1000; existing method names unchanged; not a Stainless pager)
+- [x] Demo script in README (`scripts/demo.sh`)
+
+## Demo
+
+Human-runnable petstore generate (no publish, no extra deps):
+
+```
+bash scripts/demo.sh
+# or: npm run demo
+```
+
+Writes `out/demo` from the petstore fixture, prints `client.ts`, `mcp-server.mjs`, and `mcp.json`, then exits 0. Override the output dir with env DEMO_OUT.
 
 ## Quick start
 
@@ -97,7 +113,7 @@ TypeScript note: generated `client.ts` uses Node 18+ `fetch` (injectable
 `fetchImpl`) and retries 429 / 5xx / network throws (max 2 retries, ~100ms
 exponential backoff, honor `Retry-After` when under 30s). Each attempt uses
 `AbortController` (default 10s; override `createClient({ timeoutMs })` or env
-`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Stdlib only. Public
+`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). When the spec has http bearer or apiKey (header/query), pass `bearerToken` / `apiKey` or env `SDK_BEARER_TOKEN` / `SDK_API_KEY` (attached only on operations that declare that scheme; on every retry; values never logged). oauth2 / openIdConnect skipped. Stdlib only. Public
 method names stay OpenAPI `operationId` (`listPets`, …). Pageable GET ops also
 get an `iterate*` async iterator (petstore `listPets` → `iterateListPets`) that
 follows a JSON next cursor (`next` / `next_cursor` / `nextPageToken`) or
@@ -107,7 +123,7 @@ Go note: generated `client.go` uses `package client` and one exported method per
 operation (`ListPets`, …). Same retry policy as the TypeScript client (429 / 5xx
 / network; max 2 retries; `Retry-After` <30s). Each attempt uses
 `context.WithTimeout` (default 10s; override `Client.Timeout` or env
-`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Pageable GET ops also get
+`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Same OpenAPI auth as TypeScript (`Client.BearerToken` / `APIKey` or env; values never logged). Pageable GET ops also get
 `Iterate*` which collects pages (`[]any`) with the same page/cursor policy as
 TypeScript. local-mvp runs `gofmt -e` / `go vet` when the Go toolchain is
 installed; otherwise it still requires a valid-looking `client.go`.
@@ -116,12 +132,12 @@ Python note: generated `client.py` is stdlib `urllib` only (no `requests`) and
 uses the same retry policy as TypeScript (429 / 5xx / network; max 2 retries;
 `Retry-After` <30s). Each attempt uses `urlopen(..., timeout=)` (default 10s;
 override `Client(timeout=...)` / `create_client(timeout=...)` or env
-`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Public method names stay OpenAPI `operationId`. Pageable
+`SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`). Same OpenAPI auth as TypeScript (`bearer_token` / `api_key` or env; values never logged). Public method names stay OpenAPI `operationId`. Pageable
 GET ops also get `iterate*` generators with the same page/cursor policy as
 TypeScript.
 
 Java note: generated `Client.java` uses `package client` and one public method per
-operation (`listPets`, …) via `java.net.HttpURLConnection` (stdlib only). local-mvp
+operation (`listPets`, …) via `java.net.HttpURLConnection` (stdlib only). Same retry (429 / 5xx / network; Retry-After <30s), per-attempt timeout (default 10s; `timeoutMs` / SDK_TIMEOUT_*), per-op bearer / apiKey auth, and `iterate*` page helpers (petstore `listPets` → `iterateListPets`; cap 1000) as TS/Python/Go. local-mvp
 runs `javac` when present; otherwise a brace/heuristic check still requires a
 valid-looking `Client.java`. `--lang ts` does not emit Java.
 
@@ -133,14 +149,14 @@ does not emit Rust. Alias: `--lang rs`.
 
 C# note: generated `Client.cs` uses classic `namespace Client` and one public
 PascalCase method per operation (`ListPets`, …) via `System.Net.Http.HttpClient`
-(stdlib only). local-mvp runs `dotnet build` or `csc` when present; otherwise a
+(stdlib only). Same retry / per-attempt timeout / per-op auth / `Iterate*` page helpers as Java (`TimeoutMs`, `BearerToken` / `APIKey`, env SDK_*). local-mvp runs `dotnet build` or `csc` when present; otherwise a
 brace/heuristic check still requires a valid-looking `Client.cs` (char literals
 stripped before strings, same care as Java). `--lang ts` does not emit C#.
 Aliases: `--lang cs` / `--lang c#`.
 
 Kotlin note: generated `Client.kt` uses `package client` and `class Client` with
 one `fun` per OpenAPI operation (`listPets`, …) via `java.net.HttpURLConnection`
-(JVM stdlib; okhttp-free, same HTTP stack as the Java client). local-mvp runs
+(JVM stdlib; okhttp-free, same HTTP stack as the Java client). Same retry / per-attempt timeout / per-op auth / `iterate*` page helpers as Java. local-mvp runs
 `kotlinc` when present; otherwise a brace/heuristic check still requires a
 valid-looking `Client.kt` (char literals stripped before strings, same care as
 Java). `--lang ts` does not emit Kotlin. Alias: `--lang kt`.
@@ -179,7 +195,7 @@ MCP_BASE_URL=http://localhost:8080 go run out/petstore/mcp_server.go
 # stdout: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"listPets",...},...]}}
 ```
 
-Runtime `MCP_BASE_URL` wins over the baked `--base-url` (or OpenAPI `servers[0].url`). Compatible with B gateway `upstream.type=stdio` (`command: node`, `args: [mcp-server.mjs]` or `command: python3`, `args: [mcp_server.py]` or `command: go`, `args: [run, mcp_server.go]`).
+Runtime `MCP_BASE_URL` wins over the baked `--base-url` (or OpenAPI `servers[0].url`). Bearer / apiKey specs also read `MCP_BEARER_TOKEN` / `MCP_API_KEY` (fallback `SDK_*`) on upstream HTTP; values never logged. Compatible with B gateway `upstream.type=stdio` (`command: node`, `args: [mcp-server.mjs]` or `command: python3`, `args: [mcp_server.py]` or `command: go`, `args: [run, mcp_server.go]`).
 
 Paste `mcp.json` into your **MCP servers config JSON** (Cursor / Claude Desktop / Claude Code). `args` are **relative** to the generate `--out` directory (`./mcp-server.mjs`). Server key is `--package-name` when set, otherwise the OpenAPI title slug. A second `…-py` entry uses `python3` + `./mcp_server.py`; `…-go` uses `go run ./mcp_server.go` when that file is generated. Default `env.MCP_BASE_URL` is `--base-url` or `http://127.0.0.1:8080`.
 
@@ -220,6 +236,8 @@ Compare a newly generated tree against a saved baseline. **Removed or renamed** 
 ```bash
 # save a baseline
 node src/cli.js generate examples/petstore.openapi.json --out out/petstore
+# leftover demo: scripts/demo.sh writes out/demo and prints client.ts, mcp-server.mjs, mcp.json
+
 # optional company module path: --package-name acme_pets  (alias --package; env SDK_PACKAGE_NAME)
 
 # after OpenAPI changes:
@@ -292,6 +310,8 @@ Every `generate` writes `checksums.sha256` in `--out` (GNU `sha256sum` style: `<
 
 ```bash
 node src/cli.js generate examples/petstore.openapi.json --out out/petstore
+# leftover demo: scripts/demo.sh writes out/demo and prints client.ts, mcp-server.mjs, mcp.json
+
 # optional company module path: --package-name acme_pets  (alias --package; env SDK_PACKAGE_NAME)
 node src/cli.js verify-checksums --out out/petstore   # exit 0 if match
 # tweak a file → exit 1; regenerate restores a matching manifest
@@ -318,6 +338,8 @@ These are **generated artifacts**: each generate **always overwrites** `LICENSE`
 
 ```bash
 node src/cli.js generate examples/petstore.openapi.json --out out/petstore
+# leftover demo: scripts/demo.sh writes out/demo and prints client.ts, mcp-server.mjs, mcp.json
+
 # LICENSE contains Apache; NOTICE names package client
 node src/cli.js generate examples/petstore.openapi.json --out out/nolic --no-license
 ```
@@ -328,6 +350,8 @@ Default `generate` writes a consumer `.gitignore` in `--out` so committing the S
 
 ```bash
 node src/cli.js generate examples/petstore.openapi.json --out out/petstore
+# leftover demo: scripts/demo.sh writes out/demo and prints client.ts, mcp-server.mjs, mcp.json
+
 # .gitignore contains node_modules
 node src/cli.js generate examples/petstore.openapi.json --out out/nogi --no-gitignore
 ```

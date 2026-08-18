@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/cli.js",
     "smoke": "node src/cli.js smoke",
+    "demo": "bash scripts/demo.sh",
     "local-mvp": "bash scripts/local-mvp.sh",
     "generate:petstore": "node src/cli.js generate examples/petstore.openapi.json --out out/petstore",
     "version": "node src/cli.js --version",

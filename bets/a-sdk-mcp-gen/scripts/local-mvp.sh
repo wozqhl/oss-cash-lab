@@ -396,6 +396,10 @@ grep -q 'public Object listPets' out/petstore/Client.java
 grep -q 'public Object createPet' out/petstore/Client.java
 grep -q 'public Object getPet' out/petstore/Client.java
 grep -q 'public Object deletePet' out/petstore/Client.java
+grep -q 'retryDelayMs' out/petstore/Client.java
+grep -q 'SDK_TIMEOUT_MS' out/petstore/Client.java
+grep -q 'bearerToken' out/petstore/Client.java
+grep -q 'iterateListPets' out/petstore/Client.java
 python3 - <<'JAVAPY'
 from pathlib import Path
 import re
@@ -494,6 +498,7 @@ grep -q 'namespace Client' out/petstore/Client.cs
 grep -q 'HttpClient' out/petstore/Client.cs
 grep -q 'public class Client' out/petstore/Client.cs
 grep -q 'public object ListPets' out/petstore/Client.cs
+grep -q 'IterateListPets' out/petstore/Client.cs
 grep -q 'public object CreatePet' out/petstore/Client.cs
 grep -q 'public object GetPet' out/petstore/Client.cs
 grep -q 'public object DeletePet' out/petstore/Client.cs
@@ -567,6 +572,7 @@ grep -q 'package client' out/petstore/Client.kt
 grep -q 'HttpURLConnection' out/petstore/Client.kt
 grep -q 'class Client' out/petstore/Client.kt
 grep -q 'fun listPets' out/petstore/Client.kt
+grep -q 'iterateListPets' out/petstore/Client.kt
 grep -q 'fun createPet' out/petstore/Client.kt
 grep -q 'fun getPet' out/petstore/Client.kt
 grep -q 'fun deletePet' out/petstore/Client.kt

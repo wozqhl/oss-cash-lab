@@ -67,6 +67,7 @@
 - [x] B: CORS (`cors.origins` `*` or list; default deny; OPTIONS 204/403 `cors_denied`; GET/POST ACAO; default expose Retry-After + X-Request-Id; local-mvp localhost:3000 vs evil.example)
 - [x] C: private suite import, baseline diff report, hosted runner design + local `serve` stub
 - [x] C: GitHub Check Run adapter skeleton (`report-check` local JSON + mock receiver; token post paid later)
+- [x] C DeepEval-shaped JSON adapter (`from-deepeval`; fixture-only; not full compatibility)
 - [x] C JUnit XML export (`run --format junit`; `GET /v1/runs/{id}/junit.xml` + `GET /v1/runs/junit.xml`; escaped XML; smoke fake pass+fail `&amp;`; local-mvp curl 200)
 - [x] C TAP13 export (`run --format tap`; `GET /v1/runs/{id}/tap.txt` alias `/tap` + `GET /v1/runs/tap.txt`; empty → `1..0`; `#` escaped; gate → `not ok`; smoke + local-mvp curl 200 + stack-demo empty aggregate)
 - [x] C Markdown run report (`run --format md`; `GET /v1/runs/{id}/report.md` alias `/md` + `GET /v1/runs/report.md`; `text/markdown`; empty → heading + no rows; `|` escaped; `$GITHUB_STEP_SUMMARY`; smoke + local-mvp curl 200 + stack-demo empty/OpenAPI)
@@ -185,6 +186,8 @@
 - [x] E GET /v1/config redacted runtime config (public like /v1/budgets; allowlist spanCap/spansMax, cors.origins, rateLimit.perMinute, pack, hasGlobalBudget, tenantBudgetCount, webhooks.hasUrl/hasSecret; never URL/secret/tokens/price table; OpenAPI `getConfig`; smoke + local-mvp + stack-demo)
 - [x] E `GET /v1/spans` recent span summaries (`{ok, count, spans:[{id, model, tenant, inputTokens, outputTokens, usd, ts}]}`; no prompts/secrets; cap 100 newest + `truncated`; `count` = full retained size; empty 200; OpenAPI `listSpans`; smoke + local-mvp + stack-demo)
 - [x] E `GET /v1/tenants` per-tenant spend rollup (`{ok, count, tenants:[{id, spanCount, usd}]}`; missing → `_`; optional `budgetUsd`; cap 100 + `truncated`; empty 200; OpenAPI `listTenants`; smoke + local-mvp + stack-demo)
+- [x] E `GET /v1/tenants.csv` chargeback-lite CSV (`tenant,spend_usd,budget_usd,remaining_usd,denied_count`; alias `?format=csv`; OpenAPI `getTenantsCsv`; smoke + local-mvp `export-ok`)
+- [x] E optional calendar-day spend window (`BUDGET_PERIOD=day` / `--budget-period day`; remaining/deny reset at UTC midnight; default off; smoke `period-ok`)
 - [x] Tenant cost attribution (span attr `tenant`; JSON `byTenant`; CSV `tenant` last; missing → `_`)
 - [x] Local report server (`serve --port 8792`, stdlib http; GET /health /ready / /report.json /v1/costs.csv /v1/costs.md /v1/costs.gha.txt /metrics; hosted dashboard = paid later)
 - [x] E `serve --watch` mtime poll reload (200ms; snapshot for / /report.json /v1/costs.csv /v1/costs.md /metrics /health; local-mvp isolated temp-copy prove)
@@ -230,6 +233,8 @@
 - [x] F `GET /v1/platforms` IM inventory (`{id,enabled,hasCallbackSecret}`; no secrets; CORS + X-Request-Id; smoke + local-mvp curl 200 + ids; stack-demo curl 200)
 - [x] F `GET /v1/config` redacted runtime config (`approvalTtlSec` / `rateLimit` / `cors.origins` / `approvalsMax` / `webhooks.hasUrl|hasSecret` / platforms; public GET, no admin token; never secrets; CORS + X-Request-Id; smoke + local-mvp curl 200 + OpenAPI; stack-demo curl 200)
 - [x] F `GET /v1/approvals?status=` (`pending`/`approved`/`rejected`/`expired`; CSV/MD/HTML share helper; unknown/empty → 200 empty; omit unfiltered; OpenAPI enum; smoke + local-mvp + stack-demo)
+- [x] F Dify / n8n sample approval forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant|app,title}` on approved/rejected; 1 retry; no secrets; example wiring, not a plugin; smoke `forward-ok`)
+- [x] F Dify / n8n sample approval forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant|app,title}` on approved/rejected; 1 retry; no secrets; example wiring, not a plugin; smoke `forward-ok`)
 
 
 **Exit:** E cost demo; F one ask/reply on intranet; portfolio kill/double/hold review.

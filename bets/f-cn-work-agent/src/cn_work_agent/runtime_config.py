@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from cn_work_agent.approvals import DEFAULT_APPROVALS_MAX
 from cn_work_agent.rate_limit import DEFAULT_RATE_LIMIT_PER_MINUTE
 from cn_work_agent.verify import list_platforms
+from cn_work_agent.forward import parse_forward_url
 from cn_work_agent.webhook import parse_webhook_secret, parse_webhook_url
 
 # JSON *keys* that must never appear (case-insensitive exact). hasCallbackSecret /
@@ -45,6 +46,10 @@ FORBIDDEN_RUNTIME_CONFIG_KEYS = (
     "APPROVAL_CALLBACK_SECRET",
     "APPROVAL_WEBHOOK_SECRET",
     "APPROVAL_WEBHOOK_URL",
+    "APPROVAL_FORWARD_URL",
+    "approval_forward_url",
+    "forwardUrl",
+    "forward_url",
 )
 
 FORBIDDEN_KEY_SET = {k.lower() for k in FORBIDDEN_RUNTIME_CONFIG_KEYS}
@@ -140,6 +145,7 @@ def summarize_runtime_config(
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
     approvals_max: int | None = None,
+    forward_url: str | None = None,
     config: Mapping[str, Any] | None = None,
     enabled: list[str] | None = None,
     env: Mapping[str, str] | None = None,
@@ -158,6 +164,7 @@ def summarize_runtime_config(
         cap_i = DEFAULT_APPROVALS_MAX
     url = parse_webhook_url(webhook_url) if webhook_url else None
     secret = parse_webhook_secret(webhook_secret) if webhook_secret else None
+    fwd = parse_forward_url(forward_url) if forward_url else None
     return {
         "ok": True,
         "approvalTtlSec": approval_ttl_seconds,
@@ -167,6 +174,7 @@ def summarize_runtime_config(
         "webhooks": {
             "hasUrl": bool(url),
             "hasSecret": bool(secret),
+            "hasForwardUrl": bool(fwd),
         },
         "platforms": list(plat.get("platforms") or []),
     }

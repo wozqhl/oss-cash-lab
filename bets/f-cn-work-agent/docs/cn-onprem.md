@@ -20,7 +20,7 @@
  内网业务系统
 ```
 
-信息化通常已经选定 Dify 或 n8n 做 Agent 编排。缺的是：**办公 IM 入口 + 可审计的人工审批**，并且数据不出内网。本服务只做这一层。Dify 继续编排；本服务不提供对话 UI、不托管模型、不替代工作流引擎。
+信息化通常已经选定 Dify 或 n8n 做 Agent 编排。缺的是：**办公 IM 入口 + 可审计的人工审批**，并且数据不出内网。本服务只做这一层。Dify 继续编排；本服务不提供对话 UI、不托管模型、不替代工作流引擎。 审批通过（也可驳回）后可选 `APPROVAL_FORWARD_URL` / `--forward-url` 向 Dify / n8n webhook 发一条 `{event,approval_id,status,tenant|app,title}`——**示例接线，不是 Dify 插件**。
 
 ## 三平台审批（本地可跑）
 
@@ -53,7 +53,7 @@ bash scripts/demo-wecom-approval.sh
 |----|---------------------|
 | 部署 | 单进程 `python3 -m cn_work_agent serve`，stdlib，无强制云依赖 |
 | 数据 | 审批 / 审计 JSONL 落本机 `data/`，不默认外发 |
-| 出站 | 可选审批决定 webhook；空则关闭。不主动连飞书 / 钉钉 / 企微开放平台 |
+| 出站 | 可选审批决定 webhook + 可选 Dify/n8n 示例 forward（`APPROVAL_FORWARD_URL`）；空则关闭。不主动连飞书 / 钉钉 / 企微开放平台 |
 | 配置 | `config.example.json` + `--config`；密钥优先环境变量 |
 | 容器 | Dockerfile 是占位（`python:3.12-alpine`，EXPOSE 8790）；镜像未发布 |
 

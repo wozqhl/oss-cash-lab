@@ -6,15 +6,17 @@ Bet-local. Portfolio root `ROADMAP.md` is separate and is not updated here.
 
 - Directory scan → internal AI-BOM + **CycloneDX 1.7** JSON/XML (ML-BOM fields the scanner already has) + SPDX 2.3 + **SPDX 3.0.1** JSON + SARIF 2.1.0.
 - License-policy CI gate: `--gate-licenses` / `--strict` + `policies/default.json`; pass/fail CRA fixtures.
-- Advisory-match CI gate: `--advisories` / `--gate-vulns` against a local fixture (`ADV-FIXTURE-*`). Article 14 inventory+match; not NVD.
+- Advisory-match CI gate: `--advisories` / `--gate-vulns` against a local fixture (recorded versionRange operators evaluated) (`ADV-FIXTURE-*`). Article 14 inventory+match; not NVD.
+- Offline OSV/GHSA to local fixture converter (`convert-advisories --from-osv`). No live NVD/OSV client.
 - CRA orientation in `docs/cra.md` (not a conformity claim). BSI “either format” is honest: CycloneDX 1.7 **or** SPDX 3.0.1.
+- Local evidence pack: `evidence-pack --dir DIR --out OUTDIR` (CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST with gate codes). Article 14 orientation, not a conformity claim.
+- Richer ML-BOM only when observed: sha256 of model files + on-disk model-card name/description/license URL. SPDX 3.0.1 `software_File` + package `contains` file when a real hashed file was scanned. No invented datasets, metrics, files, or hashes.
 
 ## Next (still OSS)
 
-- Richer ML-BOM only when the scan observes the field (hashes, declared model cards on disk). Do not invent datasets or metrics.
-- Richer SPDX 3 graph only when the scan observes it (files, hashes, AI profile). Today: compact document + packages/licenses.
+- Richer SPDX 3 graph only when the scan observes it (AI profile). Today: compact document + packages/licenses + observed hashes/files.
 - Keep the GitHub Actions consumer example (`ai-bom-sarif.yml`) as copy-paste, not a live gate on this repo.
-- Optional OSV / GitHub Advisory **export converter** into the local fixture schema (still offline; no live NVD client in smoke).
+- Keep converter offline: dump the feed you trust, then `convert-advisories`. No live NVD/OSV client in smoke.
 
 ## Paid later (not this tree)
 

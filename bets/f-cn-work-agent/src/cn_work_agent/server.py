@@ -44,6 +44,12 @@ from cn_work_agent.webhook import (
     resolve_webhook_url,
     should_notify,
 )
+from cn_work_agent.forward import (
+    notify_approval_forward,
+    notify_approval_forwards,
+    parse_forward_url,
+    resolve_forward_url,
+)
 from cn_work_agent.cors import (
     cors_response_headers,
     handle_preflight,
@@ -89,7 +95,7 @@ def _record_decided(server: Any, n: int) -> None:
 
 
 def _notify_approval(server: Any, rec: dict[str, Any] | None) -> None:
-    """Fire-and-forget approval-decision webhook; never raises."""
+    """Fire-and-forget approval-decision webhook + Dify/n8n forward; never raises."""
     if not rec:
         return
     url = getattr(server, "webhook_url", None)
@@ -99,6 +105,13 @@ def _notify_approval(server: Any, rec: dict[str, Any] | None) -> None:
         if m is not None:
             m.add_webhooks(1)
     notify_approval_decision(url, rec, secret=secret)
+    fwd = getattr(server, "forward_url", None)
+    cfg = getattr(server, "config", None)
+    notify_approval_forward(
+        fwd,
+        rec,
+        config=cfg if isinstance(cfg, dict) else None,
+    )
 
 
 def _notify_approvals(server: Any, records: list[dict[str, Any]] | None) -> None:
@@ -112,6 +125,13 @@ def _notify_approvals(server: Any, records: list[dict[str, Any]] | None) -> None
         if m is not None and n:
             m.add_webhooks(n)
     notify_approval_decisions(url, records, secret=secret)
+    fwd = getattr(server, "forward_url", None)
+    cfg = getattr(server, "config", None)
+    notify_approval_forwards(
+        fwd,
+        records,
+        config=cfg if isinstance(cfg, dict) else None,
+    )
 
 
 def _expire_due_and_notify(server: Any) -> None:
@@ -213,8 +233,9 @@ def apply_runtime_settings(
     webhook_url_cli: str | None = None,
     webhook_secret_cli: str | None = None,
     approvals_max_cli: Any = None,
+    forward_url_cli: str | None = None,
 ) -> dict[str, Any]:
-    """Reload CORS, TTL, webhook url/secret, rate limits, and approvals-max.
+    """Reload CORS, TTL, webhook url/secret, forward URL, rate limits, and approvals-max.
 
     Precedence (highest first): CLI flags when provided (including empty) ->
     env if already set (including empty) -> config file. Platforms / limiter
@@ -241,6 +262,10 @@ def apply_runtime_settings(
     secret = resolve_webhook_secret(webhook_secret_cli, config=merged)
     target.webhook_url = parse_webhook_url(url)
     target.webhook_secret = parse_webhook_secret(secret)
+    if forward_url_cli is None:
+        forward_url_cli = getattr(target, "forward_url_cli", None)
+    fwd = resolve_forward_url(forward_url_cli, config=merged)
+    target.forward_url = parse_forward_url(fwd)
     return {
         "approval_ttl_seconds": getattr(target, "approval_ttl_seconds", None),
         "approvals_max": getattr(target, "approvals_max", DEFAULT_APPROVALS_MAX),
@@ -248,6 +273,7 @@ def apply_runtime_settings(
         "cors": list(cors_origins or []),
         "webhook": bool(getattr(target, "webhook_url", None)),
         "hmac": bool(getattr(target, "webhook_secret", None)),
+        "forward": bool(getattr(target, "forward_url", None)),
     }
 
 
@@ -740,6 +766,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 webhook_url=getattr(self.server, "webhook_url", None),
                 webhook_secret=getattr(self.server, "webhook_secret", None),
                 approvals_max=getattr(self.server, "approvals_max", DEFAULT_APPROVALS_MAX),
+                forward_url=getattr(self.server, "forward_url", None),
                 config=config if isinstance(config, dict) else {},
                 enabled=self._platforms(),
             )
@@ -936,6 +963,8 @@ def serve(
     drain_ms: int | None = None,
     log_json: bool = False,
     approvals_max: Any = None,
+    forward_url: str | None = None,
+    forward_url_cli: str | None = None,
 ):
     plats = enabled_platforms(platforms)
     httpd = ThreadingHTTPServer((host, port), GatewayHandler)
@@ -963,11 +992,13 @@ def serve(
     httpd.cors = cors  # type: ignore[attr-defined]
     httpd.webhook_url = parse_webhook_url(webhook_url)  # type: ignore[attr-defined]
     httpd.webhook_secret = parse_webhook_secret(webhook_secret)  # type: ignore[attr-defined]
+    httpd.forward_url = parse_forward_url(forward_url)  # type: ignore[attr-defined]
     httpd.metrics = Metrics()  # type: ignore[attr-defined]
     httpd.config_path = str(Path(config_path).resolve()) if config_path else None  # type: ignore[attr-defined]
     httpd.cors_origins_cli = cors_origins_cli  # type: ignore[attr-defined]
     httpd.webhook_url_cli = webhook_url_cli  # type: ignore[attr-defined]
     httpd.webhook_secret_cli = webhook_secret_cli  # type: ignore[attr-defined]
+    httpd.forward_url_cli = forward_url_cli  # type: ignore[attr-defined]
     httpd.log_json = bool(log_json)  # type: ignore[attr-defined]
     stop = threading.Event()
     httpd.watch_stop = stop  # type: ignore[attr-defined]
@@ -1009,11 +1040,13 @@ def serve(
             webhook_url_cli=webhook_url_cli,
             webhook_secret_cli=webhook_secret_cli,
             approvals_max_cli=getattr(httpd, "approvals_max_cli", None),
+            forward_url_cli=forward_url_cli,
         )
 
     cors_note = ",".join(cors_origins) if cors_origins else "deny"
     hook_note = parse_webhook_url(webhook_url) or "off"
     hmac_note = "on" if parse_webhook_secret(webhook_secret) else "off"
+    fwd_note = parse_forward_url(forward_url) or "off"
     print(f"cn-work-agent listening on http://{host}:{port}")
     print(f"platforms={','.join(plats)}")
     print(f"rate_limit_per_minute={limits.get('_default')}")
@@ -1023,6 +1056,7 @@ def serve(
     print(f"cors={cors_note}")
     print(f"webhook={hook_note}")
     print(f"hmac={hmac_note}")
+    print(f"forward={fwd_note}")
     print(f"watch={'poll %dms' % WATCH_POLL_MS if watch else 'off'}")
     print("GET /health  GET /ready  GET /metrics  GET /openapi.json  GET /v1/platforms  GET /v1/config  GET /approvals  GET /v1/approvals.csv  GET /v1/approvals.md  GET /v1/approvals.html  GET /v1/approvals/{id}/card")
     print(f"audit={httpd.audit_path}")  # type: ignore[attr-defined]

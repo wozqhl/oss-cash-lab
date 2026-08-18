@@ -82,6 +82,31 @@ test -f out/junit-promptfoo-bad.xml
 grep -q '<failure' out/junit-promptfoo-bad.xml
 grep -q '&amp;' out/junit-promptfoo-bad.xml
 
+echo "==> deepeval adapter good fixture (expect PASS / exit 0 + junit + tap)"
+python3 -m agent_ci from-deepeval --in fixtures/deepeval/good.json --junit out/junit-deepeval-good.xml --tap out/deepeval-good.tap --md out/deepeval-good.md --fail-under 80
+test -f out/junit-deepeval-good.xml
+test -f out/deepeval-good.tap
+test -f out/deepeval-good.md
+grep -q 'failures="0"' out/junit-deepeval-good.xml
+grep -q '<testsuite' out/junit-deepeval-good.xml
+grep -q 'france-capital' out/junit-deepeval-good.xml
+grep -q 'TAP version 13' out/deepeval-good.tap
+grep -q 'ok ' out/deepeval-good.tap
+echo "deepeval-ok"
+
+echo "==> deepeval adapter bad fixture (expect FAIL / exit 1 + junit)"
+set +e
+python3 -m agent_ci from-deepeval --in fixtures/deepeval/bad.json --junit out/junit-deepeval-bad.xml --fail-under 80
+de_code=$?
+set -e
+if [ "$de_code" -eq 0 ]; then
+  echo "from-deepeval unexpectedly passed on bad fixture"
+  exit 1
+fi
+test -f out/junit-deepeval-bad.xml
+grep -q '<failure' out/junit-deepeval-bad.xml
+grep -q '&amp;' out/junit-deepeval-bad.xml
+
 echo "==> baseline diff against same suite (expect PASS)"
 python3 -m agent_ci run --suite fixtures/demo --diff-baseline out/baseline.json
 

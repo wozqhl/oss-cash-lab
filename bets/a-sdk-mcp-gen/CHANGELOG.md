@@ -8,6 +8,12 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Generated Java / Kotlin / C# clients add iterate* helpers for GET ops with page / pageSize / offset / limit / cursor / starting_after. Follows next / next_cursor / nextPageToken or increments page until empty/short. Cap 1000. Existing operation / MCP tool names unchanged. Not a Stainless pager. Smoke prints java-page-ok.
+- Generated Java / Kotlin / C# clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query). Stdlib only. Public method names unchanged.
+- Demo script: `scripts/demo.sh` generates the petstore SDK+MCP into `out/demo` and prints `client.ts`, `mcp-server.mjs`, `mcp.json`.
+- Generated TypeScript / Python / Go clients and stdio MCP servers send OpenAPI auth per operation `security` (http bearer, apiKey header/query; optional attach-if-set; unsecured ops omit credentials even when the client has a token). Constructor bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY (MCP also MCP_*). oauth2 / openIdConnect skipped. Values never logged. Smoke prints auth-ok, auth-op-ok.
+- Smoke runs `npm pack` in a temp dir (`pack-ok`); local proof the tarball lists `package/src/cli.js`. Publish still manual.
+
 - Generated TypeScript / Python / Go clients apply a per-attempt request timeout (default 10s; AbortController / urllib timeout / context.WithTimeout). Override via constructor option (`timeoutMs` / `timeout` / `Client.Timeout`) or env `SDK_TIMEOUT_MS` / `SDK_TIMEOUT_SEC`. Stdlib only. Public method / MCP tool names unchanged. Retry still applies per attempt.
 - Generated TypeScript / Python / Go clients add iterate* helpers for GET ops with page / pageSize / offset / limit / cursor / starting_after query params. Follows next / next_cursor / nextPageToken or increments page until empty/short. Cap 1000. Existing operation / MCP tool names unchanged. Not a Stainless pager.
 - Generated TypeScript / Python / Go clients retry 429, 5xx, and network throws (max 2 retries / 3 attempts, ~100ms exponential backoff, honor Retry-After when under 30s). Stdlib only. Public method / MCP tool names unchanged.

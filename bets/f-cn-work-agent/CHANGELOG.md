@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Dify / n8n **sample** approval forward: `APPROVAL_FORWARD_URL` / `--forward-url` POSTs `{event,approval_id,status,tenant|app,title}` after approved/rejected (fire-and-forget, 1 retry; no secrets). Example wiring, not a Dify plugin. Smoke stub prints `forward-ok`.
 - Local Feishu approval demo: `scripts/demo-feishu-approval.sh` (请假 + 用印).
   Starts isolated `serve`, mock-verifies `POST /webhook/feishu`, renders
   `GET /v1/approvals/{id}/card?platform=feishu`, approve/reject, prints

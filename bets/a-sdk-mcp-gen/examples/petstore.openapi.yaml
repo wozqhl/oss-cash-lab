@@ -7,6 +7,7 @@ paths:
     get:
       operationId: listPets
       summary: List all pets
+      security: [{ "bearerAuth": [] }, {}]
       parameters:
         - name: limit
           in: query
@@ -58,3 +59,10 @@ paths:
       responses:
         "204":
           description: deleted
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+

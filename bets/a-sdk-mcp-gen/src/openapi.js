@@ -71,6 +71,187 @@ function decorateSchema(schema) {
   return unwrapped;
 }
 
+
+/** Parse one OpenAPI security scheme. Supports http bearer + apiKey header/query.
+ * oauth2 / openIdConnect (and other types) are skipped — no fake tokens.
+ */
+export function parseSecurityScheme(name, scheme) {
+  if (!scheme || typeof scheme !== "object") return { skip: true, name, type: "unknown", reason: "invalid" };
+  const type = String(scheme.type || "").toLowerCase();
+  if (type === "http") {
+    const httpScheme = String(scheme.scheme || "").toLowerCase();
+    if (httpScheme === "bearer") {
+      return { scheme: { name, kind: "bearer" } };
+    }
+    return { skip: true, name, type: "http", reason: "unsupported http scheme: " + (httpScheme || "(empty)") };
+  }
+  if (type === "apikey") {
+    const inn = String(scheme.in || "header").toLowerCase();
+    const paramName = String(scheme.name || "").trim();
+    if (!paramName) return { skip: true, name, type: "apiKey", reason: "missing name" };
+    if (inn === "header" || inn === "query") {
+      return { scheme: { name, kind: "apiKey", in: inn, paramName } };
+    }
+    return { skip: true, name, type: "apiKey", reason: "unsupported in: " + inn };
+  }
+  if (type === "oauth2" || type === "openidconnect") {
+    return { skip: true, name, type, reason: "oauth2/openIdConnect skipped (no fake tokens)" };
+  }
+  return { skip: true, name, type: type || "unknown", reason: "unsupported" };
+}
+
+/** components.securitySchemes → supported (bearer / apiKey) + skipped (oauth2 / openIdConnect / …). */
+export function listSecuritySchemes(spec) {
+  const raw = spec?.components?.securitySchemes;
+  const supported = [];
+  const skipped = [];
+  if (!raw || typeof raw !== "object") return { supported, skipped };
+  for (const [name, node] of Object.entries(raw)) {
+    const parsed = parseSecurityScheme(name, resolveLocalRef(spec, node));
+    if (parsed.scheme) supported.push(parsed.scheme);
+    else skipped.push({ name: parsed.name || name, type: parsed.type, reason: parsed.reason });
+  }
+  return { supported, skipped };
+}
+
+function schemeKey(s) {
+  return String(s.kind || "") + "\\0" + String(s.in || "") + "\\0" + String(s.paramName || "") + "\\0" + String(s.name || "");
+}
+
+/** Resolve root or operation `security` against supported schemes. Empty / missing → []. */
+export function resolveOpSecurity(spec, opNode) {
+  const hasOp = opNode && typeof opNode === "object" && Object.prototype.hasOwnProperty.call(opNode, "security");
+  const reqs = hasOp ? opNode.security : spec?.security;
+  if (!Array.isArray(reqs)) return [];
+  const schemes = [];
+  const seen = new Set();
+  for (const req of reqs) {
+    if (!req || typeof req !== "object") continue;
+    for (const name of Object.keys(req)) {
+      const raw = spec?.components?.securitySchemes?.[name];
+      const parsed = parseSecurityScheme(name, resolveLocalRef(spec, raw));
+      if (!parsed.scheme) continue;
+      const key = schemeKey(parsed.scheme);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      schemes.push(parsed.scheme);
+    }
+  }
+  return schemes;
+}
+
+/** Unique supported schemes referenced by any operation (constructor / MCP env). */
+export function collectClientAuth(ops) {
+  const out = [];
+  const seen = new Set();
+  for (const op of ops || []) {
+    for (const s of op.security || []) {
+      if (!s || !s.kind) continue;
+      const key = schemeKey(s);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+function authFlags(ops) {
+  const schemes = collectClientAuth(ops);
+  return {
+    schemes,
+    hasBearer: schemes.some((s) => s.kind === "bearer"),
+    headerKeys: schemes.filter((s) => s.kind === "apiKey" && s.in === "header"),
+    queryKeys: schemes.filter((s) => s.kind === "apiKey" && s.in === "query"),
+    any: schemes.length > 0,
+  };
+}
+
+/** Per-operation security (empty / missing / only {} → no attach). */
+function opAuthFlags(op) {
+  const schemes = Array.isArray(op?.security) ? op.security.filter((s) => s && s.kind) : [];
+  return {
+    schemes,
+    hasBearer: schemes.some((s) => s.kind === "bearer"),
+    headerKeys: schemes.filter((s) => s.kind === "apiKey" && s.in === "header"),
+    queryKeys: schemes.filter((s) => s.kind === "apiKey" && s.in === "query"),
+    any: schemes.length > 0,
+  };
+}
+
+function compactToolSecurity(op) {
+  return (op?.security || []).filter((s) => s && s.kind).map((s) => {
+    if (s.kind === "bearer") return { kind: "bearer" };
+    return { kind: s.kind, in: s.in || "", paramName: s.paramName || "" };
+  });
+}
+
+function tsAuthSuffix(op, clientHasAuth) {
+  if (!clientHasAuth) return "";
+  const a = opAuthFlags(op);
+  if (!a.any) return "";
+  const parts = [];
+  if (a.hasBearer) parts.push("bearer: true");
+  if (a.headerKeys.length) parts.push("headers: " + JSON.stringify(a.headerKeys.map((s) => s.paramName)));
+  if (a.queryKeys.length) parts.push("query: " + JSON.stringify(a.queryKeys.map((s) => s.paramName)));
+  return ", { " + parts.join(", ") + " }";
+}
+
+function pyAuthSuffix(op, clientHasAuth) {
+  if (!clientHasAuth) return "";
+  const a = opAuthFlags(op);
+  if (!a.any) return "";
+  const parts = [];
+  if (a.hasBearer) parts.push('"bearer": True');
+  if (a.headerKeys.length) parts.push('"headers": ' + JSON.stringify(a.headerKeys.map((s) => s.paramName)));
+  if (a.queryKeys.length) parts.push('"query": ' + JSON.stringify(a.queryKeys.map((s) => s.paramName)));
+  return ", {" + parts.join(", ") + "}";
+}
+
+function goAuthSuffix(op, clientHasAuth) {
+  if (!clientHasAuth) return "";
+  const a = opAuthFlags(op);
+  if (!a.any) return ", nil";
+  const fields = [];
+  if (a.hasBearer) fields.push("Bearer: true");
+  if (a.headerKeys.length) {
+    fields.push("Headers: []string{" + a.headerKeys.map((s) => JSON.stringify(s.paramName)).join(", ") + "}");
+  }
+  if (a.queryKeys.length) {
+    fields.push("Query: []string{" + a.queryKeys.map((s) => JSON.stringify(s.paramName)).join(", ") + "}");
+  }
+  return ", &reqAuth{" + fields.join(", ") + "}";
+}
+
+
+function jvmAuthArgs(op, clientHasAuth) {
+  if (!clientHasAuth) return "";
+  const a = opAuthFlags(op);
+  if (!a.any) return ", false, null, null";
+  const bearer = a.hasBearer ? "true" : "false";
+  const headers = a.headerKeys.length
+    ? "new String[]{" + a.headerKeys.map((s) => JSON.stringify(s.paramName)).join(", ") + "}"
+    : "null";
+  const query = a.queryKeys.length
+    ? "new String[]{" + a.queryKeys.map((s) => JSON.stringify(s.paramName)).join(", ") + "}"
+    : "null";
+  return ", " + bearer + ", " + headers + ", " + query;
+}
+
+function csharpAuthArgs(op, clientHasAuth) {
+  if (!clientHasAuth) return "";
+  const a = opAuthFlags(op);
+  if (!a.any) return ", false, null, null";
+  const bearer = a.hasBearer ? "true" : "false";
+  const headers = a.headerKeys.length
+    ? "new string[]{" + a.headerKeys.map((s) => JSON.stringify(s.paramName)).join(", ") + "}"
+    : "null";
+  const query = a.queryKeys.length
+    ? "new string[]{" + a.queryKeys.map((s) => JSON.stringify(s.paramName)).join(", ") + "}"
+    : "null";
+  return ", " + bearer + ", " + headers + ", " + query;
+}
+
 export function listOperations(spec) {
   // OpenAPI 3.1 `webhooks` is ignored — only `paths` become SDK methods / MCP tools.
   const paths = spec?.paths || {};
@@ -120,6 +301,7 @@ export function listOperations(spec) {
             properties: props,
             ...(required.length ? { required } : {}),
           },
+          security: resolveOpSecurity(spec, op),
         });
       }
     }
@@ -215,6 +397,7 @@ export function buildMcpServerTools(ops) {
         pathParams,
         queryParams,
       },
+      security: compactToolSecurity(op),
     };
   });
 }
@@ -227,6 +410,7 @@ export function buildMcpServerTools(ops) {
  */
 export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   const tools = buildMcpServerTools(ops);
+  const auth = authFlags(ops);
   const safeTitle = String(title || "API").replace(/\*\//g, "");
   const lines = [];
   lines.push("#!/usr/bin/env node");
@@ -235,6 +419,9 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   lines.push(" * API: " + safeTitle);
   lines.push(" * Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call");
   lines.push(" * HTTP backend: env MCP_BASE_URL or baked --base-url");
+  if (auth.any) {
+    lines.push(" * Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.");
+  }
   lines.push(" * No extra deps (Node >= 18 fetch + readline). Compatible with B gateway stdio upstream.");
   lines.push(" */");
   lines.push('import readline from "node:readline";');
@@ -254,6 +441,35 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   lines.push('  return String(DEFAULT_BASE_URL || "").replace(/\\/$/, "");');
   lines.push("}");
   lines.push("");
+  if (auth.any) {
+    lines.push("function envAuth(mcpName, sdkName) {");
+    lines.push("  const a = process.env[mcpName];");
+    lines.push("  if (a && String(a).trim()) return String(a).trim();");
+    lines.push("  const b = process.env[sdkName];");
+    lines.push("  if (b && String(b).trim()) return String(b).trim();");
+    lines.push('  return "";');
+    lines.push("}");
+    lines.push("");
+    lines.push("function applyAuth(headers, url, security) {");
+    lines.push("  const schemes = Array.isArray(security) ? security : [];");
+    if (auth.hasBearer) {
+      lines.push('  const bearer = envAuth("MCP_BEARER_TOKEN", "SDK_BEARER_TOKEN");');
+      lines.push('  if (bearer && schemes.some((s) => s && s.kind === "bearer")) headers["authorization"] = "Bearer " + bearer;');
+    }
+    if (auth.headerKeys.length || auth.queryKeys.length) {
+      lines.push('  const apiKey = envAuth("MCP_API_KEY", "SDK_API_KEY");');
+      lines.push("  if (apiKey) {");
+      lines.push("    for (const s of schemes) {");
+      lines.push('      if (!s || s.kind !== "apiKey" || !s.paramName) continue;');
+      lines.push('      if (s.in === "header") headers[s.paramName] = apiKey;');
+      lines.push('      if (s.in === "query") url += (url.includes("?") ? "&" : "?") + encodeURIComponent(s.paramName) + "=" + encodeURIComponent(apiKey);');
+      lines.push("    }");
+      lines.push("  }");
+    }
+    lines.push("  return url;");
+    lines.push("}");
+    lines.push("");
+  }
   lines.push("function applyPath(pathTpl, args) {");
   lines.push("  const used = new Set();");
   lines.push("  const path = String(pathTpl).replace(/\\{([^}]+)\\}/g, (_, k) => {");
@@ -285,7 +501,14 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   lines.push("    const qs = q.toString();");
   lines.push('    if (qs) url += "?" + qs;');
   lines.push("  }");
-  lines.push("  const headers = {};");
+  if (auth.any) {
+    lines.push("  const headers = {};");
+    lines.push("  let urlWithAuth = url;");
+    lines.push("  urlWithAuth = applyAuth(headers, url, tool.security);");
+    lines.push("  url = urlWithAuth;");
+  } else {
+    lines.push("  const headers = {};");
+  }
   lines.push("  let body;");
   lines.push("  if (isBodyMethod) {");
   lines.push("    const payload = {};");
@@ -392,6 +615,51 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
   return lines.join("\n");
 }
 
+
+function emitPyMcpAuth(auth) {
+  const lines = [];
+  lines.push("def _env_auth(mcp_name, sdk_name):");
+  lines.push("    raw = os.environ.get(mcp_name)");
+  lines.push("    if raw and str(raw).strip():");
+  lines.push("        return str(raw).strip()");
+  lines.push("    raw = os.environ.get(sdk_name)");
+  lines.push("    if raw and str(raw).strip():");
+  lines.push("        return str(raw).strip()");
+  lines.push("    return \"\"");
+  lines.push("");
+  lines.push("");
+  lines.push("def apply_auth(headers, url, security=None):");
+  if (!auth.any) {
+    lines.push("    return url");
+    lines.push("");
+    lines.push("");
+    return lines.join("\n");
+  }
+  lines.push("    schemes = security if isinstance(security, list) else []");
+  if (auth.hasBearer) {
+    lines.push("    bearer = _env_auth(\"MCP_BEARER_TOKEN\", \"SDK_BEARER_TOKEN\")");
+    lines.push("    if bearer and any(isinstance(s, dict) and s.get(\"kind\") == \"bearer\" for s in schemes):");
+    lines.push("        headers[\"Authorization\"] = \"Bearer \" + bearer");
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push("    api_key = _env_auth(\"MCP_API_KEY\", \"SDK_API_KEY\")");
+    lines.push("    if api_key:");
+    lines.push("        for s in schemes:");
+    lines.push("            if not isinstance(s, dict) or s.get(\"kind\") != \"apiKey\":");
+    lines.push("                continue");
+    lines.push("            name = s.get(\"paramName\") or \"\"");
+    lines.push("            inn = s.get(\"in\") or \"\"");
+    lines.push("            if inn == \"header\" and name:");
+    lines.push("                headers[name] = api_key");
+    lines.push("            if inn == \"query\" and name:");
+    lines.push("                url = url + (\"&\" if \"?\" in url else \"?\") + urllib.parse.quote(name, safe=\"\") + \"=\" + urllib.parse.quote(api_key, safe=\"\")");
+  }
+  lines.push("    return url");
+  lines.push("");
+  lines.push("");
+  return lines.join("\n");
+}
+
 /**
  * Stdio MCP server (Python 3, stdlib only). Same JSON-RPC surface as generateMcpServer:
  * initialize, tools/list, tools/call — newline frames on stdin/stdout.
@@ -399,6 +667,8 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "" } = {}) {
  */
 export function generateMcpServerPy(ops, title = "API", { baseUrl = "" } = {}) {
   const tools = buildMcpServerTools(ops);
+  const auth = authFlags(ops);
+  const pyAuthFns = emitPyMcpAuth(auth);
   const safeTitle = String(title || "API")
     .replace(/\r?\n/g, " ")
     .replace(/#/g, "")
@@ -410,6 +680,7 @@ export function generateMcpServerPy(ops, title = "API", { baseUrl = "" } = {}) {
 # API: ${safeTitle}
 # Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 # HTTP backend: env MCP_BASE_URL or baked --base-url
+# Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 # Stdlib only (urllib). Compatible with B gateway stdio upstream.
 
 from __future__ import annotations
@@ -446,7 +717,7 @@ def base_url():
     return str(DEFAULT_BASE_URL or "").rstrip("/")
 
 
-def apply_path(path_tpl, args):
+${pyAuthFns}def apply_path(path_tpl, args):
     used = set()
 
     def _sub(m):
@@ -482,6 +753,7 @@ def invoke_http(tool, args):
             url += "?" + urllib.parse.urlencode(q)
     data = None
     headers = {}
+    url = apply_auth(headers, url, (tool or {}).get("security"))
     if is_body_method:
         payload = {}
         for k, v in a.items():
@@ -595,6 +867,64 @@ if __name__ == "__main__":
 `;
 }
 
+
+function emitGoMcpAuth(auth) {
+  const lines = [];
+  lines.push("func envAuth(mcpName, sdkName string) string {");
+  lines.push("\tv := strings.TrimSpace(os.Getenv(mcpName))");
+  lines.push("\tif v != \"\" {");
+  lines.push("\t\treturn v");
+  lines.push("\t}");
+  lines.push("\treturn strings.TrimSpace(os.Getenv(sdkName))");
+  lines.push("}");
+  lines.push("");
+  lines.push("func applyAuth(req *http.Request, urlStr string, security []mcpAuthScheme) string {");
+  if (!auth.any) {
+    lines.push("\treturn urlStr");
+    lines.push("}");
+    lines.push("");
+    return lines.join("\n");
+  }
+  if (auth.hasBearer) {
+    lines.push("\tuseBearer := false");
+    lines.push("\tfor _, s := range security {");
+    lines.push("\t\tif s.Kind == \"bearer\" {");
+    lines.push("\t\t\tuseBearer = true");
+    lines.push("\t\t\tbreak");
+    lines.push("\t\t}");
+    lines.push("\t}");
+    lines.push("\tif useBearer {");
+    lines.push("\t\tif bearer := envAuth(\"MCP_BEARER_TOKEN\", \"SDK_BEARER_TOKEN\"); bearer != \"\" && req != nil {");
+    lines.push("\t\t\treq.Header.Set(\"Authorization\", \"Bearer \"+bearer)");
+    lines.push("\t\t}");
+    lines.push("\t}");
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push("\tkey := envAuth(\"MCP_API_KEY\", \"SDK_API_KEY\")");
+    lines.push("\tif key != \"\" {");
+    lines.push("\t\tfor _, s := range security {");
+    lines.push("\t\t\tif s.Kind != \"apiKey\" || s.ParamName == \"\" {");
+    lines.push("\t\t\t\tcontinue");
+    lines.push("\t\t\t}");
+    lines.push("\t\t\tif s.In == \"header\" && req != nil {");
+    lines.push("\t\t\t\treq.Header.Set(s.ParamName, key)");
+    lines.push("\t\t\t}");
+    lines.push("\t\t\tif s.In == \"query\" {");
+    lines.push("\t\t\t\tsep := \"?\"");
+    lines.push("\t\t\t\tif strings.Contains(urlStr, \"?\") {");
+    lines.push("\t\t\t\t\tsep = \"&\"");
+    lines.push("\t\t\t\t}");
+    lines.push("\t\t\t\turlStr = urlStr + sep + url.QueryEscape(s.ParamName) + \"=\" + url.QueryEscape(key)");
+    lines.push("\t\t\t}");
+    lines.push("\t\t}");
+    lines.push("\t}");
+  }
+  lines.push("\treturn urlStr");
+  lines.push("}");
+  lines.push("");
+  return lines.join("\n");
+}
+
 /**
  * Stdio MCP server (Go, stdlib only). Same JSON-RPC surface as generateMcpServer:
  * initialize, tools/list, tools/call — newline frames on stdin/stdout.
@@ -603,6 +933,8 @@ if __name__ == "__main__":
  */
 export function generateMcpServerGo(ops, title = "API", { baseUrl = "" } = {}) {
   const tools = buildMcpServerTools(ops);
+  const auth = authFlags(ops);
+  const goAuthFns = emitGoMcpAuth(auth);
   const safeTitle = String(title || "API")
     .replace(/\r?\n/g, " ")
     .replace(/\*\//g, "* /");
@@ -613,6 +945,7 @@ export function generateMcpServerGo(ops, title = "API", { baseUrl = "" } = {}) {
 // API: ${safeTitle}
 // Stdio MCP server (JSON-RPC 2.0, newline-delimited): initialize, tools/list, tools/call
 // HTTP backend: env MCP_BASE_URL or baked --base-url
+// Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 // Stdlib only (net/http). Compatible with B gateway stdio upstream.
 // Run: go run mcp_server.go   (Go 1.21+; no extra modules)
 package main
@@ -642,11 +975,18 @@ type toolHTTP struct {
 	QueryParams []string \`json:"queryParams"\`
 }
 
+type mcpAuthScheme struct {
+	Kind      string \`json:"kind"\`
+	In        string \`json:"in,omitempty"\`
+	ParamName string \`json:"paramName,omitempty"\`
+}
+
 type mcpTool struct {
-	Name        string         \`json:"name"\`
-	Description string         \`json:"description"\`
-	InputSchema map[string]any \`json:"inputSchema"\`
-	HTTP        toolHTTP       \`json:"http"\`
+	Name        string          \`json:"name"\`
+	Description string          \`json:"description"\`
+	InputSchema map[string]any  \`json:"inputSchema"\`
+	HTTP        toolHTTP        \`json:"http"\`
+	Security    []mcpAuthScheme \`json:"security"\`
 }
 
 var tools []mcpTool
@@ -677,6 +1017,7 @@ func baseURL() string {
 	return strings.TrimRight(defaultBaseURL, "/")
 }
 
+${goAuthFns}
 func applyPath(pathTpl string, args map[string]any) (string, map[string]struct{}) {
 	used := map[string]struct{}{}
 	var b strings.Builder
@@ -757,6 +1098,7 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 		}
 		body = bytes.NewReader(raw)
 	}
+	urlStr = applyAuth(nil, urlStr, tool.Security)
 	req, err := http.NewRequest(method, urlStr, body)
 	if err != nil {
 		return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
@@ -764,6 +1106,7 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 	if isBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	_ = applyAuth(req, urlStr, tool.Security)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
@@ -1182,14 +1525,22 @@ function emitTsIterate(lines, op, info, iterName) {
 export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const pageable = pageableOps(ops);
+  const auth = authFlags(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`// API: ${title}`);
   lines.push(`// package: ${pkg.ident}`);
   lines.push(`export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };`);
-  lines.push(`export interface ClientOptions { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number }`);
+  const optFields = ["baseUrl?: string", "fetchImpl?: typeof fetch", "timeoutMs?: number"];
+  if (auth.hasBearer) optFields.push("bearerToken?: string");
+  if (auth.headerKeys.length || auth.queryKeys.length) optFields.push("apiKey?: string");
+  lines.push(`export interface ClientOptions { ${optFields.join("; ")} }`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): AbortController. Override via ClientOptions.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  if (auth.any) {
+    lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
+    lines.push(`// Constructor bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt (survives retry). Ops without security omit credentials. Values never logged.`);
+  }
   lines.push(`function sleep(ms: number): Promise<void> {`);
   lines.push(`  return new Promise((r) => setTimeout(r, ms));`);
   lines.push(`}`);
@@ -1202,6 +1553,14 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  if (Number.isFinite(sec) && sec > 0) return Math.floor(sec * 1000);`);
   lines.push(`  return 10000;`);
   lines.push(`}`);
+  if (auth.any) {
+    lines.push(`function envAuthString(name: string): string {`);
+    lines.push(`  const g = globalThis as { process?: { env?: { [k: string]: string | undefined } } };`);
+    lines.push(`  const env = (g.process && g.process.env) ? g.process.env : {};`);
+    lines.push(`  const v = env[name];`);
+    lines.push(`  return v && String(v).trim() ? String(v).trim() : "";`);
+    lines.push(`}`);
+  }
   lines.push(`function retryDelayMs(res: { headers: { get(name: string): string | null } }, attempt: number): number {`);
   lines.push(`  const raw = res.headers.get("retry-after");`);
   lines.push(`  if (raw) {`);
@@ -1219,20 +1578,57 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  const baseUrl = (opts.baseUrl || "").replace(/\\/$/, "");`);
   lines.push(`  const f = opts.fetchImpl || fetch;`);
   lines.push(`  const timeoutMs = opts.timeoutMs != null && Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : envTimeoutMs();`);
-  lines.push(`  async function request(method: string, path: string, body?: unknown) {`);
+  if (auth.hasBearer) {
+    lines.push(`  const bearerToken = (opts.bearerToken != null && String(opts.bearerToken).trim()) ? String(opts.bearerToken).trim() : envAuthString("SDK_BEARER_TOKEN");`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`  const apiKey = (opts.apiKey != null && String(opts.apiKey).trim()) ? String(opts.apiKey).trim() : envAuthString("SDK_API_KEY");`);
+  }
+  const reqSig = auth.any
+    ? `  async function request(method: string, path: string, body?: unknown, auth?: { bearer?: boolean; headers?: string[]; query?: string[] }) {`
+    : `  async function request(method: string, path: string, body?: unknown) {`;
+  lines.push(reqSig);
   lines.push(`    const maxAttempts = 3;`);
   lines.push(`    for (let attempt = 0; attempt < maxAttempts; attempt++) {`);
   lines.push(`      const ac = new AbortController();`);
   lines.push(`      const timer = setTimeout(() => ac.abort(), timeoutMs);`);
-  lines.push(`      const init = {`);
-  lines.push(`        method,`);
-  lines.push(`        headers: body ? { "content-type": "application/json" } : undefined,`);
-  lines.push(`        body: body ? JSON.stringify(body) : undefined,`);
-  lines.push(`        signal: ac.signal,`);
-  lines.push(`      };`);
-  lines.push(`      let res;`);
-  lines.push(`      try {`);
-  lines.push(`        res = await f(baseUrl + path, init);`);
+  if (auth.any) {
+    lines.push(`      const headers: { [k: string]: string } = {};`);
+    lines.push(`      if (body) headers["content-type"] = "application/json";`);
+    if (auth.hasBearer) {
+      lines.push(`      if (auth && auth.bearer && bearerToken) headers["authorization"] = "Bearer " + bearerToken;`);
+    }
+    if (auth.headerKeys.length) {
+      lines.push(`      if (auth && auth.headers && apiKey) {`);
+      lines.push(`        for (const h of auth.headers) headers[h] = apiKey;`);
+      lines.push(`      }`);
+    }
+    lines.push(`      let url = baseUrl + path;`);
+    if (auth.queryKeys.length) {
+      lines.push(`      if (auth && auth.query && apiKey) {`);
+      lines.push(`        for (const q of auth.query) url += (url.includes("?") ? "&" : "?") + encodeURIComponent(q) + "=" + encodeURIComponent(apiKey);`);
+      lines.push(`      }`);
+    }
+    lines.push(`      const init = {`);
+    lines.push(`        method,`);
+    lines.push(`        headers: Object.keys(headers).length ? headers : undefined,`);
+    lines.push(`        body: body ? JSON.stringify(body) : undefined,`);
+    lines.push(`        signal: ac.signal,`);
+    lines.push(`      };`);
+    lines.push(`      let res;`);
+    lines.push(`      try {`);
+    lines.push(`        res = await f(url, init);`);
+  } else {
+    lines.push(`      const init = {`);
+    lines.push(`        method,`);
+    lines.push(`        headers: body ? { "content-type": "application/json" } : undefined,`);
+    lines.push(`        body: body ? JSON.stringify(body) : undefined,`);
+    lines.push(`        signal: ac.signal,`);
+    lines.push(`      };`);
+    lines.push(`      let res;`);
+    lines.push(`      try {`);
+    lines.push(`        res = await f(baseUrl + path, init);`);
+  }
   lines.push(`      } catch (err) {`);
   lines.push(`        if (attempt >= maxAttempts - 1) throw err;`);
   lines.push(`        await sleep(100 * Math.pow(2, attempt));`);
@@ -1265,9 +1661,10 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`      if (v !== undefined && v !== null) q.set(k, String(v));`);
       lines.push(`    }`);
       lines.push(`    const qs = q.toString();`);
-      lines.push(`    return request(${JSON.stringify(op.method)}, path + (qs ? "?" + qs : ""));`);
+      const authSuf = tsAuthSuffix(op, auth.any);
+      lines.push(`    return request(${JSON.stringify(op.method)}, path + (qs ? "?" + qs : "")` + (authSuf ? ", undefined" + authSuf : "") + `);`);
     } else {
-      lines.push(`    return request(${JSON.stringify(op.method)}, path, args);`);
+      lines.push(`    return request(${JSON.stringify(op.method)}, path, args` + tsAuthSuffix(op, auth.any) + `);`);
     }
     lines.push(`  }`);
     const hit = pageable.find((p) => p.op === op);
@@ -1383,6 +1780,7 @@ function emitPyIterate(lines, op, info, iterName) {
 export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const pageable = pageableOps(ops);
+  const auth = authFlags(ops);
   const lines = [];
   lines.push(`# Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`# API: ${title}`);
@@ -1402,6 +1800,10 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(``);
   lines.push(`# Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`# Per-attempt request timeout (default 10s): urllib timeout. Override via Client(timeout=...) or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  if (auth.any) {
+    lines.push(`# Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
+    lines.push(`# Constructor bearer_token / api_key or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
+  }
   lines.push(`def _env_timeout_s() -> float:`);
   lines.push(`    raw_ms = os.environ.get("SDK_TIMEOUT_MS")`);
   lines.push(`    if raw_ms:`);
@@ -1438,11 +1840,22 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                pass`);
   lines.push(`    return 0.1 * (2 ** attempt)`);
   lines.push(``);
+  if (auth.any) {
+    lines.push(`def _env_auth(name: str) -> str:`);
+    lines.push(`    raw = os.environ.get(name)`);
+    lines.push(`    if raw and str(raw).strip():`);
+    lines.push(`        return str(raw).strip()`);
+    lines.push(`    return ""`);
+    lines.push(``);
+  }
   if (pageable.length) emitPyPageRuntime(lines);
   lines.push(`class Client:`);
   lines.push(`    """Sync HTTP client stub generated from OpenAPI."""`);
   lines.push(``);
-  lines.push(`    def __init__(self, base_url: str = "", opener: Any = None, timeout: Any = None) -> None:`);
+  const initArgs = ["self", "base_url: str = \"\"", "opener: Any = None", "timeout: Any = None"];
+  if (auth.hasBearer) initArgs.push("bearer_token: Any = None");
+  if (auth.headerKeys.length || auth.queryKeys.length) initArgs.push("api_key: Any = None");
+  lines.push(`    def __init__(${initArgs.join(", ")}) -> None:`);
   lines.push(`        self.base_url = (base_url or "").rstrip("/")`);
   lines.push(`        self._opener = opener`);
   lines.push(`        if timeout is not None:`);
@@ -1453,8 +1866,20 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                self._timeout = _env_timeout_s()`);
   lines.push(`        else:`);
   lines.push(`            self._timeout = _env_timeout_s()`);
+  if (auth.hasBearer) {
+    lines.push(`        if bearer_token is not None and str(bearer_token).strip():`);
+    lines.push(`            self._bearer_token = str(bearer_token).strip()`);
+    lines.push(`        else:`);
+    lines.push(`            self._bearer_token = _env_auth("SDK_BEARER_TOKEN")`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`        if api_key is not None and str(api_key).strip():`);
+    lines.push(`            self._api_key = str(api_key).strip()`);
+    lines.push(`        else:`);
+    lines.push(`            self._api_key = _env_auth("SDK_API_KEY")`);
+  }
   lines.push(``);
-  lines.push(`    def _request(self, method: str, path: str, body: Any = None) -> Any:`);
+  lines.push(auth.any ? `    def _request(self, method: str, path: str, body: Any = None, auth: Any = None) -> Any:` : `    def _request(self, method: str, path: str, body: Any = None) -> Any:`);
   lines.push(`        url = self.base_url + path`);
   lines.push(`        data = None`);
   lines.push(`        headers: dict[str, str] = {}`);
@@ -1464,7 +1889,27 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        open_url = self._opener.open if self._opener is not None else urllib.request.urlopen`);
   lines.push(`        last_err: Any = None`);
   lines.push(`        for attempt in range(3):`);
-  lines.push(`            req = urllib.request.Request(url, data=data, headers=headers, method=method)`);
+  if (auth.any) {
+    lines.push(`            hdrs = dict(headers)`);
+    if (auth.hasBearer) {
+      lines.push(`            if auth and auth.get("bearer") and self._bearer_token:`);
+      lines.push(`                hdrs["Authorization"] = "Bearer " + self._bearer_token`);
+    }
+    if (auth.headerKeys.length) {
+      lines.push(`            if auth and self._api_key:`);
+      lines.push(`                for h in (auth.get("headers") or []):`);
+      lines.push(`                    hdrs[h] = self._api_key`);
+    }
+    lines.push(`            req_url = url`);
+    if (auth.queryKeys.length) {
+      lines.push(`            if auth and self._api_key:`);
+      lines.push(`                for q in (auth.get("query") or []):`);
+      lines.push(`                    req_url = req_url + ("&" if "?" in req_url else "?") + urllib.parse.quote(q, safe="") + "=" + urllib.parse.quote(self._api_key, safe="")`);
+    }
+    lines.push(`            req = urllib.request.Request(req_url, data=data, headers=hdrs, method=method)`);
+  } else {
+    lines.push(`            req = urllib.request.Request(url, data=data, headers=headers, method=method)`);
+  }
   lines.push(`            try:`);
   lines.push(`                with open_url(req, timeout=self._timeout) as res:`);
   lines.push(`                    text = res.read().decode("utf-8")`);
@@ -1510,17 +1955,28 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
     if (op.method === "GET" || op.method === "DELETE") {
       lines.push(`        q = {k: str(v) for k, v in args_map.items() if v is not None}`);
       lines.push(`        qs = urllib.parse.urlencode(q)`);
-      lines.push(`        return self._request(${JSON.stringify(op.method)}, path + ("?" + qs if qs else ""))`);
+      const authSuf = pyAuthSuffix(op, auth.any);
+      lines.push(`        return self._request(${JSON.stringify(op.method)}, path + ("?" + qs if qs else "")` + (authSuf ? ", None" + authSuf : "") + `)`);
     } else {
-      lines.push(`        return self._request(${JSON.stringify(op.method)}, path, dict(args_map))`);
+      lines.push(`        return self._request(${JSON.stringify(op.method)}, path, dict(args_map)` + pyAuthSuffix(op, auth.any) + `)`);
     }
     lines.push(``);
     const hit = pageable.find((p) => p.op === op);
     if (hit) emitPyIterate(lines, op, hit.info, hit.iter);
   }
   lines.push(``);
-  lines.push(`def create_client(base_url: str = "", opener: Any = None, timeout: Any = None) -> Client:`);
-  lines.push(`    return Client(base_url=base_url, opener=opener, timeout=timeout)`);
+  const createArgs = ["base_url: str = \"\"", "opener: Any = None", "timeout: Any = None"];
+  const createCall = ["base_url=base_url", "opener=opener", "timeout=timeout"];
+  if (auth.hasBearer) {
+    createArgs.push("bearer_token: Any = None");
+    createCall.push("bearer_token=bearer_token");
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    createArgs.push("api_key: Any = None");
+    createCall.push("api_key=api_key");
+  }
+  lines.push(`def create_client(${createArgs.join(", ")}) -> Client:`);
+  lines.push(`    return Client(${createCall.join(", ")})`);
   lines.push(``);
   return lines.join("\n");
 }
@@ -1676,6 +2132,7 @@ function emitGoIterate(lines, op, info, iterName) {
 export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const pageable = pageableOps(ops);
+  const auth = authFlags(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`// API: ${title}`);
@@ -1701,7 +2158,27 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\tBaseURL    string`);
   lines.push(`\tHTTPClient *http.Client`);
   lines.push(`\tTimeout    time.Duration`);
+  if (auth.hasBearer) {
+    lines.push(`\tBearerToken string`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`\tAPIKey string`);
+  }
   lines.push(`}`);
+  if (auth.any) {
+    lines.push(``);
+    lines.push(`type reqAuth struct {`);
+    lines.push(`	Bearer  bool`);
+    lines.push(`	Headers []string`);
+    lines.push(`	Query   []string`);
+    lines.push(`}`);
+    lines.push(``);
+    lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
+    lines.push(`// Set BearerToken / APIKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
+    lines.push(`func envAuth(name string) string {`);
+    lines.push(`\treturn strings.TrimSpace(os.Getenv(name))`);
+    lines.push(`}`);
+  }
   lines.push(``);
   lines.push(`// envTimeout is the per-attempt request timeout (default 10s). Constructor Timeout or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`func envTimeout() time.Duration {`);
@@ -1720,11 +2197,18 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(``);
   lines.push(`// NewClient returns a Client with the given base URL.`);
   lines.push(`func NewClient(baseURL string) *Client {`);
-  lines.push(`\treturn &Client{`);
+  lines.push(`\tc := &Client{`);
   lines.push(`\t\tBaseURL:    strings.TrimRight(baseURL, "/"),`);
   lines.push(`\t\tHTTPClient: http.DefaultClient,`);
   lines.push(`\t\tTimeout:    envTimeout(),`);
   lines.push(`\t}`);
+  if (auth.hasBearer) {
+    lines.push(`\tc.BearerToken = envAuth("SDK_BEARER_TOKEN")`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`\tc.APIKey = envAuth("SDK_API_KEY")`);
+  }
+  lines.push(`\treturn c`);
   lines.push(`}`);
   lines.push(``);
   lines.push(`// retryDelay honors Retry-After when sane (<30s); else ~100ms exponential backoff.`);
@@ -1745,7 +2229,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\treturn time.Duration(100*(1<<attempt)) * time.Millisecond`);
   lines.push(`}`);
   lines.push(``);
-  lines.push(`func (c *Client) request(method, path string, body any) (any, error) {`);
+  lines.push(auth.any ? `func (c *Client) request(method, path string, body any, auth *reqAuth) (any, error) {` : `func (c *Client) request(method, path string, body any) (any, error) {`);
   lines.push(`\thc := c.HTTPClient`);
   lines.push(`\tif hc == nil {`);
   lines.push(`\t\thc = http.DefaultClient`);
@@ -1769,7 +2253,24 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\t\trdr = bytes.NewReader(payload)`);
   lines.push(`\t\t}`);
   lines.push(`\t\tctx, cancel := context.WithTimeout(context.Background(), timeout)`);
-  lines.push(`\t\treq, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)`);
+  if (auth.any) {
+    lines.push(`\t\treqURL := c.BaseURL + path`);
+    if (auth.queryKeys.length) {
+      lines.push(`\t\tif auth != nil && strings.TrimSpace(c.APIKey) != "" {`);
+      lines.push(`\t\t\tkey := strings.TrimSpace(c.APIKey)`);
+      lines.push(`\t\t\tfor _, q := range auth.Query {`);
+      lines.push(`\t\t\t\tsep := "?"`);
+      lines.push(`\t\t\t\tif strings.Contains(reqURL, "?") {`);
+      lines.push(`\t\t\t\t\tsep = "&"`);
+      lines.push(`\t\t\t\t}`);
+      lines.push(`\t\t\t\treqURL = reqURL + sep + url.QueryEscape(q) + "=" + url.QueryEscape(key)`);
+      lines.push(`\t\t\t}`);
+      lines.push(`\t\t}`);
+    }
+    lines.push(`\t\treq, err := http.NewRequestWithContext(ctx, method, reqURL, rdr)`);
+  } else {
+    lines.push(`\t\treq, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)`);
+  }
   lines.push(`\t\tif err != nil {`);
   lines.push(`\t\t\tcancel()`);
   lines.push(`\t\t\treturn nil, err`);
@@ -1777,6 +2278,21 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\tif payload != nil {`);
   lines.push(`\t\t\treq.Header.Set("Content-Type", "application/json")`);
   lines.push(`\t\t}`);
+  if (auth.hasBearer) {
+    lines.push(`\t\tif auth != nil && auth.Bearer {`);
+    lines.push(`\t\t\tif tok := strings.TrimSpace(c.BearerToken); tok != "" {`);
+    lines.push(`\t\t\t\treq.Header.Set("Authorization", "Bearer "+tok)`);
+    lines.push(`\t\t\t}`);
+    lines.push(`\t\t}`);
+  }
+  if (auth.headerKeys.length) {
+    lines.push(`\t\tif auth != nil && strings.TrimSpace(c.APIKey) != "" {`);
+    lines.push(`\t\t\tkey := strings.TrimSpace(c.APIKey)`);
+    lines.push(`\t\t\tfor _, h := range auth.Headers {`);
+    lines.push(`\t\t\t\treq.Header.Set(h, key)`);
+    lines.push(`\t\t\t}`);
+    lines.push(`\t\t}`);
+  }
   lines.push(`\t\tres, err := hc.Do(req)`);
   lines.push(`\t\tif err != nil {`);
   lines.push(`\t\t\tcancel()`);
@@ -1870,9 +2386,9 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`\tif enc := q.Encode(); enc != "" {`);
       lines.push(`\t\tpath = path + "?" + enc`);
       lines.push(`\t}`);
-      lines.push(`\treturn c.request(${JSON.stringify(op.method)}, path, nil)`);
+      lines.push(`\treturn c.request(${JSON.stringify(op.method)}, path, nil` + goAuthSuffix(op, auth.any) + `)`);
     } else {
-      lines.push(`\treturn c.request(${JSON.stringify(op.method)}, path, rest)`);
+      lines.push(`\treturn c.request(${JSON.stringify(op.method)}, path, rest` + goAuthSuffix(op, auth.any) + `)`);
     }
     lines.push(`}`);
     lines.push(``);
@@ -1902,10 +2418,358 @@ export function toJavaIdent(name) {
   return cleaned;
 }
 
+
+function emitJavaPageRuntime(lines) {
+  lines.push(`    // Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.`);
+  lines.push(`    private static void jsonSkipWs(char[] cs, int[] pos) {`);
+  lines.push(`        while (pos[0] < cs.length) {`);
+  lines.push(`            char c = cs[pos[0]];`);
+  lines.push(`            if (c == ' ' || c == '\\n' || c == '\\r' || c == '\\t') {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`            } else {`);
+  lines.push(`                break;`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Object jsonParse(String s) {`);
+  lines.push(`        if (s == null) {`);
+  lines.push(`            return null;`);
+  lines.push(`        }`);
+  lines.push(`        char[] cs = s.toCharArray();`);
+  lines.push(`        int[] pos = new int[] { 0 };`);
+  lines.push(`        Object v = jsonParseValue(cs, pos);`);
+  lines.push(`        jsonSkipWs(cs, pos);`);
+  lines.push(`        return v;`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Object jsonParseValue(char[] cs, int[] pos) {`);
+  lines.push(`        jsonSkipWs(cs, pos);`);
+  lines.push(`        if (pos[0] >= cs.length) {`);
+  lines.push(`            throw new RuntimeException("json eof");`);
+  lines.push(`        }`);
+  lines.push(`        char c = cs[pos[0]];`);
+  lines.push(`        if (c == '{') {`);
+  lines.push(`            return jsonParseObject(cs, pos);`);
+  lines.push(`        }`);
+  lines.push(`        if (c == '[') {`);
+  lines.push(`            return jsonParseArray(cs, pos);`);
+  lines.push(`        }`);
+  lines.push(`        if (c == '"') {`);
+  lines.push(`            return jsonParseString(cs, pos);`);
+  lines.push(`        }`);
+  lines.push(`        if (c == 't' || c == 'f' || c == 'n') {`);
+  lines.push(`            return jsonParseLiteral(cs, pos);`);
+  lines.push(`        }`);
+  lines.push(`        if (c == '-' || (c >= '0' && c <= '9')) {`);
+  lines.push(`            return jsonParseNumber(cs, pos);`);
+  lines.push(`        }`);
+  lines.push(`        throw new RuntimeException("json value");`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Object jsonParseObject(char[] cs, int[] pos) {`);
+  lines.push(`        pos[0] = pos[0] + 1;`);
+  lines.push(`        Map<String, Object> m = new HashMap<String, Object>();`);
+  lines.push(`        jsonSkipWs(cs, pos);`);
+  lines.push(`        if (pos[0] < cs.length && cs[pos[0]] == '}') {`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            return m;`);
+  lines.push(`        }`);
+  lines.push(`        while (true) {`);
+  lines.push(`            jsonSkipWs(cs, pos);`);
+  lines.push(`            String key = jsonParseString(cs, pos);`);
+  lines.push(`            jsonSkipWs(cs, pos);`);
+  lines.push(`            if (pos[0] >= cs.length || cs[pos[0]] != ':') {`);
+  lines.push(`                throw new RuntimeException("json colon");`);
+  lines.push(`            }`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            m.put(key, jsonParseValue(cs, pos));`);
+  lines.push(`            jsonSkipWs(cs, pos);`);
+  lines.push(`            if (pos[0] >= cs.length) {`);
+  lines.push(`                throw new RuntimeException("json object");`);
+  lines.push(`            }`);
+  lines.push(`            char c = cs[pos[0]];`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            if (c == '}') {`);
+  lines.push(`                return m;`);
+  lines.push(`            }`);
+  lines.push(`            if (c != ',') {`);
+  lines.push(`                throw new RuntimeException("json object");`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Object jsonParseArray(char[] cs, int[] pos) {`);
+  lines.push(`        pos[0] = pos[0] + 1;`);
+  lines.push(`        List<Object> a = new ArrayList<Object>();`);
+  lines.push(`        jsonSkipWs(cs, pos);`);
+  lines.push(`        if (pos[0] < cs.length && cs[pos[0]] == ']') {`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            return a;`);
+  lines.push(`        }`);
+  lines.push(`        while (true) {`);
+  lines.push(`            a.add(jsonParseValue(cs, pos));`);
+  lines.push(`            jsonSkipWs(cs, pos);`);
+  lines.push(`            if (pos[0] >= cs.length) {`);
+  lines.push(`                throw new RuntimeException("json array");`);
+  lines.push(`            }`);
+  lines.push(`            char c = cs[pos[0]];`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            if (c == ']') {`);
+  lines.push(`                return a;`);
+  lines.push(`            }`);
+  lines.push(`            if (c != ',') {`);
+  lines.push(`                throw new RuntimeException("json array");`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static String jsonParseString(char[] cs, int[] pos) {`);
+  lines.push(`        if (pos[0] >= cs.length || cs[pos[0]] != '"') {`);
+  lines.push(`            throw new RuntimeException("json string");`);
+  lines.push(`        }`);
+  lines.push(`        pos[0] = pos[0] + 1;`);
+  lines.push(`        StringBuilder sb = new StringBuilder();`);
+  lines.push(`        while (pos[0] < cs.length) {`);
+  lines.push(`            char c = cs[pos[0]];`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            if (c == '"') {`);
+  lines.push(`                return sb.toString();`);
+  lines.push(`            }`);
+  lines.push(`            if (c == '\\\\') {`);
+  lines.push(`                if (pos[0] >= cs.length) {`);
+  lines.push(`                    throw new RuntimeException("json string");`);
+  lines.push(`                }`);
+  lines.push(`                char e = cs[pos[0]];`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                if (e == '"' || e == '\\\\' || e == '/') {`);
+  lines.push(`                    sb.append(e);`);
+  lines.push(`                } else if (e == 'b') {`);
+  lines.push(`                    sb.append('\\b');`);
+  lines.push(`                } else if (e == 'f') {`);
+  lines.push(`                    sb.append('\\f');`);
+  lines.push(`                } else if (e == 'n') {`);
+  lines.push(`                    sb.append('\\n');`);
+  lines.push(`                } else if (e == 'r') {`);
+  lines.push(`                    sb.append('\\r');`);
+  lines.push(`                } else if (e == 't') {`);
+  lines.push(`                    sb.append('\\t');`);
+  lines.push(`                } else if (e == 'u' && pos[0] + 4 <= cs.length) {`);
+  lines.push(`                    String hex = new String(cs, pos[0], 4);`);
+  lines.push(`                    pos[0] = pos[0] + 4;`);
+  lines.push(`                    sb.append((char) Integer.parseInt(hex, 16));`);
+  lines.push(`                } else {`);
+  lines.push(`                    sb.append(e);`);
+  lines.push(`                }`);
+  lines.push(`            } else {`);
+  lines.push(`                sb.append(c);`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        throw new RuntimeException("json string");`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Object jsonParseLiteral(char[] cs, int[] pos) {`);
+  lines.push(`        if (pos[0] + 4 <= cs.length && cs[pos[0]] == 't' && cs[pos[0] + 1] == 'r' && cs[pos[0] + 2] == 'u' && cs[pos[0] + 3] == 'e') {`);
+  lines.push(`            pos[0] = pos[0] + 4;`);
+  lines.push(`            return Boolean.TRUE;`);
+  lines.push(`        }`);
+  lines.push(`        if (pos[0] + 5 <= cs.length && cs[pos[0]] == 'f' && cs[pos[0] + 1] == 'a' && cs[pos[0] + 2] == 'l' && cs[pos[0] + 3] == 's' && cs[pos[0] + 4] == 'e') {`);
+  lines.push(`            pos[0] = pos[0] + 5;`);
+  lines.push(`            return Boolean.FALSE;`);
+  lines.push(`        }`);
+  lines.push(`        if (pos[0] + 4 <= cs.length && cs[pos[0]] == 'n' && cs[pos[0] + 1] == 'u' && cs[pos[0] + 2] == 'l' && cs[pos[0] + 3] == 'l') {`);
+  lines.push(`            pos[0] = pos[0] + 4;`);
+  lines.push(`            return null;`);
+  lines.push(`        }`);
+  lines.push(`        throw new RuntimeException("json literal");`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Object jsonParseNumber(char[] cs, int[] pos) {`);
+  lines.push(`        int start = pos[0];`);
+  lines.push(`        if (cs[pos[0]] == '-') {`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`        }`);
+  lines.push(`        while (pos[0] < cs.length && cs[pos[0]] >= '0' && cs[pos[0]] <= '9') {`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`        }`);
+  lines.push(`        boolean frac = false;`);
+  lines.push(`        if (pos[0] < cs.length && cs[pos[0]] == '.') {`);
+  lines.push(`            frac = true;`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            while (pos[0] < cs.length && cs[pos[0]] >= '0' && cs[pos[0]] <= '9') {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        if (pos[0] < cs.length && (cs[pos[0]] == 'e' || cs[pos[0]] == 'E')) {`);
+  lines.push(`            frac = true;`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            if (pos[0] < cs.length && (cs[pos[0]] == '+' || cs[pos[0]] == '-')) {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`            }`);
+  lines.push(`            while (pos[0] < cs.length && cs[pos[0]] >= '0' && cs[pos[0]] <= '9') {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        String raw = new String(cs, start, pos[0] - start);`);
+  lines.push(`        if (!frac) {`);
+  lines.push(`            try {`);
+  lines.push(`                return Long.valueOf(raw);`);
+  lines.push(`            } catch (NumberFormatException ignored) {`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return Double.valueOf(raw);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Object asPageData(Object data) {`);
+  lines.push(`        if (data instanceof String) {`);
+  lines.push(`            String s = ((String) data).trim();`);
+  lines.push(`            if (s.length() > 0 && (s.charAt(0) == '{' || s.charAt(0) == '[')) {`);
+  lines.push(`                try {`);
+  lines.push(`                    return jsonParse(s);`);
+  lines.push(`                } catch (Exception ignored) {`);
+  lines.push(`                    return data;`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return data;`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static int pageLen(Object data) {`);
+  lines.push(`        if (data instanceof List) {`);
+  lines.push(`            return ((List<?>) data).size();`);
+  lines.push(`        }`);
+  lines.push(`        if (data instanceof Map) {`);
+  lines.push(`            Map<?, ?> m = (Map<?, ?>) data;`);
+  lines.push(`            String[] keys = new String[] { "data", "items", "results" };`);
+  lines.push(`            for (int i = 0; i < keys.length; i++) {`);
+  lines.push(`                Object a = m.get(keys[i]);`);
+  lines.push(`                if (a instanceof List) {`);
+  lines.push(`                    return ((List<?>) a).size();`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return -1;`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static String nextCursorOf(Object data) {`);
+  lines.push(`        if (!(data instanceof Map)) {`);
+  lines.push(`            return null;`);
+  lines.push(`        }`);
+  lines.push(`        Map<?, ?> m = (Map<?, ?>) data;`);
+  lines.push(`        String[] keys = new String[] { "next", "next_cursor", "nextPageToken" };`);
+  lines.push(`        for (int i = 0; i < keys.length; i++) {`);
+  lines.push(`            Object v = m.get(keys[i]);`);
+  lines.push(`            if (v instanceof String && ((String) v).length() > 0) {`);
+  lines.push(`                return (String) v;`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return null;`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static int asInt(Object v, int fallback) {`);
+  lines.push(`        if (v == null) {`);
+  lines.push(`            return fallback;`);
+  lines.push(`        }`);
+  lines.push(`        if (v instanceof Number) {`);
+  lines.push(`            return ((Number) v).intValue();`);
+  lines.push(`        }`);
+  lines.push(`        try {`);
+  lines.push(`            return Integer.parseInt(String.valueOf(v).trim());`);
+  lines.push(`        } catch (Exception ignored) {`);
+  lines.push(`            return fallback;`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static Map<String, Object> cloneArgs(Map<String, Object> args) {`);
+  lines.push(`        Map<String, Object> out = new HashMap<String, Object>();`);
+  lines.push(`        if (args != null) {`);
+  lines.push(`            out.putAll(args);`);
+  lines.push(`        }`);
+  lines.push(`        return out;`);
+  lines.push(`    }`);
+  lines.push(``);
+}
+
+function emitJavaIterate(lines, op, info, iterName) {
+  const fn = toJavaIdent(op.operationId);
+  const javaIter = toJavaIdent(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\*\//g, "* /");
+  lines.push(`    /** ${javaIter} ${summary} */`);
+  lines.push(`    public List<Object> ${javaIter}(Map<String, Object> args) throws Exception {`);
+  lines.push(`        Map<String, Object> state = cloneArgs(args);`);
+  if (mode === "offset") {
+    lines.push(`        int offset = asInt(state.get(${JSON.stringify(offsetKey)}), 0);`);
+  } else if (mode === "page") {
+    lines.push(`        int page = asInt(state.get(${JSON.stringify(pageKey)}), 1);`);
+    lines.push(`        if (page < 1) {`);
+    lines.push(`            page = 1;`);
+    lines.push(`        }`);
+  }
+  lines.push(`        List<Object> pages = new ArrayList<Object>();`);
+  lines.push(`        for (int n = 0; n < 1000; n++) {`);
+  lines.push(`            Map<String, Object> call = cloneArgs(state);`);
+  if (mode === "offset") {
+    lines.push(`            call.put(${JSON.stringify(offsetKey)}, Integer.valueOf(offset));`);
+  } else if (mode === "page") {
+    lines.push(`            call.put(${JSON.stringify(pageKey)}, Integer.valueOf(page));`);
+  }
+  lines.push(`            Object data = asPageData(this.${fn}(call));`);
+  lines.push(`            pages.add(data);`);
+  lines.push(`            int ln = pageLen(data);`);
+  if (sizeKey) {
+    lines.push(`            int size = asInt(call.get(${JSON.stringify(sizeKey)}), 0);`);
+    lines.push(`            if (data == null || ln == 0 || (size > 0 && ln >= 0 && ln < size)) {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+  } else {
+    lines.push(`            if (data == null || ln == 0) {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+  }
+  lines.push(`            String cur = nextCursorOf(data);`);
+  lines.push(`            Object prev = state.get(${JSON.stringify(cursorKey)});`);
+  lines.push(`            if (cur != null && (prev == null || !cur.equals(String.valueOf(prev)))) {`);
+  lines.push(`                state.put(${JSON.stringify(cursorKey)}, cur);`);
+  lines.push(`                continue;`);
+  lines.push(`            }`);
+  if (mode === "cursor") {
+    lines.push(`            break;`);
+  } else if (mode === "offset") {
+    lines.push(`            if (ln < 0) {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+    if (sizeKey) {
+      lines.push(`            int step = size > 0 ? size : ln;`);
+    } else {
+      lines.push(`            int step = ln;`);
+    }
+    lines.push(`            if (step <= 0) {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+    lines.push(`            offset += step;`);
+  } else {
+    lines.push(`            if (ln < 0) {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+    lines.push(`            page += 1;`);
+  }
+  lines.push(`        }`);
+  lines.push(`        return pages;`);
+  lines.push(`    }`);
+  lines.push(``);
+}
+
 /** Minimal Java HTTP client stub (stdlib java.net.HttpURLConnection). package client. */
 export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const safeTitle = String(title || "GeneratedClient").replace(/\*\//g, "* /");
+  const pageable = pageableOps(ops);
+  const auth = authFlags(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`// API: ${safeTitle}`);
@@ -1919,12 +2783,29 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`import java.net.URLEncoder;`);
   lines.push(`import java.nio.charset.StandardCharsets;`);
   lines.push(`import java.util.HashMap;`);
+  if (pageable.length) {
+    lines.push(`import java.util.ArrayList;`);
+    lines.push(`import java.util.List;`);
+  }
   lines.push(`import java.util.Map;`);
   lines.push(`import java.util.StringJoiner;`);
   lines.push(``);
   lines.push(`/** Minimal HTTP client stub generated from OpenAPI (java.net.HttpURLConnection). */`);
+  lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
+  lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via Client.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  if (auth.any) {
+    lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
+    lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
+  }
   lines.push(`public class Client {`);
   lines.push(`    private final String baseUrl;`);
+  lines.push(`    public int timeoutMs;`);
+  if (auth.hasBearer) {
+    lines.push(`    public String bearerToken;`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`    public String apiKey;`);
+  }
   lines.push(``);
   lines.push(`    public Client() {`);
   lines.push(`        this("");`);
@@ -1940,39 +2821,159 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            }`);
   lines.push(`            this.baseUrl = baseUrl.substring(0, n);`);
   lines.push(`        }`);
+  lines.push(`        this.timeoutMs = envTimeoutMs();`);
+  if (auth.hasBearer) {
+    lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN");`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`        this.apiKey = envAuth("SDK_API_KEY");`);
+  }
   lines.push(`    }`);
   lines.push(``);
-  lines.push(`    private Object doRequest(String method, String path, Object body) throws Exception {`);
-  lines.push(`        URL url = new URL(this.baseUrl + path);`);
-  lines.push(`        HttpURLConnection conn = (HttpURLConnection) url.openConnection();`);
-  lines.push(`        try {`);
-  lines.push(`            conn.setRequestMethod(method);`);
-  lines.push(`            conn.setConnectTimeout(30000);`);
-  lines.push(`            conn.setReadTimeout(30000);`);
-  lines.push(`            if (body != null) {`);
-  lines.push(`                byte[] bytes = jsonStringify(body).getBytes(StandardCharsets.UTF_8);`);
-  lines.push(`                conn.setDoOutput(true);`);
-  lines.push(`                conn.setRequestProperty("Content-Type", "application/json");`);
-  lines.push(`                OutputStream os = conn.getOutputStream();`);
+  lines.push(`    private static int envTimeoutMs() {`);
+  lines.push(`        String rawMs = System.getenv("SDK_TIMEOUT_MS");`);
+  lines.push(`        if (rawMs != null && rawMs.trim().length() > 0) {`);
+  lines.push(`            try {`);
+  lines.push(`                int ms = Integer.parseInt(rawMs.trim());`);
+  lines.push(`                if (ms > 0) {`);
+  lines.push(`                    return ms;`);
+  lines.push(`                }`);
+  lines.push(`            } catch (NumberFormatException ignored) {`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        String rawSec = System.getenv("SDK_TIMEOUT_SEC");`);
+  lines.push(`        if (rawSec != null && rawSec.trim().length() > 0) {`);
+  lines.push(`            try {`);
+  lines.push(`                int sec = Integer.parseInt(rawSec.trim());`);
+  lines.push(`                if (sec > 0) {`);
+  lines.push(`                    return sec * 1000;`);
+  lines.push(`                }`);
+  lines.push(`            } catch (NumberFormatException ignored) {`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return 10000;`);
+  lines.push(`    }`);
+  lines.push(``);
+  if (auth.any) {
+    lines.push(`    private static String envAuth(String name) {`);
+    lines.push(`        String v = System.getenv(name);`);
+    lines.push(`        if (v == null) {`);
+    lines.push(`            return "";`);
+    lines.push(`        }`);
+    lines.push(`        String t = v.trim();`);
+    lines.push(`        return t;`);
+    lines.push(`    }`);
+    lines.push(``);
+  }
+  lines.push(`    private static long retryDelayMs(HttpURLConnection conn, int attempt) {`);
+  lines.push(`        String raw = conn == null ? null : conn.getHeaderField("Retry-After");`);
+  lines.push(`        if (raw != null) {`);
+  lines.push(`            raw = raw.trim();`);
+  lines.push(`            try {`);
+  lines.push(`                double sec = Double.parseDouble(raw);`);
+  lines.push(`                if (sec >= 0 && sec < 30) {`);
+  lines.push(`                    return (long) (sec * 1000.0);`);
+  lines.push(`                }`);
+  lines.push(`            } catch (NumberFormatException ignored) {`);
   lines.push(`                try {`);
-  lines.push(`                    os.write(bytes);`);
-  lines.push(`                } finally {`);
-  lines.push(`                    os.close();`);
+  lines.push(`                    java.time.ZonedDateTime when = java.time.ZonedDateTime.parse(raw, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME);`);
+  lines.push(`                    long delta = when.toInstant().toEpochMilli() - System.currentTimeMillis();`);
+  lines.push(`                    if (delta >= 0 && delta < 30000) {`);
+  lines.push(`                        return delta;`);
+  lines.push(`                    }`);
+  lines.push(`                } catch (Exception ignored2) {`);
   lines.push(`                }`);
   lines.push(`            }`);
-  lines.push(`            int code = conn.getResponseCode();`);
-  lines.push(`            InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();`);
-  lines.push(`            String text = readAll(in);`);
-  lines.push(`            if (code < 200 || code >= 300) {`);
-  lines.push(`                throw new RuntimeException(method + " " + path + " -> " + code);`);
-  lines.push(`            }`);
-  lines.push(`            if (text == null || text.length() == 0) {`);
-  lines.push(`                return null;`);
-  lines.push(`            }`);
-  lines.push(`            return text;`);
-  lines.push(`        } finally {`);
-  lines.push(`            conn.disconnect();`);
   lines.push(`        }`);
+  lines.push(`        return 100L * (1L << attempt);`);
+  lines.push(`    }`);
+  lines.push(``);
+  const reqSig = auth.any
+    ? `    private Object doRequest(String method, String path, Object body, boolean authBearer, String[] authHeaders, String[] authQuery) throws Exception {`
+    : `    private Object doRequest(String method, String path, Object body) throws Exception {`;
+  lines.push(reqSig);
+  lines.push(`        int timeout = this.timeoutMs > 0 ? this.timeoutMs : envTimeoutMs();`);
+  lines.push(`        Exception last = null;`);
+  lines.push(`        for (int attempt = 0; attempt < 3; attempt++) {`);
+  lines.push(`            HttpURLConnection conn = null;`);
+  lines.push(`            try {`);
+  lines.push(`                String reqPath = path;`);
+  if (auth.queryKeys.length) {
+    lines.push(`                if (authQuery != null && this.apiKey != null && this.apiKey.trim().length() > 0) {`);
+    lines.push(`                    String key = this.apiKey.trim();`);
+    lines.push(`                    for (int qi = 0; qi < authQuery.length; qi++) {`);
+    lines.push(`                        String q = authQuery[qi];`);
+    lines.push(`                        if (q == null || q.length() == 0) {`);
+    lines.push(`                            continue;`);
+    lines.push(`                        }`);
+    lines.push(`                        reqPath = reqPath + (reqPath.indexOf('?') >= 0 ? "&" : "?") + urlEncode(q) + "=" + urlEncode(key);`);
+    lines.push(`                    }`);
+    lines.push(`                }`);
+  }
+  lines.push(`                URL url = new URL(this.baseUrl + reqPath);`);
+  lines.push(`                conn = (HttpURLConnection) url.openConnection();`);
+  lines.push(`                conn.setRequestMethod(method);`);
+  lines.push(`                conn.setConnectTimeout(timeout);`);
+  lines.push(`                conn.setReadTimeout(timeout);`);
+  lines.push(`                conn.setUseCaches(false);`);
+  if (auth.hasBearer) {
+    lines.push(`                if (authBearer && this.bearerToken != null && this.bearerToken.trim().length() > 0) {`);
+    lines.push(`                    conn.setRequestProperty("Authorization", "Bearer " + this.bearerToken.trim());`);
+    lines.push(`                }`);
+  }
+  if (auth.headerKeys.length) {
+    lines.push(`                if (authHeaders != null && this.apiKey != null && this.apiKey.trim().length() > 0) {`);
+    lines.push(`                    String key = this.apiKey.trim();`);
+    lines.push(`                    for (int hi = 0; hi < authHeaders.length; hi++) {`);
+    lines.push(`                        if (authHeaders[hi] != null && authHeaders[hi].length() > 0) {`);
+    lines.push(`                            conn.setRequestProperty(authHeaders[hi], key);`);
+    lines.push(`                        }`);
+    lines.push(`                    }`);
+    lines.push(`                }`);
+  }
+  lines.push(`                if (body != null) {`);
+  lines.push(`                    byte[] bytes = jsonStringify(body).getBytes(StandardCharsets.UTF_8);`);
+  lines.push(`                    conn.setDoOutput(true);`);
+  lines.push(`                    conn.setRequestProperty("Content-Type", "application/json");`);
+  lines.push(`                    OutputStream os = conn.getOutputStream();`);
+  lines.push(`                    try {`);
+  lines.push(`                        os.write(bytes);`);
+  lines.push(`                    } finally {`);
+  lines.push(`                        os.close();`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`                int code = conn.getResponseCode();`);
+  lines.push(`                InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();`);
+  lines.push(`                String text = readAll(in);`);
+  lines.push(`                if (code >= 200 && code < 300) {`);
+  lines.push(`                    if (text == null || text.length() == 0) {`);
+  lines.push(`                        return null;`);
+  lines.push(`                    }`);
+  lines.push(`                    return text;`);
+  lines.push(`                }`);
+  lines.push(`                if ((code == 429 || code >= 500) && attempt < 2) {`);
+  lines.push(`                    Thread.sleep(retryDelayMs(conn, attempt));`);
+  lines.push(`                    continue;`);
+  lines.push(`                }`);
+  lines.push(`                throw new RuntimeException(method + " " + path + " -> " + code);`);
+  lines.push(`            } catch (RuntimeException e) {`);
+  lines.push(`                throw e;`);
+  lines.push(`            } catch (Exception e) {`);
+  lines.push(`                last = e;`);
+  lines.push(`                if (attempt >= 2) {`);
+  lines.push(`                    throw e;`);
+  lines.push(`                }`);
+  lines.push(`                Thread.sleep(100L * (1L << attempt));`);
+  lines.push(`            } finally {`);
+  lines.push(`                if (conn != null) {`);
+  lines.push(`                    conn.disconnect();`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        if (last != null) {`);
+  lines.push(`            throw last;`);
+  lines.push(`        }`);
+  lines.push(`        throw new RuntimeException(method + " " + path + " -> network");`);
   lines.push(`    }`);
   lines.push(``);
   lines.push(`    private static String readAll(InputStream in) throws Exception {`);
@@ -2078,8 +3079,10 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    }`);
   lines.push(``);
 
+  if (pageable.length) emitJavaPageRuntime(lines);
   for (const op of ops) {
     const fn = toJavaIdent(op.operationId);
+    const authSuf = jvmAuthArgs(op, auth.any);
     const summary = String(op.summary || `${op.method} ${op.path}`).replace(/\*\//g, "* /");
     lines.push(`    /** ${fn} ${summary} (operationId: ${op.operationId}) */`);
     lines.push(`    public Object ${fn}(Map<String, Object> args) throws Exception {`);
@@ -2089,12 +3092,14 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push(`        }`);
     lines.push(`        String path = expandPath(${JSON.stringify(op.path)}, rest);`);
     if (op.method === "GET" || op.method === "DELETE") {
-      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path + queryString(rest), null);`);
+      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path + queryString(rest), null` + authSuf + `);`);
     } else {
-      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path, rest);`);
+      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path, rest` + authSuf + `);`);
     }
     lines.push(`    }`);
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitJavaIterate(lines, op, hit.info, hit.iter);
   }
 
   lines.push(`}`);
@@ -2399,6 +3404,449 @@ export function toCsharpIdent(name) {
   return ident;
 }
 
+
+function emitCsharpPageRuntime(lines) {
+  lines.push(`        // Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.`);
+  lines.push(`        private static void JsonSkipWs(char[] cs, int[] pos)`);
+  lines.push(`        {`);
+  lines.push(`            while (pos[0] < cs.Length)`);
+  lines.push(`            {`);
+  lines.push(`                char c = cs[pos[0]];`);
+  lines.push(`                if (c == ' ' || c == '\\n' || c == '\\r' || c == '\\t')`);
+  lines.push(`                {`);
+  lines.push(`                    pos[0] = pos[0] + 1;`);
+  lines.push(`                }`);
+  lines.push(`                else`);
+  lines.push(`                {`);
+  lines.push(`                    break;`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static object JsonParse(string s)`);
+  lines.push(`        {`);
+  lines.push(`            if (s == null)`);
+  lines.push(`            {`);
+  lines.push(`                return null;`);
+  lines.push(`            }`);
+  lines.push(`            char[] cs = s.ToCharArray();`);
+  lines.push(`            int[] pos = new int[] { 0 };`);
+  lines.push(`            object v = JsonParseValue(cs, pos);`);
+  lines.push(`            JsonSkipWs(cs, pos);`);
+  lines.push(`            return v;`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static object JsonParseValue(char[] cs, int[] pos)`);
+  lines.push(`        {`);
+  lines.push(`            JsonSkipWs(cs, pos);`);
+  lines.push(`            if (pos[0] >= cs.Length)`);
+  lines.push(`            {`);
+  lines.push(`                throw new Exception("json eof");`);
+  lines.push(`            }`);
+  lines.push(`            char c = cs[pos[0]];`);
+  lines.push(`            if (c == '{')`);
+  lines.push(`            {`);
+  lines.push(`                return JsonParseObject(cs, pos);`);
+  lines.push(`            }`);
+  lines.push(`            if (c == '[')`);
+  lines.push(`            {`);
+  lines.push(`                return JsonParseArray(cs, pos);`);
+  lines.push(`            }`);
+  lines.push(`            if (c == '"')`);
+  lines.push(`            {`);
+  lines.push(`                return JsonParseString(cs, pos);`);
+  lines.push(`            }`);
+  lines.push(`            if (c == 't' || c == 'f' || c == 'n')`);
+  lines.push(`            {`);
+  lines.push(`                return JsonParseLiteral(cs, pos);`);
+  lines.push(`            }`);
+  lines.push(`            if (c == '-' || (c >= '0' && c <= '9'))`);
+  lines.push(`            {`);
+  lines.push(`                return JsonParseNumber(cs, pos);`);
+  lines.push(`            }`);
+  lines.push(`            throw new Exception("json value");`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static object JsonParseObject(char[] cs, int[] pos)`);
+  lines.push(`        {`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            Dictionary<string, object> m = new Dictionary<string, object>();`);
+  lines.push(`            JsonSkipWs(cs, pos);`);
+  lines.push(`            if (pos[0] < cs.Length && cs[pos[0]] == '}')`);
+  lines.push(`            {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                return m;`);
+  lines.push(`            }`);
+  lines.push(`            while (true)`);
+  lines.push(`            {`);
+  lines.push(`                JsonSkipWs(cs, pos);`);
+  lines.push(`                string key = JsonParseString(cs, pos);`);
+  lines.push(`                JsonSkipWs(cs, pos);`);
+  lines.push(`                if (pos[0] >= cs.Length || cs[pos[0]] != ':')`);
+  lines.push(`                {`);
+  lines.push(`                    throw new Exception("json colon");`);
+  lines.push(`                }`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                m[key] = JsonParseValue(cs, pos);`);
+  lines.push(`                JsonSkipWs(cs, pos);`);
+  lines.push(`                if (pos[0] >= cs.Length)`);
+  lines.push(`                {`);
+  lines.push(`                    throw new Exception("json object");`);
+  lines.push(`                }`);
+  lines.push(`                char c = cs[pos[0]];`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                if (c == '}')`);
+  lines.push(`                {`);
+  lines.push(`                    return m;`);
+  lines.push(`                }`);
+  lines.push(`                if (c != ',')`);
+  lines.push(`                {`);
+  lines.push(`                    throw new Exception("json object");`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static object JsonParseArray(char[] cs, int[] pos)`);
+  lines.push(`        {`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            List<object> a = new List<object>();`);
+  lines.push(`            JsonSkipWs(cs, pos);`);
+  lines.push(`            if (pos[0] < cs.Length && cs[pos[0]] == ']')`);
+  lines.push(`            {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                return a;`);
+  lines.push(`            }`);
+  lines.push(`            while (true)`);
+  lines.push(`            {`);
+  lines.push(`                a.Add(JsonParseValue(cs, pos));`);
+  lines.push(`                JsonSkipWs(cs, pos);`);
+  lines.push(`                if (pos[0] >= cs.Length)`);
+  lines.push(`                {`);
+  lines.push(`                    throw new Exception("json array");`);
+  lines.push(`                }`);
+  lines.push(`                char c = cs[pos[0]];`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                if (c == ']')`);
+  lines.push(`                {`);
+  lines.push(`                    return a;`);
+  lines.push(`                }`);
+  lines.push(`                if (c != ',')`);
+  lines.push(`                {`);
+  lines.push(`                    throw new Exception("json array");`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static string JsonParseString(char[] cs, int[] pos)`);
+  lines.push(`        {`);
+  lines.push(`            if (pos[0] >= cs.Length || cs[pos[0]] != '"')`);
+  lines.push(`            {`);
+  lines.push(`                throw new Exception("json string");`);
+  lines.push(`            }`);
+  lines.push(`            pos[0] = pos[0] + 1;`);
+  lines.push(`            StringBuilder sb = new StringBuilder();`);
+  lines.push(`            while (pos[0] < cs.Length)`);
+  lines.push(`            {`);
+  lines.push(`                char c = cs[pos[0]];`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                if (c == '"')`);
+  lines.push(`                {`);
+  lines.push(`                    return sb.ToString();`);
+  lines.push(`                }`);
+  lines.push(`                if (c == '\\\\')`);
+  lines.push(`                {`);
+  lines.push(`                    if (pos[0] >= cs.Length)`);
+  lines.push(`                    {`);
+  lines.push(`                        throw new Exception("json string");`);
+  lines.push(`                    }`);
+  lines.push(`                    char e = cs[pos[0]];`);
+  lines.push(`                    pos[0] = pos[0] + 1;`);
+  lines.push(`                    if (e == '"' || e == '\\\\' || e == '/')`);
+  lines.push(`                    {`);
+  lines.push(`                        sb.Append(e);`);
+  lines.push(`                    }`);
+  lines.push(`                    else if (e == 'b')`);
+  lines.push(`                    {`);
+  lines.push(`                        sb.Append('\\b');`);
+  lines.push(`                    }`);
+  lines.push(`                    else if (e == 'f')`);
+  lines.push(`                    {`);
+  lines.push(`                        sb.Append('\\f');`);
+  lines.push(`                    }`);
+  lines.push(`                    else if (e == 'n')`);
+  lines.push(`                    {`);
+  lines.push(`                        sb.Append('\\n');`);
+  lines.push(`                    }`);
+  lines.push(`                    else if (e == 'r')`);
+  lines.push(`                    {`);
+  lines.push(`                        sb.Append('\\r');`);
+  lines.push(`                    }`);
+  lines.push(`                    else if (e == 't')`);
+  lines.push(`                    {`);
+  lines.push(`                        sb.Append('\\t');`);
+  lines.push(`                    }`);
+  lines.push(`                    else if (e == 'u' && pos[0] + 4 <= cs.Length)`);
+  lines.push(`                    {`);
+  lines.push(`                        string hex = new string(cs, pos[0], 4);`);
+  lines.push(`                        pos[0] = pos[0] + 4;`);
+  lines.push(`                        sb.Append((char) Convert.ToInt32(hex, 16));`);
+  lines.push(`                    }`);
+  lines.push(`                    else`);
+  lines.push(`                    {`);
+  lines.push(`                        sb.Append(e);`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`                else`);
+  lines.push(`                {`);
+  lines.push(`                    sb.Append(c);`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            throw new Exception("json string");`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static object JsonParseLiteral(char[] cs, int[] pos)`);
+  lines.push(`        {`);
+  lines.push(`            if (pos[0] + 4 <= cs.Length && cs[pos[0]] == 't' && cs[pos[0] + 1] == 'r' && cs[pos[0] + 2] == 'u' && cs[pos[0] + 3] == 'e')`);
+  lines.push(`            {`);
+  lines.push(`                pos[0] = pos[0] + 4;`);
+  lines.push(`                return true;`);
+  lines.push(`            }`);
+  lines.push(`            if (pos[0] + 5 <= cs.Length && cs[pos[0]] == 'f' && cs[pos[0] + 1] == 'a' && cs[pos[0] + 2] == 'l' && cs[pos[0] + 3] == 's' && cs[pos[0] + 4] == 'e')`);
+  lines.push(`            {`);
+  lines.push(`                pos[0] = pos[0] + 5;`);
+  lines.push(`                return false;`);
+  lines.push(`            }`);
+  lines.push(`            if (pos[0] + 4 <= cs.Length && cs[pos[0]] == 'n' && cs[pos[0] + 1] == 'u' && cs[pos[0] + 2] == 'l' && cs[pos[0] + 3] == 'l')`);
+  lines.push(`            {`);
+  lines.push(`                pos[0] = pos[0] + 4;`);
+  lines.push(`                return null;`);
+  lines.push(`            }`);
+  lines.push(`            throw new Exception("json literal");`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static object JsonParseNumber(char[] cs, int[] pos)`);
+  lines.push(`        {`);
+  lines.push(`            int start = pos[0];`);
+  lines.push(`            if (cs[pos[0]] == '-')`);
+  lines.push(`            {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`            }`);
+  lines.push(`            while (pos[0] < cs.Length && cs[pos[0]] >= '0' && cs[pos[0]] <= '9')`);
+  lines.push(`            {`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`            }`);
+  lines.push(`            bool frac = false;`);
+  lines.push(`            if (pos[0] < cs.Length && cs[pos[0]] == '.')`);
+  lines.push(`            {`);
+  lines.push(`                frac = true;`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                while (pos[0] < cs.Length && cs[pos[0]] >= '0' && cs[pos[0]] <= '9')`);
+  lines.push(`                {`);
+  lines.push(`                    pos[0] = pos[0] + 1;`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            if (pos[0] < cs.Length && (cs[pos[0]] == 'e' || cs[pos[0]] == 'E'))`);
+  lines.push(`            {`);
+  lines.push(`                frac = true;`);
+  lines.push(`                pos[0] = pos[0] + 1;`);
+  lines.push(`                if (pos[0] < cs.Length && (cs[pos[0]] == '+' || cs[pos[0]] == '-'))`);
+  lines.push(`                {`);
+  lines.push(`                    pos[0] = pos[0] + 1;`);
+  lines.push(`                }`);
+  lines.push(`                while (pos[0] < cs.Length && cs[pos[0]] >= '0' && cs[pos[0]] <= '9')`);
+  lines.push(`                {`);
+  lines.push(`                    pos[0] = pos[0] + 1;`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            string raw = new string(cs, start, pos[0] - start);`);
+  lines.push(`            if (!frac)`);
+  lines.push(`            {`);
+  lines.push(`                long whole;`);
+  lines.push(`                if (long.TryParse(raw, out whole))`);
+  lines.push(`                {`);
+  lines.push(`                    return whole;`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            return double.Parse(raw, System.Globalization.CultureInfo.InvariantCulture);`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static object AsPageData(object data)`);
+  lines.push(`        {`);
+  lines.push(`            string s = data as string;`);
+  lines.push(`            if (s != null)`);
+  lines.push(`            {`);
+  lines.push(`                s = s.Trim();`);
+  lines.push(`                if (s.Length > 0 && (s[0] == '{' || s[0] == '['))`);
+  lines.push(`                {`);
+  lines.push(`                    try`);
+  lines.push(`                    {`);
+  lines.push(`                        return JsonParse(s);`);
+  lines.push(`                    }`);
+  lines.push(`                    catch (Exception)`);
+  lines.push(`                    {`);
+  lines.push(`                        return data;`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            return data;`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static int PageLen(object data)`);
+  lines.push(`        {`);
+  lines.push(`            IList list = data as IList;`);
+  lines.push(`            if (list != null && !(data is string))`);
+  lines.push(`            {`);
+  lines.push(`                return list.Count;`);
+  lines.push(`            }`);
+  lines.push(`            IDictionary dict = data as IDictionary;`);
+  lines.push(`            if (dict != null)`);
+  lines.push(`            {`);
+  lines.push(`                string[] keys = new string[] { "data", "items", "results" };`);
+  lines.push(`                for (int i = 0; i < keys.Length; i++)`);
+  lines.push(`                {`);
+  lines.push(`                    if (dict.Contains(keys[i]))`);
+  lines.push(`                    {`);
+  lines.push(`                        IList a = dict[keys[i]] as IList;`);
+  lines.push(`                        if (a != null)`);
+  lines.push(`                        {`);
+  lines.push(`                            return a.Count;`);
+  lines.push(`                        }`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            return -1;`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static string NextCursorOf(object data)`);
+  lines.push(`        {`);
+  lines.push(`            IDictionary dict = data as IDictionary;`);
+  lines.push(`            if (dict == null)`);
+  lines.push(`            {`);
+  lines.push(`                return null;`);
+  lines.push(`            }`);
+  lines.push(`            string[] keys = new string[] { "next", "next_cursor", "nextPageToken" };`);
+  lines.push(`            for (int i = 0; i < keys.Length; i++)`);
+  lines.push(`            {`);
+  lines.push(`                if (dict.Contains(keys[i]))`);
+  lines.push(`                {`);
+  lines.push(`                    string v = dict[keys[i]] as string;`);
+  lines.push(`                    if (v != null && v.Length > 0)`);
+  lines.push(`                    {`);
+  lines.push(`                        return v;`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            return null;`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static int AsInt(object v, int fallback)`);
+  lines.push(`        {`);
+  lines.push(`            if (v == null)`);
+  lines.push(`            {`);
+  lines.push(`                return fallback;`);
+  lines.push(`            }`);
+  lines.push(`            if (v is byte || v is sbyte || v is short || v is ushort || v is int || v is uint || v is long || v is ulong || v is float || v is double || v is decimal)`);
+  lines.push(`            {`);
+  lines.push(`                return Convert.ToInt32(v);`);
+  lines.push(`            }`);
+  lines.push(`            int parsed;`);
+  lines.push(`            if (int.TryParse(Convert.ToString(v), out parsed))`);
+  lines.push(`            {`);
+  lines.push(`                return parsed;`);
+  lines.push(`            }`);
+  lines.push(`            return fallback;`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static Dictionary<string, object> CloneArgs(Dictionary<string, object> args)`);
+  lines.push(`        {`);
+  lines.push(`            return args != null ? new Dictionary<string, object>(args) : new Dictionary<string, object>();`);
+  lines.push(`        }`);
+  lines.push(``);
+}
+
+function emitCsharpIterate(lines, op, info, iterName) {
+  const fn = toCsharpIdent(op.operationId);
+  const csIter = toCsharpIdent(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\*\//g, "* /").replace(/</g, "").replace(/>/g, "");
+  lines.push(`        /// <summary>${csIter} ${summary}</summary>`);
+  lines.push(`        public List<object> ${csIter}(Dictionary<string, object> args)`);
+  lines.push(`        {`);
+  lines.push(`            Dictionary<string, object> state = CloneArgs(args);`);
+  if (mode === "offset") {
+    lines.push(`            int offset = AsInt(state.ContainsKey(${JSON.stringify(offsetKey)}) ? state[${JSON.stringify(offsetKey)}] : null, 0);`);
+  } else if (mode === "page") {
+    lines.push(`            int page = AsInt(state.ContainsKey(${JSON.stringify(pageKey)}) ? state[${JSON.stringify(pageKey)}] : null, 1);`);
+    lines.push(`            if (page < 1)`);
+    lines.push(`            {`);
+    lines.push(`                page = 1;`);
+    lines.push(`            }`);
+  }
+  lines.push(`            List<object> pages = new List<object>();`);
+  lines.push(`            for (int n = 0; n < 1000; n++)`);
+  lines.push(`            {`);
+  lines.push(`                Dictionary<string, object> call = CloneArgs(state);`);
+  if (mode === "offset") {
+    lines.push(`                call[${JSON.stringify(offsetKey)}] = offset;`);
+  } else if (mode === "page") {
+    lines.push(`                call[${JSON.stringify(pageKey)}] = page;`);
+  }
+  lines.push(`                object data = AsPageData(this.${fn}(call));`);
+  lines.push(`                pages.Add(data);`);
+  lines.push(`                int ln = PageLen(data);`);
+  if (sizeKey) {
+    lines.push(`                int size = AsInt(call.ContainsKey(${JSON.stringify(sizeKey)}) ? call[${JSON.stringify(sizeKey)}] : null, 0);`);
+    lines.push(`                if (data == null || ln == 0 || (size > 0 && ln >= 0 && ln < size))`);
+    lines.push(`                {`);
+    lines.push(`                    break;`);
+    lines.push(`                }`);
+  } else {
+    lines.push(`                if (data == null || ln == 0)`);
+    lines.push(`                {`);
+    lines.push(`                    break;`);
+    lines.push(`                }`);
+  }
+  lines.push(`                string cur = NextCursorOf(data);`);
+  lines.push(`                object prev = state.ContainsKey(${JSON.stringify(cursorKey)}) ? state[${JSON.stringify(cursorKey)}] : null;`);
+  lines.push(`                if (cur != null && (prev == null || cur != Convert.ToString(prev)))`);
+  lines.push(`                {`);
+  lines.push(`                    state[${JSON.stringify(cursorKey)}] = cur;`);
+  lines.push(`                    continue;`);
+  lines.push(`                }`);
+  if (mode === "cursor") {
+    lines.push(`                break;`);
+  } else if (mode === "offset") {
+    lines.push(`                if (ln < 0)`);
+    lines.push(`                {`);
+    lines.push(`                    break;`);
+    lines.push(`                }`);
+    if (sizeKey) {
+      lines.push(`                int step = size > 0 ? size : ln;`);
+    } else {
+      lines.push(`                int step = ln;`);
+    }
+    lines.push(`                if (step <= 0)`);
+    lines.push(`                {`);
+    lines.push(`                    break;`);
+    lines.push(`                }`);
+    lines.push(`                offset += step;`);
+  } else {
+    lines.push(`                if (ln < 0)`);
+    lines.push(`                {`);
+    lines.push(`                    break;`);
+    lines.push(`                }`);
+    lines.push(`                page += 1;`);
+  }
+  lines.push(`            }`);
+  lines.push(`            return pages;`);
+  lines.push(`        }`);
+  lines.push(``);
+}
+
 /**
  * Minimal C# HTTP client stub (stdlib System.Net.Http.HttpClient).
  * Classic `namespace Client { public class Client }` for broader compile (csc / older lang versions).
@@ -2406,6 +3854,8 @@ export function toCsharpIdent(name) {
 export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const safeTitle = String(title || "GeneratedClient").replace(/\*\//g, "* /");
+  const pageable = pageableOps(ops);
+  const auth = authFlags(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`// API: ${safeTitle}`);
@@ -2414,6 +3864,12 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`using System.Collections.Generic;`);
   lines.push(`using System.Net.Http;`);
   lines.push(`using System.Text;`);
+  lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
+  lines.push(`// Per-attempt request timeout (default 10s): CancellationToken. Override via Client.TimeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  if (auth.any) {
+    lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
+    lines.push(`// Set BearerToken / APIKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
+  }
   lines.push(``);
   lines.push(`namespace ${pkg.pascal}`);
   lines.push(`{`);
@@ -2422,6 +3878,13 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`    {`);
   lines.push(`        private readonly string baseUrl;`);
   lines.push(`        private readonly HttpClient http;`);
+  lines.push(`        public int TimeoutMs;`);
+  if (auth.hasBearer) {
+    lines.push(`        public string BearerToken;`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`        public string APIKey;`);
+  }
   lines.push(``);
   lines.push(`        public Client() : this("", null)`);
   lines.push(`        {`);
@@ -2442,29 +3905,159 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`                this.baseUrl = baseUrl.TrimEnd('/');`);
   lines.push(`            }`);
   lines.push(`            this.http = http ?? new HttpClient();`);
+  lines.push(`            this.TimeoutMs = EnvTimeoutMs();`);
+  if (auth.hasBearer) {
+    lines.push(`            this.BearerToken = EnvAuth("SDK_BEARER_TOKEN");`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`            this.APIKey = EnvAuth("SDK_API_KEY");`);
+  }
   lines.push(`        }`);
   lines.push(``);
-  lines.push(`        private object DoRequest(string method, string path, object body)`);
+  lines.push(`        private static int EnvTimeoutMs()`);
   lines.push(`        {`);
-  lines.push(`            HttpRequestMessage req = new HttpRequestMessage(new HttpMethod(method), this.baseUrl + path);`);
-  lines.push(`            if (body != null)`);
+  lines.push(`            string rawMs = Environment.GetEnvironmentVariable("SDK_TIMEOUT_MS");`);
+  lines.push(`            int parsedMs;`);
+  lines.push(`            if (!string.IsNullOrWhiteSpace(rawMs) && int.TryParse(rawMs.Trim(), out parsedMs) && parsedMs > 0)`);
   lines.push(`            {`);
-  lines.push(`                byte[] bytes = Encoding.UTF8.GetBytes(JsonStringify(body));`);
-  lines.push(`                req.Content = new ByteArrayContent(bytes);`);
-  lines.push(`                req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");`);
+  lines.push(`                return parsedMs;`);
   lines.push(`            }`);
-  lines.push(`            HttpResponseMessage res = this.http.SendAsync(req).GetAwaiter().GetResult();`);
-  lines.push(`            string text = res.Content.ReadAsStringAsync().GetAwaiter().GetResult();`);
-  lines.push(`            int code = (int)res.StatusCode;`);
-  lines.push(`            if (code < 200 || code >= 300)`);
+  lines.push(`            string rawSec = Environment.GetEnvironmentVariable("SDK_TIMEOUT_SEC");`);
+  lines.push(`            int parsedSec;`);
+  lines.push(`            if (!string.IsNullOrWhiteSpace(rawSec) && int.TryParse(rawSec.Trim(), out parsedSec) && parsedSec > 0)`);
   lines.push(`            {`);
-  lines.push(`                throw new Exception(method + " " + path + " -> " + code);`);
+  lines.push(`                return parsedSec * 1000;`);
   lines.push(`            }`);
-  lines.push(`            if (text == null || text.Length == 0)`);
+  lines.push(`            return 10000;`);
+  lines.push(`        }`);
+  lines.push(``);
+  if (auth.any) {
+    lines.push(`        private static string EnvAuth(string name)`);
+    lines.push(`        {`);
+    lines.push(`            string v = Environment.GetEnvironmentVariable(name);`);
+    lines.push(`            return string.IsNullOrWhiteSpace(v) ? "" : v.Trim();`);
+    lines.push(`        }`);
+    lines.push(``);
+  }
+  lines.push(`        private static int RetryDelayMs(HttpResponseMessage res, int attempt)`);
+  lines.push(`        {`);
+  lines.push(`            if (res != null && res.Headers.RetryAfter != null)`);
   lines.push(`            {`);
-  lines.push(`                return null;`);
+  lines.push(`                if (res.Headers.RetryAfter.Delta != null)`);
+  lines.push(`                {`);
+  lines.push(`                    double s = res.Headers.RetryAfter.Delta.Value.TotalSeconds;`);
+  lines.push(`                    if (s >= 0 && s < 30)`);
+  lines.push(`                    {`);
+  lines.push(`                        return (int)(s * 1000.0);`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`                if (res.Headers.RetryAfter.Date != null)`);
+  lines.push(`                {`);
+  lines.push(`                    double delta = (res.Headers.RetryAfter.Date.Value - DateTimeOffset.UtcNow).TotalMilliseconds;`);
+  lines.push(`                    if (delta >= 0 && delta < 30000)`);
+  lines.push(`                    {`);
+  lines.push(`                        return (int)delta;`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
   lines.push(`            }`);
-  lines.push(`            return text;`);
+  lines.push(`            return 100 * (1 << attempt);`);
+  lines.push(`        }`);
+  lines.push(``);
+  const reqSig = auth.any
+    ? `        private object DoRequest(string method, string path, object body, bool authBearer, string[] authHeaders, string[] authQuery)`
+    : `        private object DoRequest(string method, string path, object body)`;
+  lines.push(reqSig);
+  lines.push(`        {`);
+  lines.push(`            int timeout = this.TimeoutMs > 0 ? this.TimeoutMs : EnvTimeoutMs();`);
+  lines.push(`            Exception last = null;`);
+  lines.push(`            for (int attempt = 0; attempt < 3; attempt++)`);
+  lines.push(`            {`);
+  lines.push(`                string reqUrl = this.baseUrl + path;`);
+  if (auth.queryKeys.length) {
+    lines.push(`                if (authQuery != null && !string.IsNullOrWhiteSpace(this.APIKey))`);
+    lines.push(`                {`);
+    lines.push(`                    string key = this.APIKey.Trim();`);
+    lines.push(`                    for (int qi = 0; qi < authQuery.Length; qi++)`);
+    lines.push(`                    {`);
+    lines.push(`                        if (string.IsNullOrEmpty(authQuery[qi]))`);
+    lines.push(`                        {`);
+    lines.push(`                            continue;`);
+    lines.push(`                        }`);
+    lines.push(`                        reqUrl = reqUrl + (reqUrl.IndexOf('?') >= 0 ? "&" : "?") + Uri.EscapeDataString(authQuery[qi]) + "=" + Uri.EscapeDataString(key);`);
+    lines.push(`                    }`);
+    lines.push(`                }`);
+  }
+  lines.push(`                HttpRequestMessage req = new HttpRequestMessage(new HttpMethod(method), reqUrl);`);
+  if (auth.hasBearer) {
+    lines.push(`                if (authBearer && !string.IsNullOrWhiteSpace(this.BearerToken))`);
+    lines.push(`                {`);
+    lines.push(`                    req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + this.BearerToken.Trim());`);
+    lines.push(`                }`);
+  }
+  if (auth.headerKeys.length) {
+    lines.push(`                if (authHeaders != null && !string.IsNullOrWhiteSpace(this.APIKey))`);
+    lines.push(`                {`);
+    lines.push(`                    string key = this.APIKey.Trim();`);
+    lines.push(`                    for (int hi = 0; hi < authHeaders.Length; hi++)`);
+    lines.push(`                    {`);
+    lines.push(`                        if (!string.IsNullOrEmpty(authHeaders[hi]))`);
+    lines.push(`                        {`);
+    lines.push(`                            req.Headers.TryAddWithoutValidation(authHeaders[hi], key);`);
+    lines.push(`                        }`);
+    lines.push(`                    }`);
+    lines.push(`                }`);
+  }
+  lines.push(`                if (body != null)`);
+  lines.push(`                {`);
+  lines.push(`                    byte[] bytes = Encoding.UTF8.GetBytes(JsonStringify(body));`);
+  lines.push(`                    req.Content = new ByteArrayContent(bytes);`);
+  lines.push(`                    req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");`);
+  lines.push(`                }`);
+  lines.push(`                try`);
+  lines.push(`                {`);
+  lines.push(`                    using (System.Threading.CancellationTokenSource cts = new System.Threading.CancellationTokenSource())`);
+  lines.push(`                    {`);
+  lines.push(`                        cts.CancelAfter(timeout);`);
+  lines.push(`                        using (HttpResponseMessage res = this.http.SendAsync(req, cts.Token).GetAwaiter().GetResult())`);
+  lines.push(`                        {`);
+  lines.push(`                            string text = res.Content.ReadAsStringAsync().GetAwaiter().GetResult();`);
+  lines.push(`                            int code = (int)res.StatusCode;`);
+  lines.push(`                            if (code >= 200 && code < 300)`);
+  lines.push(`                            {`);
+  lines.push(`                                if (text == null || text.Length == 0)`);
+  lines.push(`                                {`);
+  lines.push(`                                    return null;`);
+  lines.push(`                                }`);
+  lines.push(`                                return text;`);
+  lines.push(`                            }`);
+  lines.push(`                            if ((code == 429 || code >= 500) && attempt < 2)`);
+  lines.push(`                            {`);
+  lines.push(`                                System.Threading.Thread.Sleep(RetryDelayMs(res, attempt));`);
+  lines.push(`                                continue;`);
+  lines.push(`                            }`);
+  lines.push(`                            throw new Exception(method + " " + path + " -> " + code);`);
+  lines.push(`                        }`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`                catch (Exception e)`);
+  lines.push(`                {`);
+  lines.push(`                    if (e.Message != null && e.Message.IndexOf(" -> ") >= 0 && !(e is System.Net.Http.HttpRequestException) && !(e is System.Threading.Tasks.TaskCanceledException) && !(e is OperationCanceledException))`);
+  lines.push(`                    {`);
+  lines.push(`                        throw;`);
+  lines.push(`                    }`);
+  lines.push(`                    last = e;`);
+  lines.push(`                    if (attempt >= 2)`);
+  lines.push(`                    {`);
+  lines.push(`                        throw;`);
+  lines.push(`                    }`);
+  lines.push(`                    System.Threading.Thread.Sleep(100 * (1 << attempt));`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            if (last != null)`);
+  lines.push(`            {`);
+  lines.push(`                throw last;`);
+  lines.push(`            }`);
+  lines.push(`            throw new Exception(method + " " + path + " -> network");`);
   lines.push(`        }`);
   lines.push(``);
   lines.push(`        private static string UrlEncode(string s)`);
@@ -2620,8 +4213,10 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`        }`);
   lines.push(``);
 
+  if (pageable.length) emitCsharpPageRuntime(lines);
   for (const op of ops) {
     const fn = toCsharpIdent(op.operationId);
+    const authSuf = csharpAuthArgs(op, auth.any);
     const summary = String(op.summary || `${op.method} ${op.path}`)
       .replace(/\*\//g, "* /")
       .replace(/</g, "")
@@ -2633,12 +4228,14 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
     lines.push(`            Dictionary<string, object> rest = args != null ? new Dictionary<string, object>(args) : new Dictionary<string, object>();`);
     lines.push(`            string path = ExpandPath(${JSON.stringify(op.path)}, rest);`);
     if (op.method === "GET" || op.method === "DELETE") {
-      lines.push(`            return DoRequest(${JSON.stringify(op.method)}, path + QueryString(rest), null);`);
+      lines.push(`            return DoRequest(${JSON.stringify(op.method)}, path + QueryString(rest), null` + authSuf + `);`);
     } else {
-      lines.push(`            return DoRequest(${JSON.stringify(op.method)}, path, rest);`);
+      lines.push(`            return DoRequest(${JSON.stringify(op.method)}, path, rest` + authSuf + `);`);
     }
     lines.push(`        }`);
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitCsharpIterate(lines, op, hit.info, hit.iter);
   }
 
   lines.push(`    }`);
@@ -2670,6 +4267,350 @@ export function toKotlinIdent(name) {
   return cleaned;
 }
 
+
+function emitKotlinPageRuntime(lines) {
+  lines.push(`    // Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.`);
+  lines.push(`    private fun jsonSkipWs(cs: CharArray, pos: IntArray) {`);
+  lines.push(`        while (pos[0] < cs.size) {`);
+  lines.push(`            val c = cs[pos[0]]`);
+  lines.push(`            if (c == ' ' || c == '\\n' || c == '\\r' || c == '\\t') {`);
+  lines.push(`                pos[0] = pos[0] + 1`);
+  lines.push(`            } else {`);
+  lines.push(`                break`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun jsonParse(s: String?): Any? {`);
+  lines.push(`        if (s == null) {`);
+  lines.push(`            return null`);
+  lines.push(`        }`);
+  lines.push(`        val cs = s.toCharArray()`);
+  lines.push(`        val pos = intArrayOf(0)`);
+  lines.push(`        val v = jsonParseValue(cs, pos)`);
+  lines.push(`        jsonSkipWs(cs, pos)`);
+  lines.push(`        return v`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun jsonParseValue(cs: CharArray, pos: IntArray): Any? {`);
+  lines.push(`        jsonSkipWs(cs, pos)`);
+  lines.push(`        if (pos[0] >= cs.size) {`);
+  lines.push(`            throw RuntimeException("json eof")`);
+  lines.push(`        }`);
+  lines.push(`        val c = cs[pos[0]]`);
+  lines.push(`        if (c == '{') {`);
+  lines.push(`            return jsonParseObject(cs, pos)`);
+  lines.push(`        }`);
+  lines.push(`        if (c == '[') {`);
+  lines.push(`            return jsonParseArray(cs, pos)`);
+  lines.push(`        }`);
+  lines.push(`        if (c == '"') {`);
+  lines.push(`            return jsonParseString(cs, pos)`);
+  lines.push(`        }`);
+  lines.push(`        if (c == 't' || c == 'f' || c == 'n') {`);
+  lines.push(`            return jsonParseLiteral(cs, pos)`);
+  lines.push(`        }`);
+  lines.push(`        if (c == '-' || (c >= '0' && c <= '9')) {`);
+  lines.push(`            return jsonParseNumber(cs, pos)`);
+  lines.push(`        }`);
+  lines.push(`        throw RuntimeException("json value")`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun jsonParseObject(cs: CharArray, pos: IntArray): Any? {`);
+  lines.push(`        pos[0] = pos[0] + 1`);
+  lines.push(`        val m = HashMap<String, Any?>()`);
+  lines.push(`        jsonSkipWs(cs, pos)`);
+  lines.push(`        if (pos[0] < cs.size && cs[pos[0]] == '}') {`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            return m`);
+  lines.push(`        }`);
+  lines.push(`        while (true) {`);
+  lines.push(`            jsonSkipWs(cs, pos)`);
+  lines.push(`            val key = jsonParseString(cs, pos)`);
+  lines.push(`            jsonSkipWs(cs, pos)`);
+  lines.push(`            if (pos[0] >= cs.size || cs[pos[0]] != ':') {`);
+  lines.push(`                throw RuntimeException("json colon")`);
+  lines.push(`            }`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            m.put(key, jsonParseValue(cs, pos))`);
+  lines.push(`            jsonSkipWs(cs, pos)`);
+  lines.push(`            if (pos[0] >= cs.size) {`);
+  lines.push(`                throw RuntimeException("json object")`);
+  lines.push(`            }`);
+  lines.push(`            val c = cs[pos[0]]`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            if (c == '}') {`);
+  lines.push(`                return m`);
+  lines.push(`            }`);
+  lines.push(`            if (c != ',') {`);
+  lines.push(`                throw RuntimeException("json object")`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun jsonParseArray(cs: CharArray, pos: IntArray): Any? {`);
+  lines.push(`        pos[0] = pos[0] + 1`);
+  lines.push(`        val a = ArrayList<Any?>()`);
+  lines.push(`        jsonSkipWs(cs, pos)`);
+  lines.push(`        if (pos[0] < cs.size && cs[pos[0]] == ']') {`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            return a`);
+  lines.push(`        }`);
+  lines.push(`        while (true) {`);
+  lines.push(`            a.add(jsonParseValue(cs, pos))`);
+  lines.push(`            jsonSkipWs(cs, pos)`);
+  lines.push(`            if (pos[0] >= cs.size) {`);
+  lines.push(`                throw RuntimeException("json array")`);
+  lines.push(`            }`);
+  lines.push(`            val c = cs[pos[0]]`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            if (c == ']') {`);
+  lines.push(`                return a`);
+  lines.push(`            }`);
+  lines.push(`            if (c != ',') {`);
+  lines.push(`                throw RuntimeException("json array")`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun jsonParseString(cs: CharArray, pos: IntArray): String {`);
+  lines.push(`        if (pos[0] >= cs.size || cs[pos[0]] != '"') {`);
+  lines.push(`            throw RuntimeException("json string")`);
+  lines.push(`        }`);
+  lines.push(`        pos[0] = pos[0] + 1`);
+  lines.push(`        val sb = StringBuilder()`);
+  lines.push(`        while (pos[0] < cs.size) {`);
+  lines.push(`            val c = cs[pos[0]]`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            if (c == '"') {`);
+  lines.push(`                return sb.toString()`);
+  lines.push(`            }`);
+  lines.push(`            if (c == '\\\\') {`);
+  lines.push(`                if (pos[0] >= cs.size) {`);
+  lines.push(`                    throw RuntimeException("json string")`);
+  lines.push(`                }`);
+  lines.push(`                val e = cs[pos[0]]`);
+  lines.push(`                pos[0] = pos[0] + 1`);
+  lines.push(`                if (e == '"' || e == '\\\\' || e == '/') {`);
+  lines.push(`                    sb.append(e)`);
+  lines.push(`                } else if (e == 'b') {`);
+  lines.push(`                    sb.append('\\b')`);
+  lines.push(`                } else if (e == 'f') {`);
+  lines.push(`                    sb.append('\\f')`);
+  lines.push(`                } else if (e == 'n') {`);
+  lines.push(`                    sb.append('\\n')`);
+  lines.push(`                } else if (e == 'r') {`);
+  lines.push(`                    sb.append('\\r')`);
+  lines.push(`                } else if (e == 't') {`);
+  lines.push(`                    sb.append('\\t')`);
+  lines.push(`                } else if (e == 'u' && pos[0] + 4 <= cs.size) {`);
+  lines.push(`                    val hex = String(cs, pos[0], 4)`);
+  lines.push(`                    pos[0] = pos[0] + 4`);
+  lines.push(`                    sb.append(Integer.parseInt(hex, 16).toChar())`);
+  lines.push(`                } else {`);
+  lines.push(`                    sb.append(e)`);
+  lines.push(`                }`);
+  lines.push(`            } else {`);
+  lines.push(`                sb.append(c)`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        throw RuntimeException("json string")`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun jsonParseLiteral(cs: CharArray, pos: IntArray): Any? {`);
+  lines.push(`        if (pos[0] + 4 <= cs.size && cs[pos[0]] == 't' && cs[pos[0] + 1] == 'r' && cs[pos[0] + 2] == 'u' && cs[pos[0] + 3] == 'e') {`);
+  lines.push(`            pos[0] = pos[0] + 4`);
+  lines.push(`            return true`);
+  lines.push(`        }`);
+  lines.push(`        if (pos[0] + 5 <= cs.size && cs[pos[0]] == 'f' && cs[pos[0] + 1] == 'a' && cs[pos[0] + 2] == 'l' && cs[pos[0] + 3] == 's' && cs[pos[0] + 4] == 'e') {`);
+  lines.push(`            pos[0] = pos[0] + 5`);
+  lines.push(`            return false`);
+  lines.push(`        }`);
+  lines.push(`        if (pos[0] + 4 <= cs.size && cs[pos[0]] == 'n' && cs[pos[0] + 1] == 'u' && cs[pos[0] + 2] == 'l' && cs[pos[0] + 3] == 'l') {`);
+  lines.push(`            pos[0] = pos[0] + 4`);
+  lines.push(`            return null`);
+  lines.push(`        }`);
+  lines.push(`        throw RuntimeException("json literal")`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun jsonParseNumber(cs: CharArray, pos: IntArray): Any? {`);
+  lines.push(`        val start = pos[0]`);
+  lines.push(`        if (cs[pos[0]] == '-') {`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`        }`);
+  lines.push(`        while (pos[0] < cs.size && cs[pos[0]] >= '0' && cs[pos[0]] <= '9') {`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`        }`);
+  lines.push(`        var frac = false`);
+  lines.push(`        if (pos[0] < cs.size && cs[pos[0]] == '.') {`);
+  lines.push(`            frac = true`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            while (pos[0] < cs.size && cs[pos[0]] >= '0' && cs[pos[0]] <= '9') {`);
+  lines.push(`                pos[0] = pos[0] + 1`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        if (pos[0] < cs.size && (cs[pos[0]] == 'e' || cs[pos[0]] == 'E')) {`);
+  lines.push(`            frac = true`);
+  lines.push(`            pos[0] = pos[0] + 1`);
+  lines.push(`            if (pos[0] < cs.size && (cs[pos[0]] == '+' || cs[pos[0]] == '-')) {`);
+  lines.push(`                pos[0] = pos[0] + 1`);
+  lines.push(`            }`);
+  lines.push(`            while (pos[0] < cs.size && cs[pos[0]] >= '0' && cs[pos[0]] <= '9') {`);
+  lines.push(`                pos[0] = pos[0] + 1`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        val raw = String(cs, start, pos[0] - start)`);
+  lines.push(`        if (!frac) {`);
+  lines.push(`            try {`);
+  lines.push(`                return raw.toLong()`);
+  lines.push(`            } catch (ignored: NumberFormatException) {`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return raw.toDouble()`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun asPageData(data: Any?): Any? {`);
+  lines.push(`        if (data is String) {`);
+  lines.push(`            val s = data.trim()`);
+  lines.push(`            if (s.isNotEmpty() && (s[0] == '{' || s[0] == '[')) {`);
+  lines.push(`                try {`);
+  lines.push(`                    return jsonParse(s)`);
+  lines.push(`                } catch (ignored: Exception) {`);
+  lines.push(`                    return data`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return data`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun pageLen(data: Any?): Int {`);
+  lines.push(`        if (data is List<*>) {`);
+  lines.push(`            return data.size`);
+  lines.push(`        }`);
+  lines.push(`        if (data is Map<*, *>) {`);
+  lines.push(`            for (k in arrayOf("data", "items", "results")) {`);
+  lines.push(`                val a = data[k]`);
+  lines.push(`                if (a is List<*>) {`);
+  lines.push(`                    return a.size`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return -1`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun nextCursorOf(data: Any?): String? {`);
+  lines.push(`        if (data !is Map<*, *>) {`);
+  lines.push(`            return null`);
+  lines.push(`        }`);
+  lines.push(`        for (k in arrayOf("next", "next_cursor", "nextPageToken")) {`);
+  lines.push(`            val v = data[k]`);
+  lines.push(`            if (v is String && v.isNotEmpty()) {`);
+  lines.push(`                return v`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return null`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun asInt(v: Any?, fallback: Int): Int {`);
+  lines.push(`        if (v == null) {`);
+  lines.push(`            return fallback`);
+  lines.push(`        }`);
+  lines.push(`        if (v is Number) {`);
+  lines.push(`            return v.toInt()`);
+  lines.push(`        }`);
+  lines.push(`        try {`);
+  lines.push(`            return v.toString().trim().toInt()`);
+  lines.push(`        } catch (ignored: Exception) {`);
+  lines.push(`            return fallback`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun cloneArgs(args: Map<String, Any?>?): HashMap<String, Any?> {`);
+  lines.push(`        val out = HashMap<String, Any?>()`);
+  lines.push(`        if (args != null) {`);
+  lines.push(`            out.putAll(args)`);
+  lines.push(`        }`);
+  lines.push(`        return out`);
+  lines.push(`    }`);
+  lines.push(``);
+}
+
+function emitKotlinIterate(lines, op, info, iterName) {
+  const fn = toKotlinIdent(op.operationId);
+  const ktIter = toKotlinIdent(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\*\//g, "* /");
+  lines.push(`    /** ${ktIter} ${summary} */`);
+  lines.push(`    fun ${ktIter}(args: Map<String, Any?>?): List<Any?> {`);
+  lines.push(`        val state = cloneArgs(args)`);
+  if (mode === "offset") {
+    lines.push(`        var offset = asInt(state[${JSON.stringify(offsetKey)}], 0)`);
+  } else if (mode === "page") {
+    lines.push(`        var page = asInt(state[${JSON.stringify(pageKey)}], 1)`);
+    lines.push(`        if (page < 1) {`);
+    lines.push(`            page = 1`);
+    lines.push(`        }`);
+  }
+  lines.push(`        val pages = ArrayList<Any?>()`);
+  lines.push(`        var n = 0`);
+  lines.push(`        while (n < 1000) {`);
+  lines.push(`            n += 1`);
+  lines.push(`            val call = cloneArgs(state)`);
+  if (mode === "offset") {
+    lines.push(`            call[${JSON.stringify(offsetKey)}] = offset`);
+  } else if (mode === "page") {
+    lines.push(`            call[${JSON.stringify(pageKey)}] = page`);
+  }
+  lines.push(`            val data = asPageData(this.${fn}(call))`);
+  lines.push(`            pages.add(data)`);
+  lines.push(`            val ln = pageLen(data)`);
+  if (sizeKey) {
+    lines.push(`            val size = asInt(call[${JSON.stringify(sizeKey)}], 0)`);
+    lines.push(`            if (data == null || ln == 0 || (size > 0 && ln >= 0 && ln < size)) {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+  } else {
+    lines.push(`            if (data == null || ln == 0) {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+  }
+  lines.push(`            val cur = nextCursorOf(data)`);
+  lines.push(`            val prev = state[${JSON.stringify(cursorKey)}]`);
+  lines.push(`            if (cur != null && (prev == null || cur != prev.toString())) {`);
+  lines.push(`                state[${JSON.stringify(cursorKey)}] = cur`);
+  lines.push(`                continue`);
+  lines.push(`            }`);
+  if (mode === "cursor") {
+    lines.push(`            break`);
+  } else if (mode === "offset") {
+    lines.push(`            if (ln < 0) {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+    if (sizeKey) {
+      lines.push(`            val step = if (size > 0) size else ln`);
+    } else {
+      lines.push(`            val step = ln`);
+    }
+    lines.push(`            if (step <= 0) {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+    lines.push(`            offset += step`);
+  } else {
+    lines.push(`            if (ln < 0) {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+    lines.push(`            page += 1`);
+  }
+  lines.push(`        }`);
+  lines.push(`        return pages`);
+  lines.push(`    }`);
+  lines.push(``);
+}
+
 /**
  * Minimal Kotlin HTTP client stub (JVM stdlib java.net.HttpURLConnection).
  * Compiles with `kotlinc Client.kt` on the JVM (same HTTP stack as the Java client).
@@ -2677,6 +4618,8 @@ export function toKotlinIdent(name) {
 export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const safeTitle = String(title || "GeneratedClient").replace(/\*\//g, "* /");
+  const pageable = pageableOps(ops);
+  const auth = authFlags(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
   lines.push(`// API: ${safeTitle}`);
@@ -2690,14 +4633,37 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`import java.net.URLEncoder`);
   lines.push(`import java.nio.charset.StandardCharsets`);
   lines.push(`import java.util.HashMap`);
+  if (pageable.length) {
+    lines.push(`import java.util.ArrayList`);
+  }
   lines.push(`import java.util.StringJoiner`);
   lines.push(``);
   lines.push(`/** Minimal HTTP client stub generated from OpenAPI (java.net.HttpURLConnection). */`);
+  lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
+  lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
+  if (auth.any) {
+    lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
+    lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
+  }
   lines.push(`class Client {`);
   lines.push(`    private val baseUrl: String`);
+  lines.push(`    var timeoutMs: Int`);
+  if (auth.hasBearer) {
+    lines.push(`    var bearerToken: String`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`    var apiKey: String`);
+  }
   lines.push(``);
   lines.push(`    constructor() {`);
   lines.push(`        this.baseUrl = ""`);
+  lines.push(`        this.timeoutMs = envTimeoutMs()`);
+  if (auth.hasBearer) {
+    lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN")`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`        this.apiKey = envAuth("SDK_API_KEY")`);
+  }
   lines.push(`    }`);
   lines.push(``);
   lines.push(`    constructor(baseUrl: String?) {`);
@@ -2710,39 +4676,165 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`            }`);
   lines.push(`            this.baseUrl = baseUrl.substring(0, n)`);
   lines.push(`        }`);
+  lines.push(`        this.timeoutMs = envTimeoutMs()`);
+  if (auth.hasBearer) {
+    lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN")`);
+  }
+  if (auth.headerKeys.length || auth.queryKeys.length) {
+    lines.push(`        this.apiKey = envAuth("SDK_API_KEY")`);
+  }
   lines.push(`    }`);
   lines.push(``);
-  lines.push(`    private fun doRequest(method: String, path: String, body: Any?): Any? {`);
-  lines.push(`        val url = URL(this.baseUrl + path)`);
-  lines.push(`        val conn = url.openConnection() as HttpURLConnection`);
-  lines.push(`        try {`);
-  lines.push(`            conn.requestMethod = method`);
-  lines.push(`            conn.connectTimeout = 30000`);
-  lines.push(`            conn.readTimeout = 30000`);
-  lines.push(`            if (body != null) {`);
-  lines.push(`                val bytes = jsonStringify(body).toByteArray(StandardCharsets.UTF_8)`);
-  lines.push(`                conn.doOutput = true`);
-  lines.push(`                conn.setRequestProperty("Content-Type", "application/json")`);
-  lines.push(`                val os: OutputStream = conn.outputStream`);
+  lines.push(`    private fun envTimeoutMs(): Int {`);
+  lines.push(`        val rawMs = System.getenv("SDK_TIMEOUT_MS")`);
+  lines.push(`        if (rawMs != null && rawMs.trim().isNotEmpty()) {`);
+  lines.push(`            try {`);
+  lines.push(`                val ms = rawMs.trim().toInt()`);
+  lines.push(`                if (ms > 0) {`);
+  lines.push(`                    return ms`);
+  lines.push(`                }`);
+  lines.push(`            } catch (ignored: NumberFormatException) {`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        val rawSec = System.getenv("SDK_TIMEOUT_SEC")`);
+  lines.push(`        if (rawSec != null && rawSec.trim().isNotEmpty()) {`);
+  lines.push(`            try {`);
+  lines.push(`                val sec = rawSec.trim().toInt()`);
+  lines.push(`                if (sec > 0) {`);
+  lines.push(`                    return sec * 1000`);
+  lines.push(`                }`);
+  lines.push(`            } catch (ignored: NumberFormatException) {`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return 10000`);
+  lines.push(`    }`);
+  lines.push(``);
+  if (auth.any) {
+    lines.push(`    private fun envAuth(name: String): String {`);
+    lines.push(`        val v = System.getenv(name)`);
+    lines.push(`        if (v == null) {`);
+    lines.push(`            return ""`);
+    lines.push(`        }`);
+    lines.push(`        return v.trim()`);
+    lines.push(`    }`);
+    lines.push(``);
+  }
+  lines.push(`    private fun retryDelayMs(conn: HttpURLConnection?, attempt: Int): Long {`);
+  lines.push(`        var raw = if (conn == null) null else conn.getHeaderField("Retry-After")`);
+  lines.push(`        if (raw != null) {`);
+  lines.push(`            raw = raw.trim()`);
+  lines.push(`            try {`);
+  lines.push(`                val sec = raw.toDouble()`);
+  lines.push(`                if (sec >= 0 && sec < 30) {`);
+  lines.push(`                    return (sec * 1000.0).toLong()`);
+  lines.push(`                }`);
+  lines.push(`            } catch (ignored: NumberFormatException) {`);
   lines.push(`                try {`);
-  lines.push(`                    os.write(bytes)`);
-  lines.push(`                } finally {`);
-  lines.push(`                    os.close()`);
+  lines.push(`                    val whenAt = java.time.ZonedDateTime.parse(raw, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)`);
+  lines.push(`                    val delta = whenAt.toInstant().toEpochMilli() - System.currentTimeMillis()`);
+  lines.push(`                    if (delta >= 0 && delta < 30000) {`);
+  lines.push(`                        return delta`);
+  lines.push(`                    }`);
+  lines.push(`                } catch (ignored2: Exception) {`);
   lines.push(`                }`);
   lines.push(`            }`);
-  lines.push(`            val code = conn.responseCode`);
-  lines.push(`            val stream: InputStream? = if (code >= 400) conn.errorStream else conn.inputStream`);
-  lines.push(`            val text = readAll(stream)`);
-  lines.push(`            if (code < 200 || code >= 300) {`);
-  lines.push(`                throw RuntimeException(method + " " + path + " -> " + code)`);
-  lines.push(`            }`);
-  lines.push(`            if (text == null || text.length == 0) {`);
-  lines.push(`                return null`);
-  lines.push(`            }`);
-  lines.push(`            return text`);
-  lines.push(`        } finally {`);
-  lines.push(`            conn.disconnect()`);
   lines.push(`        }`);
+  lines.push(`        return 100L * (1L shl attempt)`);
+  lines.push(`    }`);
+  lines.push(``);
+  const reqSig = auth.any
+    ? `    private fun doRequest(method: String, path: String, body: Any?, authBearer: Boolean, authHeaders: Array<String>?, authQuery: Array<String>?): Any? {`
+    : `    private fun doRequest(method: String, path: String, body: Any?): Any? {`;
+  lines.push(reqSig);
+  lines.push(`        val timeout = if (this.timeoutMs > 0) this.timeoutMs else envTimeoutMs()`);
+  lines.push(`        var last: Exception? = null`);
+  lines.push(`        var attempt = 0`);
+  lines.push(`        while (attempt < 3) {`);
+  lines.push(`            var conn: HttpURLConnection? = null`);
+  lines.push(`            try {`);
+  lines.push(`                var reqPath = path`);
+  if (auth.queryKeys.length) {
+    lines.push(`                val qNames = authQuery`);
+    lines.push(`                val qKey = this.apiKey`);
+    lines.push(`                if (qNames != null && qKey != null && qKey.trim().isNotEmpty()) {`);
+    lines.push(`                    val key = qKey.trim()`);
+    lines.push(`                    for (q in qNames) {`);
+    lines.push(`                        if (q == null || q.isEmpty()) {`);
+    lines.push(`                            continue`);
+    lines.push(`                        }`);
+    lines.push(`                        reqPath = reqPath + (if (reqPath.indexOf('?') >= 0) "&" else "?") + urlEncode(q) + "=" + urlEncode(key)`);
+    lines.push(`                    }`);
+    lines.push(`                }`);
+  }
+  lines.push(`                val url = URL(this.baseUrl + reqPath)`);
+  lines.push(`                conn = url.openConnection() as HttpURLConnection`);
+  lines.push(`                conn.requestMethod = method`);
+  lines.push(`                conn.connectTimeout = timeout`);
+  lines.push(`                conn.readTimeout = timeout`);
+  lines.push(`                conn.useCaches = false`);
+  if (auth.hasBearer) {
+    lines.push(`                val tok = this.bearerToken`);
+    lines.push(`                if (authBearer && tok != null && tok.trim().isNotEmpty()) {`);
+    lines.push(`                    conn.setRequestProperty("Authorization", "Bearer " + tok.trim())`);
+    lines.push(`                }`);
+  }
+  if (auth.headerKeys.length) {
+    lines.push(`                val hNames = authHeaders`);
+    lines.push(`                val hKey = this.apiKey`);
+    lines.push(`                if (hNames != null && hKey != null && hKey.trim().isNotEmpty()) {`);
+    lines.push(`                    val key = hKey.trim()`);
+    lines.push(`                    for (h in hNames) {`);
+    lines.push(`                        if (h != null && h.isNotEmpty()) {`);
+    lines.push(`                            conn.setRequestProperty(h, key)`);
+    lines.push(`                        }`);
+    lines.push(`                    }`);
+    lines.push(`                }`);
+  }
+  lines.push(`                if (body != null) {`);
+  lines.push(`                    val bytes = jsonStringify(body).toByteArray(StandardCharsets.UTF_8)`);
+  lines.push(`                    conn.doOutput = true`);
+  lines.push(`                    conn.setRequestProperty("Content-Type", "application/json")`);
+  lines.push(`                    val os: OutputStream = conn.outputStream`);
+  lines.push(`                    try {`);
+  lines.push(`                        os.write(bytes)`);
+  lines.push(`                    } finally {`);
+  lines.push(`                        os.close()`);
+  lines.push(`                    }`);
+  lines.push(`                }`);
+  lines.push(`                val code = conn.responseCode`);
+  lines.push(`                val stream: InputStream? = if (code >= 400) conn.errorStream else conn.inputStream`);
+  lines.push(`                val text = readAll(stream)`);
+  lines.push(`                if (code >= 200 && code < 300) {`);
+  lines.push(`                    if (text == null || text.length == 0) {`);
+  lines.push(`                        return null`);
+  lines.push(`                    }`);
+  lines.push(`                    return text`);
+  lines.push(`                }`);
+  lines.push(`                if ((code == 429 || code >= 500) && attempt < 2) {`);
+  lines.push(`                    Thread.sleep(retryDelayMs(conn, attempt))`);
+  lines.push(`                    attempt += 1`);
+  lines.push(`                    continue`);
+  lines.push(`                }`);
+  lines.push(`                throw RuntimeException(method + " " + path + " -> " + code)`);
+  lines.push(`            } catch (e: RuntimeException) {`);
+  lines.push(`                throw e`);
+  lines.push(`            } catch (e: Exception) {`);
+  lines.push(`                last = e`);
+  lines.push(`                if (attempt >= 2) {`);
+  lines.push(`                    throw e`);
+  lines.push(`                }`);
+  lines.push(`                Thread.sleep(100L * (1L shl attempt))`);
+  lines.push(`            } finally {`);
+  lines.push(`                if (conn != null) {`);
+  lines.push(`                    conn.disconnect()`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`            attempt += 1`);
+  lines.push(`        }`);
+  lines.push(`        if (last != null) {`);
+  lines.push(`            throw last`);
+  lines.push(`        }`);
+  lines.push(`        throw RuntimeException(method + " " + path + " -> network")`);
   lines.push(`    }`);
   lines.push(``);
   lines.push(`    private fun readAll(input: InputStream?): String {`);
@@ -2849,8 +4941,10 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`    }`);
   lines.push(``);
 
+  if (pageable.length) emitKotlinPageRuntime(lines);
   for (const op of ops) {
     const fn = toKotlinIdent(op.operationId);
+    const authSuf = jvmAuthArgs(op, auth.any);
     const summary = String(op.summary || `${op.method} ${op.path}`).replace(/\*\//g, "* /");
     lines.push(`    /** ${fn} ${summary} (operationId: ${op.operationId}) */`);
     lines.push(`    fun ${fn}(args: Map<String, Any?>?): Any? {`);
@@ -2860,12 +4954,14 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
     lines.push(`        }`);
     lines.push(`        val path = expandPath(${JSON.stringify(op.path)}, rest)`);
     if (op.method === "GET" || op.method === "DELETE") {
-      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path + queryString(rest), null)`);
+      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path + queryString(rest), null` + authSuf + `)`);
     } else {
-      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path, rest)`);
+      lines.push(`        return doRequest(${JSON.stringify(op.method)}, path, rest` + authSuf + `)`);
     }
     lines.push(`    }`);
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitKotlinIterate(lines, op, hit.info, hit.iter);
   }
 
   lines.push(`}`);
@@ -3320,6 +5416,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
   const pkg = splitPkg(packageName);
   const names = ops.map((o) => o.operationId).join(", ");
   const pageable = (ops || []).filter((o) => paginationInfo(o));
+  const auth = authFlags(ops);
   const langSet = new Set(langs);
   const mcp = opts.mcp !== false;
   const mcpConfig = opts.mcpConfig;
@@ -3332,16 +5429,16 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     files.push(`- \`client.go\` — Go HTTP client stub (stdlib net/http, package ${pkg.ident})`);
   }
   if (langSet.has("java")) {
-    files.push(`- \`Client.java\` — Java HTTP client stub (stdlib HttpURLConnection, package ${pkg.ident})`);
+    files.push(`- \`Client.java\` — Java HTTP client stub (stdlib HttpURLConnection, package ${pkg.ident}; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("rust") || langSet.has("rs")) {
     files.push(`- \`client.rs\` — Rust HTTP/1.1 client stub (stdlib TcpStream, http:// only)`);
   }
   if (langSet.has("csharp") || langSet.has("cs") || langSet.has("c#")) {
-    files.push(`- \`Client.cs\` — C# HTTP client stub (stdlib HttpClient, namespace ${pkg.pascal})`);
+    files.push(`- \`Client.cs\` — C# HTTP client stub (stdlib HttpClient, namespace ${pkg.pascal}; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("kotlin") || langSet.has("kt")) {
-    files.push(`- \`Client.kt\` — Kotlin HTTP client stub (stdlib HttpURLConnection, package ${pkg.ident})`);
+    files.push(`- \`Client.kt\` — Kotlin HTTP client stub (stdlib HttpURLConnection, package ${pkg.ident}; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("swift")) {
     files.push(`- \`Client.swift\` — Swift HTTP client stub (Foundation URLSession, class Client)`);
@@ -3374,6 +5471,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     `Operations (${ops.length}): ${names}`,
     ``,
     ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
+    ...(auth.any ? [`Auth: constructor bearerToken / apiKey (or bearer_token / api_key / Client.BearerToken / APIKey) or env SDK_BEARER_TOKEN / SDK_API_KEY, attached per OpenAPI operation security (optional schemes when creds are set; ops without security omit credentials). MCP servers read MCP_BEARER_TOKEN / MCP_API_KEY (same SDK_* fallback). oauth2 / openIdConnect skipped (no fake tokens). Values never logged.`, ``] : []),
     `Files:`,
     ...files,
     ``,

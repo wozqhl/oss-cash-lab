@@ -2,6 +2,7 @@
 
 Exit codes:
   0  success (no --strict / --gate-licenses / --gate-vulns violations)
+     evidence-pack: pack written (gate codes recorded in MANIFEST.md)
   1  --strict: forbidden pattern hits, disclosure gaps, and/or forbidden licenses
      --gate-licenses: forbidden licenses only (CI license-policy gate)
      --gate-vulns: local advisory fixture hits (offline; not NVD)
@@ -19,8 +20,19 @@ from ai_bom.advisories import (
     attach_advisory_hits,
     load_advisories,
     match_advisories,
+    match_advisories_result,
     parse_purl,
     purl_identity_matches,
+)
+from ai_bom.osv_convert import convert_files, convert_record, dumps_converted
+from ai_bom.evidence_pack import (
+    CDX_FILENAME,
+    MANIFEST_FILENAME,
+    SPDX3_FILENAME,
+    default_advisories_path,
+    default_policy_path,
+    resolve_optional_path,
+    write_evidence_pack,
 )
 from ai_bom.scanner import (
     COMPONENTS_LIST_CAP,
@@ -41,6 +53,7 @@ from ai_bom.scanner import (
     render_evidence,
     resolve_exceptions_path,
     scan_path,
+    sha256_file,
     to_sarif,
 )
 from ai_bom.export import (
@@ -145,6 +158,353 @@ def _load_policy_arg(policy_path: str | None):
         return None, f"policy parse error: {e}"
 
 
+
+def _run_convert_advisories(args) -> int:
+    paths = [Path(x) for x in (getattr(args, "paths", None) or [])]
+    if not paths:
+        print("convert-advisories requires one or more OSV/GHSA JSON files")
+        return 2
+    out = getattr(args, "out", None)
+    if not out:
+        print("convert-advisories requires --out <file>")
+        return 2
+    try:
+        result = convert_files(paths)
+    except OSError as e:
+        print(f"convert-advisories IO error: {e}")
+        return 2
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"convert-advisories parse error: {e}")
+        return 2
+    outp = Path(out)
+    outp.parent.mkdir(parents=True, exist_ok=True)
+    outp.write_text(dumps_converted(result.document), encoding="utf-8")
+    print(f"wrote {outp} converted={result.converted} skipped={result.skipped}")
+    return 0
+
+
+def _run_evidence_pack(args) -> int:
+    scan_dir = Path(getattr(args, "dir", None) or "")
+    if not scan_dir or not str(scan_dir):
+        print("evidence-pack requires --dir DIR")
+        return 2
+    if not scan_dir.exists():
+        print(f"path not found: {scan_dir}")
+        return 2
+    out_raw = getattr(args, "out", None)
+    zip_raw = getattr(args, "zip_path", None)
+    if out_raw is None and zip_raw is None:
+        print("evidence-pack requires --out DIR and/or --zip [PATH]")
+        return 2
+    outdir = Path(out_raw) if out_raw else None
+    zip_path = None
+    if zip_raw is not None:
+        if zip_raw == "":
+            zip_path = (outdir.parent / f"{outdir.name}.zip") if outdir else Path("evidence-pack.zip")
+        else:
+            zip_path = Path(zip_raw)
+    try:
+        policy_path = resolve_optional_path(getattr(args, "policy", None), default_policy_path())
+        advisories_path = resolve_optional_path(
+            getattr(args, "advisories", None), default_advisories_path()
+        )
+        if getattr(args, "policy", None) and policy_path is not None and not policy_path.is_file():
+            print(f"policy not found: {policy_path}")
+            return 2
+        if getattr(args, "advisories", None) and advisories_path is not None and not advisories_path.is_file():
+            print(f"advisories not found: {advisories_path}")
+            return 2
+        result = write_evidence_pack(
+            scan_dir,
+            outdir=outdir,
+            zip_path=zip_path,
+            policy_path=policy_path,
+            advisories_path=advisories_path,
+        )
+    except OSError as e:
+        print(f"evidence-pack IO error: {e}")
+        return 2
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"evidence-pack parse error: {e}")
+        return 2
+    if result.outdir:
+        for name in result.files:
+            print(f"wrote {result.outdir / name}")
+    if result.zip_path:
+        print(f"wrote {result.zip_path}")
+    lic = result.license_gate if result.license_gate is not None else "skipped"
+    vul = result.vuln_gate if result.vuln_gate is not None else "skipped"
+    print(f"license-gate={lic} vuln-gate={vul}")
+    return 0
+
+
+def _smoke_evidence_pack() -> str | None:
+    """Write pack for sample-app + CRA fixtures; assert three artifacts. None = ok."""
+    root = Path(__file__).resolve().parents[2]
+    sample_app = root / "examples" / "sample-app"
+    fixtures = root / "examples" / "cra-fixtures"
+    policy = root / "policies" / "default.json"
+    clean = root / "examples" / "advisories" / "clean.json"
+    sample_adv = root / "examples" / "advisories" / "sample.json"
+    with tempfile.TemporaryDirectory() as td:
+        td_p = Path(td)
+        sample_out = td_p / "sample-pack"
+        rc = main([
+            "evidence-pack",
+            "--dir", str(sample_app),
+            "--out", str(sample_out),
+            "--policy", str(policy),
+            "--advisories", str(sample_adv),
+        ])
+        if rc != 0:
+            return f"sample-app pack exit {rc}"
+        cdx_p = sample_out / CDX_FILENAME
+        spdx3_p = sample_out / SPDX3_FILENAME
+        man_p = sample_out / MANIFEST_FILENAME
+        if not (cdx_p.is_file() and spdx3_p.is_file() and man_p.is_file()):
+            return f"sample-app missing artifacts {[p.name for p in (cdx_p, spdx3_p, man_p) if not p.is_file()]}"
+        try:
+            cdx = json.loads(cdx_p.read_text(encoding="utf-8"))
+            spdx3 = json.loads(spdx3_p.read_text(encoding="utf-8"))
+        except Exception as e:
+            return f"sample-app pack parse {e}"
+        if cdx.get("bomFormat") != "CycloneDX" or cdx.get("specVersion") != "1.7":
+            return f"sample-app cyclonedx {cdx.get('bomFormat')} {cdx.get('specVersion')}"
+        if (spdx3.get("creationInfo") or {}).get("specVersion") != "3.0.1":
+            return f"sample-app spdx3 {(spdx3.get('creationInfo') or {}).get('specVersion')}"
+        man = man_p.read_text(encoding="utf-8")
+        if "inventory + match evidence" not in man or "not a CRA declaration" not in man:
+            return "sample-app MANIFEST missing disclaimer"
+        low = man.lower()
+        if "compliant" in low or "certified" in low:
+            return "sample-app MANIFEST invented conformity badge"
+        if "Generated:" not in man or "license (`--gate-licenses`)" not in man:
+            return "sample-app MANIFEST missing timestamp/gates"
+        pass_out = td_p / "pass-pack"
+        pass_rc = main([
+            "evidence-pack",
+            "--dir", str(fixtures / "license-pass"),
+            "--out", str(pass_out),
+            "--policy", str(policy),
+            "--advisories", str(clean),
+        ])
+        if pass_rc != 0:
+            return f"license-pass pack exit {pass_rc}"
+        if not all((pass_out / n).is_file() for n in (CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME)):
+            return "license-pass missing artifacts"
+        fail_out = td_p / "fail-pack"
+        fail_rc = main([
+            "evidence-pack",
+            "--dir", str(fixtures / "license-fail"),
+            "--out", str(fail_out),
+            "--policy", str(policy),
+            "--advisories", str(clean),
+        ])
+        if fail_rc != 0:
+            return f"license-fail pack exit {fail_rc}"
+        if not all((fail_out / n).is_file() for n in (CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME)):
+            return "license-fail missing artifacts"
+        fail_man = (fail_out / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        if "| license (`--gate-licenses`) | 1 |" not in fail_man:
+            return f"license-fail gate not recorded as 1: {fail_man}"
+        pass_man = (pass_out / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        if "| license (`--gate-licenses`) | 0 |" not in pass_man:
+            return f"license-pass gate not recorded as 0: {pass_man}"
+        zip_path = td_p / "pack.zip"
+        zip_rc = main([
+            "evidence-pack",
+            "--dir", str(sample_app),
+            "--zip", str(zip_path),
+            "--policy", str(policy),
+            "--advisories", str(clean),
+        ])
+        if zip_rc != 0 or not zip_path.is_file():
+            return f"zip pack exit {zip_rc} exists={zip_path.is_file()}"
+        import zipfile
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        want = {CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME}
+        if not want <= names:
+            return f"zip missing {want - names}"
+        miss_rc = main(["evidence-pack", "--dir", str(sample_app)])
+        if miss_rc != 2:
+            return f"missing --out/--zip exit {miss_rc}"
+    return None
+
+
+_OBS_CARD = """# Observed Tiny Model
+
+A fixture description only.
+
+License: https://example.com/observed-license
+"""
+
+
+def _smoke_mlbom_observed() -> str | None:
+    """Isolated observed-hash + model-card vs text-only negative. None = ok."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        obs = root / "obs"
+        neg = root / "neg"
+        models = obs / "models"
+        models.mkdir(parents=True)
+        gguf = models / "tiny.gguf"
+        gguf.write_bytes(b"tiny-weights\n")
+        (models / "model-card.md").write_text(_OBS_CARD, encoding="utf-8")
+        neg.mkdir()
+        (neg / "app.py").write_text('MODEL = "gpt-4o-mini"\n', encoding="utf-8")
+
+        want = sha256_file(gguf)
+        if not want:
+            return "missing sha256 of tiny.gguf"
+
+        obs_bom = scan_path(obs)
+        neg_bom = scan_path(neg)
+        cdx = to_cyclonedx(obs_bom)
+        if cdx.get("specVersion") != "1.7":
+            return f"cyclonedx specVersion {cdx.get('specVersion')}"
+        ml = [
+            c
+            for c in (cdx.get("components") or [])
+            if isinstance(c, dict) and c.get("type") == "machine-learning-model"
+        ]
+        if not ml:
+            return "expected ML component"
+        hashed = [
+            c
+            for c in ml
+            if any(
+                isinstance(h, dict) and h.get("alg") == "SHA-256" and h.get("content") == want
+                for h in (c.get("hashes") or [])
+            )
+        ]
+        if not hashed:
+            return f"missing observed hash {want[:12]}"
+        card_ok = any(
+            any(
+                isinstance(p, dict)
+                and p.get("name") == "aibom:cardName"
+                and p.get("value") == "Observed Tiny Model"
+                for p in ((c.get("modelCard") or {}).get("properties") or [])
+            )
+            or c.get("description") == "A fixture description only."
+            for c in ml
+        )
+        if not card_ok:
+            return "missing observed model-card name/description"
+        lic_ok = any(
+            isinstance(e, dict)
+            and (e.get("license") or {}).get("url") == "https://example.com/observed-license"
+            for c in ml
+            for e in (c.get("licenses") or [])
+        ) or any(
+            any(
+                isinstance(p, dict)
+                and p.get("name") == "aibom:licenseUrl"
+                and "example.com/observed-license" in str(p.get("value") or "")
+                for p in ((c.get("modelCard") or {}).get("properties") or [])
+            )
+            for c in ml
+        )
+        if not lic_ok:
+            return "missing observed license URL"
+        blob = json.dumps(cdx)
+        if "accuracy" in blob.lower() and "Observed Tiny Model" not in blob:
+            return "invented accuracy"
+        if "datasets" in blob:
+            return "invented datasets"
+        if "quantitativeAnalysis" in blob:
+            return "invented quantitativeAnalysis"
+
+        spdx = to_spdx(obs_bom)
+        if not any(
+            any(
+                isinstance(ck, dict)
+                and ck.get("algorithm") == "SHA256"
+                and ck.get("checksumValue") == want
+                for ck in (pkg.get("checksums") or [])
+            )
+            for pkg in (spdx.get("packages") or [])
+            if isinstance(pkg, dict)
+        ):
+            return "spdx missing observed hash"
+
+        spdx3 = to_spdx3(obs_bom)
+        if (spdx3.get("creationInfo") or {}).get("specVersion") != "3.0.1":
+            return f"spdx3 specVersion {(spdx3.get('creationInfo') or {}).get('specVersion')}"
+        elems = [e for e in (spdx3.get("element") or []) if isinstance(e, dict)]
+        if not any(
+            any(
+                isinstance(h, dict)
+                and h.get("algorithm") == "sha256"
+                and h.get("hashValue") == want
+                for h in (e.get("verifiedUsing") or [])
+            )
+            for e in elems
+        ):
+            return "spdx3 missing observed hash"
+        files = [e for e in elems if e.get("type") == "software_File"]
+        hashed_files = [
+            e
+            for e in files
+            if e.get("name") == "tiny.gguf"
+            and any(
+                isinstance(h, dict)
+                and h.get("algorithm") == "sha256"
+                and h.get("hashValue") == want
+                for h in (e.get("verifiedUsing") or [])
+            )
+        ]
+        if not hashed_files:
+            return "spdx3 missing observed file+hash"
+        file_ids = {e.get("spdxId") for e in hashed_files}
+        pkg_ids = {
+            e.get("spdxId")
+            for e in elems
+            if str(e.get("type") or "").endswith("Package") and e.get("name") == "tiny.gguf"
+        }
+        if not any(
+            e.get("type") == "Relationship"
+            and e.get("relationshipType") == "contains"
+            and e.get("from") in pkg_ids
+            and any(t in file_ids for t in (e.get("to") or []))
+            for e in elems
+        ):
+            return "spdx3 missing package contains file"
+
+        neg_cdx = to_cyclonedx(neg_bom)
+        neg_ml = [
+            c
+            for c in (neg_cdx.get("components") or [])
+            if isinstance(c, dict) and c.get("type") == "machine-learning-model"
+        ]
+        if not neg_ml:
+            return "negative fixture missing mentioned model"
+        if any(c.get("hashes") for c in neg_ml):
+            return "negative invented hashes"
+        if any(
+            any(
+                isinstance(p, dict)
+                and p.get("name") in {"aibom:cardName", "aibom:cardDescription", "aibom:licenseUrl"}
+                for p in ((c.get("modelCard") or {}).get("properties") or [])
+            )
+            for c in neg_ml
+        ):
+            return "negative invented model-card fields"
+        neg_spdx3 = to_spdx3(neg_bom)
+        neg_elems = [e for e in (neg_spdx3.get("element") or []) if isinstance(e, dict)]
+        if any(e.get("verifiedUsing") for e in neg_elems):
+            return "negative must not invent hashes"
+        if any(e.get("type") == "software_File" for e in neg_elems):
+            return "negative must not invent files"
+        if any(
+            e.get("type") == "Relationship" and e.get("relationshipType") == "contains"
+            for e in neg_elems
+        ):
+            return "negative must not invent contains"
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ai-bom",
@@ -190,7 +550,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Local advisory JSON (offline fixture). Match scanned components "
-            "by name/purl/version. Not an NVD/OSV/GitHub Advisory fetch."
+            "by name/purl/version and recorded versionRange operators. "
+            "Not an NVD/OSV/GitHub Advisory fetch."
         ),
     )
     p_scan.add_argument(
@@ -363,6 +724,62 @@ def main(argv: list[str] | None = None) -> int:
             "The secret is never returned. Serve does not POST. "
             "Env AI_BOM_WEBHOOK_SECRET when flag omitted."
         ),
+    )
+    p_conv = sub.add_parser(
+        "convert-advisories",
+        help="Convert offline OSV/GHSA JSON into the local --advisories fixture schema (no network)",
+    )
+    p_conv.add_argument(
+        "paths",
+        nargs="+",
+        help="OSV (or GHSA) JSON file(s)",
+    )
+    p_conv.add_argument(
+        "--from-osv",
+        action="store_true",
+        help="Read OSV-style JSON (also accepts GHSA when the shape is close). Offline; no fetch.",
+    )
+    p_conv.add_argument(
+        "--from-ghsa",
+        action="store_true",
+        help="Read GitHub Advisory JSON (REST-ish). Same converter; IDs stay GHSA-*.",
+    )
+    p_conv.add_argument(
+        "--out",
+        required=True,
+        help="Write ai-bom-advisories/v1 JSON",
+    )
+    p_pack = sub.add_parser(
+        "evidence-pack",
+        help="Write CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST.md (Article 14 inventory+match; not a CRA declaration)",
+    )
+    p_pack.add_argument(
+        "--dir",
+        required=True,
+        help="Scan root",
+    )
+    p_pack.add_argument(
+        "--out",
+        default=None,
+        help="Write pack directory (bom.cdx.json, bom.spdx3.json, MANIFEST.md)",
+    )
+    p_pack.add_argument(
+        "--zip",
+        nargs="?",
+        const="",
+        default=None,
+        dest="zip_path",
+        help="Write a zip of the pack (optional path; default OUTDIR.zip or evidence-pack.zip)",
+    )
+    p_pack.add_argument(
+        "--policy",
+        default=None,
+        help="Policy pack JSON (default: shipped policies/default.json)",
+    )
+    p_pack.add_argument(
+        "--advisories",
+        default=None,
+        help="Local advisory fixture (default: examples/advisories/sample.json). Offline; not NVD.",
     )
     args = parser.parse_args(argv)
 
@@ -707,6 +1124,204 @@ def main(argv: list[str] | None = None) -> int:
         if versioned_miss:
             print("smoke failed versioned advisory matched unversioned component", versioned_miss)
             return 1
+
+        osv_sample = adv_dir / "osv-sample.json"
+        ghsa_sample = adv_dir / "ghsa-sample.json"
+        try:
+            conv = convert_files([osv_sample])
+        except Exception as e:
+            print("smoke failed convert osv-sample", e)
+            return 1
+        conv_ids = [a.get("id") for a in (conv.document.get("advisories") or [])]
+        conv_names = [
+            (a.get("component") or {}).get("name")
+            for a in (conv.document.get("advisories") or [])
+        ]
+        if (
+            conv.document.get("schema") != "ai-bom-advisories/v1"
+            or conv.converted < 1
+            or conv.skipped < 1
+            or "openai" not in conv_names
+            or not any(str(i).startswith("OSV-") for i in conv_ids)
+            or any(str(i).startswith("ADV-FIXTURE-") for i in conv_ids)
+        ):
+            print("smoke failed osv convert", conv.converted, conv.skipped, conv_ids)
+            return 1
+        for row in conv.document.get("advisories") or []:
+            if (row.get("component") or {}).get("version"):
+                print("smoke failed osv convert invented version", row)
+                return 1
+        cvss_entries, _cvss_skip, _cvss_src = convert_record({
+            "id": "OSV-2026-SAMPLE-CVSS",
+            "summary": "cvss only",
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+            "affected": [{"package": {"ecosystem": "PyPI", "name": "openai"}}],
+        })
+        if not cvss_entries or "severity" in cvss_entries[0]:
+            print("smoke failed osv convert invented cvss severity", cvss_entries)
+            return 1
+        def _rows_from_converted(doc, include_range=True):
+            rows = []
+            for a in (doc.get("advisories") or []):
+                comp = a.get("component") or {}
+                rows.append({
+                    "id": a.get("id") or "",
+                    "name": comp.get("name") or "",
+                    "purl": comp.get("purl") or "",
+                    "version": comp.get("version") or "",
+                    "versionRange": (comp.get("versionRange") or "") if include_range else "",
+                    "severity": a.get("severity") or "medium",
+                    "summary": a.get("summary") or "",
+                })
+            return rows
+
+        conv_ranges = [
+            (a.get("component") or {}).get("versionRange") or ""
+            for a in (conv.document.get("advisories") or [])
+        ]
+        if not any((">=" in r or ">" in r or "<" in r or "=" in r) for r in conv_ranges):
+            print("smoke failed osv convert missing versionRange operators", conv_ranges)
+            return 1
+        osv_rows = _rows_from_converted(conv.document)
+        in_comp = [{"name": "openai", "version": "1.2.3", "purl": "pkg:pypi/openai@1.2.3"}]
+        out_comp = [{"name": "openai", "version": "9.9.9", "purl": "pkg:pypi/openai@9.9.9"}]
+        osv_in = match_advisories(in_comp, osv_rows)
+        osv_out = match_advisories(out_comp, osv_rows)
+        if not any(str(h.get("id") or "").startswith("OSV-") for h in osv_in):
+            print("smoke failed converted range in-match", osv_in, conv_ranges)
+            return 1
+        if osv_out:
+            print("smoke failed converted range out-match", osv_out, conv_ranges)
+            return 1
+        # unversioned sample-app openai must not invent a hit against a recorded range
+        unversioned_osv = match_advisories(sample_bom.get("components") or [], osv_rows)
+        if unversioned_osv:
+            print("smoke failed unversioned component matched range", unversioned_osv)
+            return 1
+        clean_tree = scan_path(fixtures / "license-pass")
+        clean_osv_hits = match_advisories(clean_tree.get("components") or [], osv_rows)
+        if clean_osv_hits:
+            print("smoke failed osv convert clean tree", clean_osv_hits)
+            return 1
+        try:
+            range_in_adv = load_advisories(adv_dir / "range-in.json")
+            range_out_adv = load_advisories(adv_dir / "range-out.json")
+            range_skip_adv = load_advisories(adv_dir / "range-skip.json")
+        except Exception as e:
+            print("smoke failed load range fixtures", e)
+            return 1
+        range_in_hits = match_advisories(sample_bom.get("components") or [], range_in_adv)
+        range_out_hits = match_advisories(sample_bom.get("components") or [], range_out_adv)
+        range_skip_res = match_advisories_result(sample_bom.get("components") or [], range_skip_adv)
+        if not any(h.get("id") == "ADV-FIXTURE-RANGE-IN" for h in range_in_hits):
+            print("smoke failed fixture range in", range_in_hits)
+            return 1
+        if range_out_hits:
+            print("smoke failed fixture range out", range_out_hits)
+            return 1
+        if range_skip_res.hits or range_skip_res.range_skipped < 1:
+            print("smoke failed unparseable range skip", range_skip_res)
+            return 1
+        with tempfile.TemporaryDirectory() as ctd:
+            cout = Path(ctd) / "from-osv.json"
+            rc = main(["convert-advisories", "--from-osv", str(osv_sample), "--out", str(cout)])
+            if rc != 0 or not cout.is_file():
+                print("smoke failed convert-advisories cli", rc)
+                return 1
+            written = json.loads(cout.read_text(encoding="utf-8"))
+            wids = [a.get("id") for a in (written.get("advisories") or [])]
+            if any(str(i).startswith("ADV-FIXTURE-") for i in wids):
+                print("smoke failed convert relabeled ADV-FIXTURE", wids)
+                return 1
+            in_dir = Path(ctd) / "in-range"
+            out_dir = Path(ctd) / "out-range"
+            in_dir.mkdir()
+            out_dir.mkdir()
+            (in_dir / "pyproject.toml").write_text(
+                '[project]\nname = "openai"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+            (out_dir / "pyproject.toml").write_text(
+                '[project]\nname = "openai"\nversion = "9.9.9"\n',
+                encoding="utf-8",
+            )
+            hit_rc = main([
+                "scan", str(in_dir),
+                "--advisories", str(cout),
+                "--gate-vulns",
+                "--out", str(Path(ctd) / "hit.json"),
+            ])
+            if hit_rc != 1:
+                print("smoke failed gate-vulns in-range after osv convert", hit_rc)
+                return 1
+            miss_rc = main([
+                "scan", str(out_dir),
+                "--advisories", str(cout),
+                "--gate-vulns",
+                "--out", str(Path(ctd) / "miss.json"),
+            ])
+            if miss_rc != 0:
+                print("smoke failed gate-vulns out-range after osv convert", miss_rc)
+                return 1
+            pass_rc = main([
+                "scan", str(fixtures / "license-pass"),
+                "--advisories", str(cout),
+                "--gate-vulns",
+                "--out", str(Path(ctd) / "pass.json"),
+            ])
+            if pass_rc != 0:
+                print("smoke failed clean tree after osv convert", pass_rc)
+                return 1
+            fix_in = main([
+                "scan", str(sample_app),
+                "--advisories", str(adv_dir / "range-in.json"),
+                "--gate-vulns",
+                "--out", str(Path(ctd) / "range-in.json"),
+            ])
+            fix_out = main([
+                "scan", str(sample_app),
+                "--advisories", str(adv_dir / "range-out.json"),
+                "--gate-vulns",
+                "--out", str(Path(ctd) / "range-out.json"),
+            ])
+            if fix_in != 1 or fix_out != 0:
+                print("smoke failed fixture range gate", fix_in, fix_out)
+                return 1
+            ghsa_out = Path(ctd) / "from-ghsa.json"
+            grc = main(["convert-advisories", "--from-ghsa", str(ghsa_sample), "--out", str(ghsa_out)])
+            if grc != 0 or not ghsa_out.is_file():
+                print("smoke failed convert-advisories ghsa cli", grc)
+                return 1
+            ghsa_doc = json.loads(ghsa_out.read_text(encoding="utf-8"))
+            gids = [a.get("id") for a in (ghsa_doc.get("advisories") or [])]
+            if (
+                not gids
+                or not all(str(i).startswith("GHSA-") for i in gids)
+                or any(str(i).startswith("ADV-FIXTURE-") for i in gids)
+            ):
+                print("smoke failed ghsa convert ids", gids)
+                return 1
+            ghsa_rows = _rows_from_converted(ghsa_doc)
+            ghsa_in = match_advisories(in_comp, ghsa_rows)
+            ghsa_out_hits = match_advisories(out_comp, ghsa_rows)
+            if not ghsa_in or ghsa_out_hits:
+                print("smoke failed ghsa range match", ghsa_in, ghsa_out_hits)
+                return 1
+        print("osv-convert-ok")
+        print("range-ok")
+
+        mlbom_obs_err = _smoke_mlbom_observed()
+        if mlbom_obs_err:
+            print("smoke failed mlbom observed/negative", mlbom_obs_err)
+            return 1
+        print("mlbom-obs-ok")
+        print("spdx3-files-ok")
+
+        pack_err = _smoke_evidence_pack()
+        if pack_err:
+            print("smoke failed evidence-pack", pack_err)
+            return 1
+        print("evidence-pack-ok")
 
         sarif_doc = to_sarif(bom, tool_version=__version__)
         empty_sarif = to_sarif(
@@ -2592,8 +3207,12 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+evidencePack")
         return 0
+    if args.cmd == "convert-advisories":
+        return _run_convert_advisories(args)
+    if args.cmd == "evidence-pack":
+        return _run_evidence_pack(args)
     if args.cmd == "policy":
         target = Path(args.path)
         if not target.exists():
@@ -2678,8 +3297,10 @@ def main(argv: list[str] | None = None) -> int:
             except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
                 print(f"advisories parse error: {e}")
                 return 2
-            hits = match_advisories(bom.get("components") or [], advisories)
-            bom = attach_advisory_hits(bom, hits)
+            matched = match_advisories_result(bom.get("components") or [], advisories)
+            bom = attach_advisory_hits(
+                bom, matched.hits, range_skipped=matched.range_skipped
+            )
         fmt = getattr(args, "format", None) or DEFAULT_FORMAT
         if normalize_format(fmt) is None:
             print(f"unsupported --format (use {FORMATS_HELP})")
@@ -2730,6 +3351,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if gate_vulns:
             advisory_hits = (bom.get("summary") or {}).get("advisoryHits") or []
+            range_skipped = (bom.get("summary") or {}).get("advisoryRangeSkipped") or 0
+            if range_skipped:
+                print(f"gate-vulns: range skipped: {range_skipped}")
             if advisory_hits:
                 print(f"gate-vulns: advisory hits: {advisory_hits}")
                 return 1

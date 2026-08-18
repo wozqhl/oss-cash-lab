@@ -1,10 +1,14 @@
 name: agent-ci
-description: Wrap Promptfoo (or a fixture) and emit JUnit/TAP via agent-ci reporters
+description: Wrap Promptfoo or DeepEval-shaped JSON (or a fixture) and emit JUnit/TAP via agent-ci reporters
 inputs:
   results:
-    description: Path to Promptfoo eval --output JSON (or a checked-in fixture that mimics it)
+    description: Path to Promptfoo eval --output JSON, DeepEval-shaped JSON (adapter=deepeval), or a checked-in fixture
     required: false
     default: promptfoo-output.json
+  adapter:
+    description: JSON shape (promptfoo or deepeval). Default promptfoo so existing workflows stay put.
+    required: false
+    default: promptfoo
   command:
     description: Optional command that writes the JSON at `results` (e.g. npx promptfoo eval --output …). Empty = convert an existing file / fixture (no network).
     required: false
@@ -22,7 +26,7 @@ inputs:
     required: false
     default: ""
   suite-name:
-    description: testsuite / TAP label
+    description: testsuite / TAP label (default promptfoo; set deepeval when adapter=deepeval)
     required: false
     default: promptfoo
   pythonpath:
@@ -36,10 +40,11 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Convert Promptfoo results
+    - name: Convert eval results
       shell: bash
       env:
         INPUT_RESULTS: ${{ inputs.results }}
+        INPUT_ADAPTER: ${{ inputs.adapter }}
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_FAIL_UNDER: ${{ inputs.fail-under }}
         INPUT_JUNIT: ${{ inputs.junit }}
@@ -55,10 +60,22 @@ runs:
           bash -lc "${INPUT_COMMAND}"
         fi
         if [[ -z "${INPUT_RESULTS}" ]]; then
-          echo "::error::results path is required (Promptfoo output JSON or a fixture)"
+          echo "::error::results path is required (Promptfoo / DeepEval-shaped JSON or a fixture)"
           exit 2
         fi
-        args=(from-promptfoo --in "${INPUT_RESULTS}" --suite-name "${INPUT_SUITE_NAME:-promptfoo}")
+        adapter="${INPUT_ADAPTER:-promptfoo}"
+        if [[ "${adapter}" == "deepeval" ]]; then
+          cmd=from-deepeval
+          default_suite=deepeval
+        else
+          cmd=from-promptfoo
+          default_suite=promptfoo
+        fi
+        suite="${INPUT_SUITE_NAME:-${default_suite}}"
+        if [[ "${adapter}" == "deepeval" && "${suite}" == "promptfoo" ]]; then
+          suite="${default_suite}"
+        fi
+        args=("${cmd}" --in "${INPUT_RESULTS}" --suite-name "${suite}")
         if [[ -n "${INPUT_JUNIT}" ]]; then
           args+=(--junit "${INPUT_JUNIT}")
         fi

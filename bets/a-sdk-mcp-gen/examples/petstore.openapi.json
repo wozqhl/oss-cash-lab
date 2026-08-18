@@ -22,7 +22,13 @@
           "200": {
             "description": "ok"
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {}
+        ]
       },
       "post": {
         "operationId": "createPet",
@@ -92,6 +98,15 @@
             "description": "deleted"
           }
         }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Optional bearer. oauth2 / openIdConnect are not generated."
       }
     }
   }

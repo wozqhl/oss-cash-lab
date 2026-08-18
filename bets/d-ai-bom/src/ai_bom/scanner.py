@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -33,6 +34,244 @@ DEFAULT_FORBIDDEN = [
         "message": "Unsafe pickle deserialization",
     }
 ]
+
+# On-disk model cards (sibling of a model file, or a dedicated card file).
+_CARD_PRIORITY = (
+    "model-card.json",
+    "model-card.yaml",
+    "model-card.yml",
+    "model-card.md",
+    "modelcard.md",
+    "MODEL_CARD.md",
+)
+_CARD_BASENAMES = {n.lower() for n in _CARD_PRIORITY}
+_LICENSE_URL_RE = re.compile(r"(?i)\blicense\b[^\n]{0,80}?(https?://[^\s)<>]+)")
+_MD_H1_RE = re.compile(r"(?m)^#\s+(.+)$")
+_HTTP_RE = re.compile(r"^https?://", re.I)
+
+
+def sha256_file(path: Path) -> str | None:
+    """SHA-256 hex of an existing file. None if missing/unreadable. Streamed; not invented."""
+    try:
+        if not path.is_file():
+            return None
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _clip_observed(raw: Any, *, limit: int) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    s = " ".join(s.split())
+    if len(s) > limit:
+        s = s[:limit].rstrip()
+    return s
+
+
+def _license_url_from_value(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        for key in ("url", "link", "license_url", "licenseUrl", "license_link"):
+            got = _license_url_from_value(raw.get(key))
+            if got:
+                return got
+        return ""
+    s = str(raw).strip()
+    if _HTTP_RE.match(s):
+        return s.split()[0].rstrip(").,;")
+    return ""
+
+
+def card_fields_from_mapping(data: Mapping[str, Any]) -> dict[str, str]:
+    """Copy only declared name / description / license URL. Never metrics or datasets."""
+    if not isinstance(data, Mapping):
+        return {}
+    out: dict[str, str] = {}
+    name = ""
+    for key in ("name", "model_name", "modelName"):
+        name = _clip_observed(data.get(key), limit=200)
+        if name:
+            break
+    if name:
+        out["name"] = name
+    desc = _clip_observed(data.get("description"), limit=500)
+    if desc:
+        out["description"] = desc
+    url = ""
+    for key in ("license_url", "licenseUrl", "license_link", "licenseLink"):
+        url = _license_url_from_value(data.get(key))
+        if url:
+            break
+    if not url:
+        url = _license_url_from_value(data.get("license"))
+    if url:
+        out["licenseUrl"] = url
+    return out
+
+
+def _parse_simple_yaml_map(text: str) -> dict[str, str]:
+    """Flat ``key: value`` only. No invented nested metrics. No PyYAML dep."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if ":" not in s:
+            continue
+        key, _, val = s.partition(":")
+        key = key.strip()
+        val = val.strip().strip(chr(34) + chr(39))
+        if not key or not val or val[:1] in "{[|>":
+            continue
+        out[key] = val
+    return out
+
+
+def _split_frontmatter(text: str) -> tuple[str, str]:
+    s = text.lstrip("\ufeff")
+    if not s.startswith("---"):
+        return "", text
+    rest = s[3:]
+    if rest.startswith("\n"):
+        rest = rest[1:]
+    end = rest.find("\n---")
+    if end < 0:
+        return "", text
+    return rest[:end], rest[end + 4 :].lstrip("\n")
+
+
+def parse_model_card(path: Path) -> dict[str, str]:
+    """Read an on-disk card. Only name / description / license URL when present."""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {}
+    suffix = path.suffix.lower()
+    fields: dict[str, str] = {}
+    if suffix == ".json" or raw.lstrip().startswith("{"):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            fields = card_fields_from_mapping(data)
+    elif suffix in {".yml", ".yaml"}:
+        fields = card_fields_from_mapping(_parse_simple_yaml_map(raw))
+    else:
+        fm, body = _split_frontmatter(raw)
+        if fm:
+            fm_s = fm.strip()
+            if fm_s.startswith("{"):
+                try:
+                    data = json.loads(fm_s)
+                except json.JSONDecodeError:
+                    data = None
+                if isinstance(data, dict):
+                    fields = card_fields_from_mapping(data)
+            else:
+                fields = card_fields_from_mapping(_parse_simple_yaml_map(fm))
+        if "name" not in fields:
+            m = _MD_H1_RE.search(body if fm else raw)
+            if m:
+                name = _clip_observed(m.group(1), limit=200)
+                if name:
+                    fields["name"] = name
+        if "description" not in fields:
+            src = body if fm else raw
+            paras: list[str] = []
+            buf: list[str] = []
+            for line in src.splitlines():
+                if line.startswith("#"):
+                    if buf:
+                        break
+                    continue
+                if not line.strip():
+                    if buf:
+                        paras.append(" ".join(buf))
+                        break
+                    continue
+                if line.strip().startswith(("|", "-", "*", ">")):
+                    if buf:
+                        break
+                    continue
+                buf.append(line.strip())
+            if buf and not paras:
+                paras.append(" ".join(buf))
+            if paras:
+                desc = _clip_observed(paras[0], limit=500)
+                if desc:
+                    fields["description"] = desc
+        if "licenseUrl" not in fields:
+            m = _LICENSE_URL_RE.search(raw)
+            if m:
+                url = _license_url_from_value(m.group(1))
+                if url:
+                    fields["licenseUrl"] = url
+    if fields:
+        fields["path"] = str(path)
+    return fields
+
+
+def is_model_card_filename(name: str, *, allow_readme: bool = False) -> bool:
+    n = (name or "").strip()
+    if not n:
+        return False
+    if n.lower() in _CARD_BASENAMES:
+        return True
+    return bool(allow_readme and n.lower() == "readme.md")
+
+
+def find_sibling_model_card(directory: Path, *, allow_readme: bool = True) -> dict[str, str]:
+    """First dedicated card (or README.md next to a model) that declares a field."""
+    try:
+        files = [p for p in directory.iterdir() if p.is_file()]
+    except OSError:
+        return {}
+    by_lower = {p.name.lower(): p for p in files}
+    ordered: list[Path] = []
+    for cand in _CARD_PRIORITY:
+        p = by_lower.get(cand.lower())
+        if p and p not in ordered:
+            ordered.append(p)
+    if allow_readme:
+        readme = by_lower.get("readme.md")
+        if readme and readme not in ordered:
+            ordered.append(readme)
+    for p in ordered:
+        fields = parse_model_card(p)
+        if any(k in fields for k in ("name", "description", "licenseUrl")):
+            return fields
+    return {}
+
+
+def apply_observed_card(comp: dict[str, Any], card: Mapping[str, str]) -> None:
+    """Attach only observed card fields onto a component. No invented metrics."""
+    if card.get("name"):
+        comp["cardName"] = card["name"]
+    if card.get("description"):
+        comp["description"] = card["description"]
+    if card.get("licenseUrl"):
+        comp["licenseUrl"] = card["licenseUrl"]
+    if card.get("path"):
+        comp["cardPath"] = card["path"]
+
+
+def enrich_observed_model_file(comp: dict[str, Any], path: Path) -> None:
+    """Hash the weights file if present; copy a sibling card if present."""
+    digest = sha256_file(path)
+    if digest:
+        comp["sha256"] = digest
+    parent = path.parent if path.is_file() else path
+    card = find_sibling_model_card(parent, allow_readme=True)
+    if card:
+        apply_observed_card(comp, card)
 
 
 def load_policy(path: Path | None) -> dict[str, Any] | None:
@@ -996,7 +1235,9 @@ def scan_path(
                 components.append(c)
         if f.suffix == ".gguf":
             seen_gguf.add(f.name)
-            components.append({"type": "model-file", "name": f.name, "path": rel, "format": "gguf"})
+            model_comp = {"type": "model-file", "name": f.name, "path": rel, "format": "gguf"}
+            enrich_observed_model_file(model_comp, f)
+            components.append(model_comp)
             continue
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
@@ -1020,6 +1261,55 @@ def scan_path(
 
     for p in sorted(set(prompts)):
         components.append({"type": "prompt", "name": Path(p).name, "path": p})
+
+    # Dedicated card files with a declared name, not already attached to a model-file.
+    applied_cards: set[str] = set()
+    for c in components:
+        raw_card = str(c.get("cardPath") or "").strip()
+        if not raw_card:
+            continue
+        applied_cards.add(raw_card.replace("\\", "/"))
+        try:
+            applied_cards.add(str(Path(raw_card).resolve()))
+        except OSError:
+            pass
+    if root.is_dir():
+        for f in files[:500]:
+            if not is_model_card_filename(f.name, allow_readme=False):
+                continue
+            if root.is_dir():
+                try:
+                    rel_key = f.relative_to(root).as_posix()
+                except ValueError:
+                    rel_key = f.as_posix()
+            else:
+                rel_key = f.name
+            if is_ignored(rel_key, patterns):
+                continue
+            keys = {str(f).replace("\\", "/"), f.as_posix()}
+            try:
+                keys.add(str(f.resolve()))
+            except OSError:
+                pass
+            if keys & applied_cards:
+                continue
+            card = parse_model_card(f)
+            name = card.get("name")
+            if not name:
+                continue
+            if name in seen_models:
+                for c in components:
+                    if c.get("type") in {"model", "model-file"} and (
+                        c.get("name") == name or c.get("cardName") == name
+                    ):
+                        if "cardName" not in c:
+                            apply_observed_card(c, card)
+                        break
+                continue
+            seen_models.add(name)
+            model_comp = {"type": "model", "name": name, "path": str(f)}
+            apply_observed_card(model_comp, card)
+            components.append(model_comp)
 
     disclosure_gaps = _check_disclosures(root, components, policy)
     _attach_default_licenses(components)

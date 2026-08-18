@@ -64,6 +64,14 @@ from cn_work_agent.webhook import (
     verify_webhook_signature,
     webhook_unix_seconds,
 )
+from cn_work_agent.forward import (
+    ENV_FORWARD_URL,
+    build_forward_payload,
+    notify_approval_forward,
+    notify_approval_forwards,
+    resolve_forward_url,
+    should_forward,
+)
 
 
 
@@ -1378,6 +1386,7 @@ def _smoke() -> int:
         and cfg_payload.get("approvalsMax") == 2000
         and (cfg_payload.get("webhooks") or {}).get("hasUrl") is True
         and (cfg_payload.get("webhooks") or {}).get("hasSecret") is True
+        and (cfg_payload.get("webhooks") or {}).get("hasForwardUrl") is False
         and any(r.get("id") == "feishu" for r in cfg_plats)
         and any(r.get("hasCallbackSecret") is True for r in cfg_plats)
         and cfg_safe.get("ok") is True
@@ -1407,16 +1416,37 @@ def _smoke() -> int:
         and empty_cfg.get("approvalTtlSec") == 86400
         and (empty_cfg.get("webhooks") or {}).get("hasUrl") is False
         and (empty_cfg.get("webhooks") or {}).get("hasSecret") is False
+        and (empty_cfg.get("webhooks") or {}).get("hasForwardUrl") is False
         and empty_cfg.get("approvalsMax") == 0
         and (empty_cfg.get("cors") or {}).get("origins") == []
         and assert_runtime_config_safe(empty_cfg).get("ok") is True
     )
-    if not cfg_ok or not cfg_safe.get("ok") or not empty_ok:
+    fwd_cfg = summarize_runtime_config(
+        approval_ttl_seconds=86400,
+        rate_limits={"_default": 60},
+        cors_origins=[],
+        webhook_url=None,
+        webhook_secret=None,
+        approvals_max=0,
+        forward_url="http://127.0.0.1:9/dify?token=planted_fwd_token",
+        config={},
+        enabled=["feishu"],
+        env={},
+    )
+    fwd_cfg_blob = json.dumps(fwd_cfg, ensure_ascii=False)
+    fwd_cfg_ok = (
+        (fwd_cfg.get("webhooks") or {}).get("hasForwardUrl") is True
+        and "planted_fwd_token" not in fwd_cfg_blob
+        and "http://127.0.0.1:9/dify" not in fwd_cfg_blob
+        and assert_runtime_config_safe(fwd_cfg).get("ok") is True
+    )
+    if not cfg_ok or not cfg_safe.get("ok") or not empty_ok or not fwd_cfg_ok:
         print(
             "smoke failed summarize_runtime_config",
             cfg_payload,
             cfg_safe,
             empty_cfg,
+            fwd_cfg,
         )
         return 1
 
@@ -1648,6 +1678,238 @@ def _smoke() -> int:
         print(f"smoke failed webhook notify swallow: {e}")
         return 1
 
+    fwd_ok = (
+        ENV_FORWARD_URL == "APPROVAL_FORWARD_URL"
+        and resolve_forward_url(None, env={}) is None
+        and resolve_forward_url(
+            None, env={"APPROVAL_FORWARD_URL": "http://127.0.0.1:9/dify"}
+        )
+        == "http://127.0.0.1:9/dify"
+        and resolve_forward_url("", env={"APPROVAL_FORWARD_URL": "http://x"}) is None
+        and resolve_forward_url(
+            "http://cli/fwd", env={"APPROVAL_FORWARD_URL": "http://env/fwd"}
+        )
+        == "http://cli/fwd"
+        and resolve_forward_url(
+            None,
+            env={},
+            config={"approval_forward_url": "http://cfg/fwd"},
+        )
+        == "http://cfg/fwd"
+        and resolve_forward_url(
+            None,
+            env={"APPROVAL_FORWARD_URL": "http://env/fwd"},
+            config={"approval_forward_url": "http://cfg/fwd"},
+        )
+        == "http://env/fwd"
+        and resolve_forward_url(
+            None,
+            env={"APPROVAL_FORWARD_URL": ""},
+            config={"approval_forward_url": "http://cfg/fwd"},
+        )
+        is None
+        and should_forward({"status": "approved"})
+        and should_forward({"status": "rejected", "reason": "expired"})
+        and not should_forward({"status": "pending"})
+        and not should_forward(None)
+    )
+    if not fwd_ok:
+        print("smoke failed forward resolve/should_forward")
+        return 1
+    fwd_payload = build_forward_payload(
+        {
+            "id": "appr_fwd123abc",
+            "status": "approved",
+            "decision": "approve",
+            "text": "请审批请假一天",
+            "note": "ok-secret-must-not-leak",
+            "token": "sk-secret-must-not-leak",
+            "requestId": "mvp-fwd-rid",
+        },
+        env={},
+        config={"bot_name": "cn-work-bot", "tenant": "acme"},
+    )
+    fwd_blob = json.dumps(fwd_payload, ensure_ascii=False)
+    fwd_payload_ok = (
+        fwd_payload.get("event") == "approval.approved"
+        and fwd_payload.get("approval_id") == "appr_fwd123abc"
+        and fwd_payload.get("status") == "approved"
+        and fwd_payload.get("tenant") == "acme"
+        and fwd_payload.get("title") == "请审批请假一天"
+        and "app" not in fwd_payload
+        and set(fwd_payload) == {"event", "approval_id", "status", "tenant", "title"}
+        and "ok-secret-must-not-leak" not in fwd_blob
+        and "sk-secret-must-not-leak" not in fwd_blob
+        and "mvp-fwd-rid" not in fwd_blob
+    )
+    if not fwd_payload_ok:
+        print("smoke failed forward payload", fwd_payload)
+        return 1
+    fwd_app_payload = build_forward_payload(
+        {"id": "appr_app1", "status": "rejected", "text": "用印"},
+        env={},
+        config={"bot_name": "demo-bot"},
+    )
+    if (
+        fwd_app_payload.get("event") != "approval.rejected"
+        or fwd_app_payload.get("app") != "demo-bot"
+        or "tenant" in fwd_app_payload
+    ):
+        print("smoke failed forward app identity", fwd_app_payload)
+        return 1
+    try:
+        notify_approval_forward(None, {"status": "approved"})
+        notify_approval_forward(
+            "http://127.0.0.1:1/nope", {"id": "x", "status": "pending"}
+        )
+        notify_approval_forwards(
+            "http://127.0.0.1:1/nope",
+            [{"id": "y", "status": "rejected", "text": "expired"}],
+            wait=True,
+            retry_delay=0,
+        )
+    except Exception as e:
+        print(f"smoke failed forward notify swallow: {e}")
+        return 1
+
+    # Local HTTP stub: POST only after approve (not while pending). Print forward-ok.
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _FwdStub(BaseHTTPRequestHandler):
+        received: list = []  # type: ignore[assignment]
+
+        def log_message(self, fmt, *a):  # noqa: A002
+            return
+
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or "0")
+            raw = self.rfile.read(n) if n else b""
+            try:
+                body = json.loads(raw.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                body = {"raw": raw.decode("utf-8", errors="replace")}
+            _FwdStub.received.append(body)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+    _FwdStub.received = []
+    stub = ThreadingHTTPServer(("127.0.0.1", 0), _FwdStub)
+    stub.daemon_threads = True
+    stub_port = int(stub.server_address[1])
+    stub_thread = __import__("threading").Thread(target=stub.serve_forever, daemon=True)
+    stub_thread.start()
+    fwd_http_ok = False
+    try:
+        with tempfile.TemporaryDirectory() as fwd_td:
+            fwd_path = str(Path(fwd_td) / "approvals.jsonl")
+            rec_pend = create_approval(fwd_path, "请审批 forward-smoke", "feishu")
+            rec_dec = create_approval(fwd_path, "请审批 forward-approve", "feishu")
+            fwd_serve_port = _free_port()
+            _serve_in_thread(
+                host="127.0.0.1",
+                port=fwd_serve_port,
+                audit_path=str(Path(fwd_td) / "audit.jsonl"),
+                approvals_path=fwd_path,
+                config={
+                    "bot_name": "fwd-smoke",
+                    "tenant": "acme",
+                    "approval_ttl_seconds": 0,
+                },
+                platforms=["feishu"],
+                forward_url=f"http://127.0.0.1:{stub_port}/webhook",
+            )
+            # pending: create already happened before serve; GET pending must not forward
+            _FwdStub.received.clear()
+            pend_code = 0
+            for _ in range(80):
+                try:
+                    conn = _http_client.HTTPConnection("127.0.0.1", fwd_serve_port, timeout=1)
+                    conn.request("GET", f"/approvals/{rec_pend['id']}")
+                    resp = conn.getresponse()
+                    pend_code = resp.status
+                    resp.read()
+                    conn.close()
+                    if pend_code == 200:
+                        break
+                except OSError:
+                    _time.sleep(0.05)
+            if pend_code != 200 or _FwdStub.received:
+                print(
+                    "smoke failed forward pending leak",
+                    pend_code,
+                    _FwdStub.received,
+                )
+                return 1
+            dec_code = 0
+            dec_body = None
+            for _ in range(80):
+                try:
+                    conn = _http_client.HTTPConnection("127.0.0.1", fwd_serve_port, timeout=1)
+                    payload = json.dumps({"decision": "approve", "note": "forward-ok"}).encode(
+                        "utf-8"
+                    )
+                    conn.request(
+                        "POST",
+                        f"/approvals/{rec_dec['id']}/decide",
+                        body=payload,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    resp = conn.getresponse()
+                    dec_code = resp.status
+                    dec_body = json.loads(resp.read().decode("utf-8") or "{}")
+                    conn.close()
+                    if dec_code == 200:
+                        break
+                except (OSError, json.JSONDecodeError):
+                    _time.sleep(0.05)
+            got = None
+            for _ in range(80):
+                hits = [
+                    b
+                    for b in _FwdStub.received
+                    if isinstance(b, dict) and b.get("approval_id") == rec_dec["id"]
+                ]
+                if hits:
+                    got = hits[-1]
+                    break
+                _time.sleep(0.05)
+            got_blob = json.dumps(got or {}, ensure_ascii=False)
+            fwd_http_ok = (
+                dec_code == 200
+                and (dec_body or {}).get("ok") is True
+                and isinstance(got, dict)
+                and got.get("event") == "approval.approved"
+                and got.get("approval_id") == rec_dec["id"]
+                and got.get("status") == "approved"
+                and got.get("tenant") == "acme"
+                and "请审批" in str(got.get("title") or "")
+                and "ok-secret" not in got_blob
+                and "sk-" not in got_blob
+                and not any(
+                    isinstance(b, dict) and b.get("approval_id") == rec_pend["id"]
+                    for b in _FwdStub.received
+                )
+            )
+    finally:
+        try:
+            stub.shutdown()
+        except Exception:
+            pass
+        try:
+            stub.server_close()
+        except Exception:
+            pass
+    if not fwd_http_ok:
+        print(
+            "smoke failed forward HTTP stub",
+            getattr(rec_dec, "get", lambda *_: None)("id") if False else rec_dec.get("id"),
+            _FwdStub.received,
+        )
+        return 1
+    print("forward-ok")
+
     spec_path = Path(__file__).resolve().parents[2] / "openapi" / "agent.openapi.json"
     try:
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -1730,6 +1992,7 @@ def _smoke() -> int:
         and "hasCallbackSecret" in str(schemas.get("Platform") or "")
         and "hasUrl" in str(schemas.get("RuntimeConfig") or "")
         and "hasSecret" in str(schemas.get("RuntimeConfig") or "")
+        and "hasForwardUrl" in str(schemas.get("RuntimeConfig") or "")
         and "approvalTtlSec" in str(schemas.get("RuntimeConfig") or "")
         and "GET /v1/platforms" in desc
         and "GET /v1/config" in desc
@@ -1741,6 +2004,8 @@ def _smoke() -> int:
         and "404" in post_decide
         and "APPROVAL_WEBHOOK_URL" in desc
         and "APPROVAL_WEBHOOK_SECRET" in desc
+        and "APPROVAL_FORWARD_URL" in desc
+        and "ApprovalForwardWebhook" in schemas
         and "X-Webhook-Signature" in desc
         and "X-Webhook-Timestamp" in desc
         and "ApprovalDecisionWebhook" in schemas
@@ -1807,6 +2072,7 @@ def _smoke() -> int:
         "CORS_ORIGINS",
         "APPROVAL_WEBHOOK_URL",
         "APPROVAL_WEBHOOK_SECRET",
+        "APPROVAL_FORWARD_URL",
         "FEISHU_CALLBACK_SECRET",
         "DINGTALK_CALLBACK_SECRET",
         "WECOM_CALLBACK_SECRET",
@@ -1934,7 +2200,7 @@ def _smoke() -> int:
 
     print(
         f"cn-work-agent {__version__} smoke OK — "
-        f"multi-IM ({','.join(PLATFORMS)}) webhook route + verify + approvals + TTL + csv + md + html + im-cards + platforms + config + rate-limit + cors + requestId + openapi + metrics + decision-webhook + hmac + retry + inbound-callback + watch + shutdown + accessLog + approvalsMax"
+        f"multi-IM ({','.join(PLATFORMS)}) webhook route + verify + approvals + TTL + csv + md + html + im-cards + platforms + config + rate-limit + cors + requestId + openapi + metrics + decision-webhook + hmac + retry + inbound-callback + watch + shutdown + accessLog + approvalsMax + forward"
     )
     return 0
 
@@ -2008,6 +2274,15 @@ def main(argv: list[str] | None = None) -> int:
         "(`X-Webhook-Signature: sha256=<hex>` of raw body). "
         "Env APPROVAL_WEBHOOK_SECRET when flag omitted; else config approval_webhook_secret. "
         "Empty/omit = unsigned. Simple HMAC is OSS (body only). Always sends X-Webhook-Timestamp unix-seconds; replay window enforcement = paid later.",
+    )
+    p_serve.add_argument(
+        "--forward-url",
+        default=None,
+        help="POST Dify/n8n-shaped JSON {event,approval_id,status,tenant|app,title} "
+        "when an approval is approved or rejected (fire-and-forget, 1 retry; "
+        "never fails decide/expire; no secrets in body). "
+        "Env APPROVAL_FORWARD_URL when flag omitted; else config approval_forward_url. "
+        "Empty/omit = disabled. Example wiring, not a Dify plugin.",
     )
     p_serve.add_argument(
         "--approvals-max",
@@ -2128,6 +2403,7 @@ def main(argv: list[str] | None = None) -> int:
             webhook_url=resolve_webhook_url(None, config=cfg),
             webhook_secret=resolve_webhook_secret(None, config=cfg),
             approvals_max=resolve_approvals_max(config=cfg),
+            forward_url=resolve_forward_url(None, config=cfg),
             config=cfg,
             enabled=_enabled_platforms(selected),
         )
@@ -2166,6 +2442,10 @@ def main(argv: list[str] | None = None) -> int:
             getattr(args, "webhook_secret", None),
             config=serve_cfg,
         )
+        forward_url = resolve_forward_url(
+            getattr(args, "forward_url", None),
+            config=serve_cfg,
+        )
         serve(
             host=args.host,
             port=args.port,
@@ -2182,6 +2462,8 @@ def main(argv: list[str] | None = None) -> int:
             cors_origins_cli=getattr(args, "cors_origins", None),
             webhook_url_cli=getattr(args, "webhook_url", None),
             webhook_secret_cli=getattr(args, "webhook_secret", None),
+            forward_url=forward_url,
+            forward_url_cli=getattr(args, "forward_url", None),
             drain_ms=getattr(args, "drain_ms", None),
             log_json=resolve_log_json(getattr(args, "log_json", None)),
             approvals_max=getattr(args, "approvals_max", None),
@@ -2248,6 +2530,12 @@ def main(argv: list[str] | None = None) -> int:
         webhook_secret = resolve_webhook_secret(None, config=cfg)
         notify_approval_decisions(
             webhook_url, expired, secret=webhook_secret, wait=True
+        )
+        notify_approval_forwards(
+            resolve_forward_url(None, config=cfg),
+            expired,
+            wait=True,
+            config=cfg,
         )
         print(json.dumps({"ok": True, "expired": len(expired), "ttl_seconds": ttl, "ids": [r.get("id") for r in expired]}, ensure_ascii=False))
         return 0

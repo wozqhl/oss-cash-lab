@@ -4,11 +4,27 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### Evidence pack (Article 14 orientation)
+
+- `evidence-pack --dir DIR --out OUTDIR` (optional `--zip`) writes CycloneDX 1.7 JSON + SPDX 3.0.1 JSON + MANIFEST.md (files, license/advisory gate exit codes, timestamp). Inventory+match evidence, not a CRA declaration. No invented CVEs, scores, or compliant badges. Defaults: `policies/default.json` + `examples/advisories/sample.json`.
+
+### SPDX 3.0.1 file elements (observed only)
+
+- `--format spdx3` emits `software_File` + package `contains` + file `verifiedUsing` sha256 only when the scan hashed a real file (e.g. `.gguf`). Text-only model names stay packages. No invented files or hashes.
+
+### Observed ML-BOM fields (hashes + on-disk model cards)
+
+- CycloneDX 1.7 / SPDX 2.3 / SPDX 3.0.1 include sha256 and declared model-card name/description/license URL only when the scan observes them. No invented datasets, accuracy, or training metrics.
+
+### OSV/GHSA converter (offline)
+
+- `convert-advisories --from-osv FILE --out OUT.json` maps OSV (and GHSA when the shape is close) into the existing `ai-bom-advisories/v1` fixture. IDs stay `OSV-*` / `GHSA-*`. Skip unmappable records and print converted/skipped counts. Does not invent CVSS or affected versions. Sample: `examples/advisories/osv-sample.json`. No live NVD/OSV client.
+
 ### Advisory-match gate (Article 14 inventory+match)
 
-- `scan --advisories <file> --gate-vulns` matches scanned component name/purl/version against a **local** JSON fixture and exits **1** on hits. Offline only — no NVD/OSV/GitHub Advisory fetch.
+- `scan --advisories <file> --gate-vulns` matches scanned component name/purl/version and recorded versionRange operators against a **local** JSON fixture and exits **1** on hits. Offline only — no NVD/OSV/GitHub Advisory fetch.
 - Fixtures: `examples/advisories/sample.json` (planted `ADV-FIXTURE-*` hits on sample-app → exit 1) and `examples/advisories/clean.json` (no match → exit 0). IDs are placeholders, not real CVEs.
-- Honest later path: convert an OSV/GHSA export into the same schema and point `--advisories` at it. Not a CVE database; not NVD completeness.
+- Honest path: `convert-advisories --from-osv` writes the same schema; point `--advisories` at the export. Not a CVE database; not NVD completeness.
 
 ### SPDX 3.0.1 JSON
 

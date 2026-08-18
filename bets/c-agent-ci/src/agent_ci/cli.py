@@ -13,6 +13,7 @@ from agent_ci.mock_agent import run_mock_agent
 from agent_ci.runner import CaseResult, GATE_ERROR, is_completed_status, quality_gate, run_cassette_suite, run_suite, run_to_gha, run_to_html, run_to_junit, run_to_md, run_to_tap, runs_to_gha, runs_to_html, runs_to_junit, runs_to_md, runs_to_tap, suite_score, to_gha, to_html, to_junit, to_md, to_tap
 from agent_ci.suite_import import import_suite
 from agent_ci.promptfoo import cases_from_promptfoo, load_promptfoo
+from agent_ci.deepeval import cases_from_deepeval, load_deepeval
 from agent_ci.check_run import (
     build_check_run_payload,
     post_check_run_payload,
@@ -103,6 +104,14 @@ def _write_tap(path: str | None, results, suite_name: str, gate=None) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(to_tap(results, suite_name=suite_name, gate=gate), encoding="utf-8")
+
+
+def _write_md(path: str | None, results, suite_name: str, gate=None) -> None:
+    if not path:
+        return
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(to_md(results, suite_name=suite_name, gate=gate), encoding="utf-8")
 
 
 def _resolve_suite(suite_arg: str) -> Path:
@@ -197,6 +206,39 @@ def main(argv: list[str] | None = None) -> int:
         "--suite-name",
         default="promptfoo",
         help="testsuite / TAP label (default: promptfoo)",
+    )
+
+    p_de = sub.add_parser(
+        "from-deepeval",
+        help="Adapt DeepEval-shaped JSON into JUnit/TAP/Markdown via existing reporters (not full DeepEval compatibility)",
+    )
+    p_de.add_argument(
+        "--in",
+        dest="input_path",
+        required=True,
+        help="DeepEval-like JSON (test_results[] / testCases[] with name, success, optional metrics)",
+    )
+    p_de.add_argument("--junit", default=None, help="Write JUnit XML to this path")
+    p_de.add_argument("--tap", default=None, help="Write TAP version 13 to this path")
+    p_de.add_argument("--md", default=None, help="Write Markdown report to this path")
+    p_de.add_argument(
+        "--format",
+        choices=("text", "junit", "tap", "md"),
+        default="text",
+        help="Stdout format: text (default), junit XML, tap (TAP version 13), or md (Markdown)",
+    )
+    p_de.add_argument(
+        "--fail-under",
+        dest="fail_under",
+        type=_fail_under_arg,
+        default=None,
+        metavar="N",
+        help="Quality gate: exit 1 when pass-rate score is below N (0-100)",
+    )
+    p_de.add_argument(
+        "--suite-name",
+        default="deepeval",
+        help="testsuite / TAP / Markdown label (default: deepeval)",
     )
 
     p_diff = sub.add_parser(
@@ -2545,8 +2587,135 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"smoke failed from-promptfoo missing code={code}", file=sys.stderr)
                 return 1
 
+        from agent_ci.deepeval import cases_from_deepeval as _de_cases
+        _de_good = _pf_root / "fixtures" / "deepeval" / "good.json"
+        _de_bad = _pf_root / "fixtures" / "deepeval" / "bad.json"
+        if not _de_good.is_file() or not _de_bad.is_file():
+            print("smoke failed deepeval fixtures missing", file=sys.stderr)
+            return 1
+        de_good_cases = load_deepeval(_de_good)
+        if len(de_good_cases) != 2 or not all(c.passed for c in de_good_cases):
+            print("smoke failed deepeval good fixture cases", de_good_cases, file=sys.stderr)
+            return 1
+        de_names = {c.name for c in de_good_cases}
+        if "france-capital" not in de_names or "math-2plus2" not in de_names:
+            print("smoke failed deepeval good names", de_names, file=sys.stderr)
+            return 1
+        de_run_shape = {
+            "testCases": [
+                {
+                    "name": "ok-case",
+                    "success": True,
+                    "metricsData": [{"name": "Faithfulness", "success": True, "score": 1.0, "threshold": 0.5}],
+                },
+                {
+                    "name": "bad-case",
+                    "success": False,
+                    "metricsData": [
+                        {
+                            "name": "Faithfulness",
+                            "success": False,
+                            "score": 0.0,
+                            "threshold": 0.5,
+                            "reason": "got & <fail>",
+                        }
+                    ],
+                },
+            ],
+            "testPassed": 1,
+            "testFailed": 1,
+        }
+        de_out = _de_cases(de_run_shape)
+        if len(de_out) != 2 or (not de_out[0].passed) or de_out[1].passed:
+            print("smoke failed deepeval testCases[] shape", de_out, file=sys.stderr)
+            return 1
+        if de_out[1].actual != "got & <fail>":
+            print("smoke failed deepeval reason", de_out[1].actual, file=sys.stderr)
+            return 1
+        try:
+            _de_cases({"not": "deepeval"})
+            print("smoke failed deepeval invalid shape accepted", file=sys.stderr)
+            return 1
+        except ValueError:
+            pass
+        de_empty = _de_cases({"test_results": [], "testPassed": 0, "testFailed": 0})
+        if de_empty != []:
+            print("smoke failed deepeval empty summary", de_empty, file=sys.stderr)
+            return 1
+        with _gate_tmp.TemporaryDirectory() as _dtd:
+            djp = Path(_dtd) / "good.xml"
+            dtp = Path(_dtd) / "good.tap"
+            dmd = Path(_dtd) / "good.md"
+            code, out, _err = _run_cli(
+                [
+                    "from-deepeval",
+                    "--in",
+                    str(_de_good),
+                    "--junit",
+                    str(djp),
+                    "--tap",
+                    str(dtp),
+                    "--md",
+                    str(dmd),
+                    "--fail-under",
+                    "80",
+                ]
+            )
+            if code != 0 or not djp.is_file() or not dtp.is_file() or not dmd.is_file():
+                print(
+                    f"smoke failed from-deepeval good code={code} out={out!r} err={_err!r}",
+                    file=sys.stderr,
+                )
+                return 1
+            dgxml = djp.read_text(encoding="utf-8")
+            dgtap = dtp.read_text(encoding="utf-8")
+            dgmd = dmd.read_text(encoding="utf-8")
+            if "<testsuite" not in dgxml or 'failures="0"' not in dgxml or "france-capital" not in dgxml:
+                print("smoke failed from-deepeval good junit", dgxml, file=sys.stderr)
+                return 1
+            if "TAP version 13" not in dgtap or "ok " not in dgtap:
+                print("smoke failed from-deepeval good tap", dgtap, file=sys.stderr)
+                return 1
+            if "france-capital" not in dgmd:
+                print("smoke failed from-deepeval good md", dgmd, file=sys.stderr)
+                return 1
+            dbj = Path(_dtd) / "bad.xml"
+            code, out, _err = _run_cli(
+                [
+                    "from-deepeval",
+                    "--in",
+                    str(_de_bad),
+                    "--junit",
+                    str(dbj),
+                    "--fail-under",
+                    "80",
+                    "--format",
+                    "junit",
+                ]
+            )
+            if code != 1 or not dbj.is_file():
+                print(
+                    f"smoke failed from-deepeval bad code={code} out={out!r} err={_err!r}",
+                    file=sys.stderr,
+                )
+                return 1
+            dbxml = dbj.read_text(encoding="utf-8")
+            if "<failure" not in dbxml or "&amp;" not in dbxml or "&lt;" not in dbxml:
+                print("smoke failed from-deepeval bad junit escape", dbxml, file=sys.stderr)
+                return 1
+            if "got & <fail>" in dbxml:
+                print("smoke failed from-deepeval unescaped", dbxml, file=sys.stderr)
+                return 1
+            code, out, _err = _run_cli(
+                ["from-deepeval", "--in", str(Path(_dtd) / "missing.json")]
+            )
+            if code != 2:
+                print(f"smoke failed from-deepeval missing code={code}", file=sys.stderr)
+                return 1
+        print("deepeval-ok")
+
         print(
-            f"agent-ci {__version__} smoke OK — {len(results)} cases passed + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+junit+tap+md+html+gha+rateLimit+qualityGate+runsMax+runDiff+runDiffMd+runDiffHtml+config+runCases+suiteDetail+promptfoo"
+            f"agent-ci {__version__} smoke OK — {len(results)} cases passed + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+junit+tap+md+html+gha+rateLimit+qualityGate+runsMax+runDiff+runDiffMd+runDiffHtml+config+runCases+suiteDetail+promptfoo+deepeval"
         )
         return 0
 
@@ -2763,6 +2932,47 @@ def main(argv: list[str] | None = None) -> int:
             print(xml, end="")
         elif fmt == "tap":
             print(to_tap(results, suite_name=suite_name, gate=gate), end="")
+        else:
+            for r in results:
+                status = "PASS" if r.passed else "FAIL"
+                print(f"[{status}] {r.name} score={r.score}")
+                if not r.passed:
+                    print(f"  {r.actual}")
+            print(f"score={score}")
+        suite_ok = all(r.passed for r in results)
+        exit_code = 0 if suite_ok else 1
+        if gate is not None and not gate.get("passed"):
+            print(
+                f"quality gate failed: score={score} < fail-under={gate.get('failUnder')}",
+                file=sys.stderr,
+            )
+            exit_code = 1
+        return exit_code
+
+    if args.cmd == "from-deepeval":
+        src = _resolve_suite(args.input_path)
+        if not src.is_file():
+            print(f"deepeval results not found: {src}", file=sys.stderr)
+            return 2
+        try:
+            results = load_deepeval(src)
+        except ValueError as e:
+            print(f"invalid deepeval results: {e}", file=sys.stderr)
+            return 2
+        suite_name = getattr(args, "suite_name", None) or "deepeval"
+        score = suite_score(results)
+        gate = quality_gate(score, getattr(args, "fail_under", None))
+        xml = to_junit(results, suite_name=suite_name, gate=gate)
+        _write_junit(args.junit, results, suite_name, gate=gate)
+        _write_tap(getattr(args, "tap", None), results, suite_name, gate=gate)
+        _write_md(getattr(args, "md", None), results, suite_name, gate=gate)
+        fmt = getattr(args, "format", "text")
+        if fmt == "junit":
+            print(xml, end="")
+        elif fmt == "tap":
+            print(to_tap(results, suite_name=suite_name, gate=gate), end="")
+        elif fmt == "md":
+            print(to_md(results, suite_name=suite_name, gate=gate), end="")
         else:
             for r in results:
                 status = "PASS" if r.passed else "FAIL"

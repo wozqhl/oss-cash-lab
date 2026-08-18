@@ -1,0 +1,17 @@
+{
+  "schema": "ai-bom-advisories/v1",
+  "source": "fixture",
+  "note": "unparseable",
+  "advisories": [
+    {
+      "id": "ADV-FIXTURE-RANGE-SKIP",
+      "severity": "medium",
+      "component": {
+        "name": "ai-bom-sample-app",
+        "purl": "pkg:npm/ai-bom-sample-app",
+        "versionRange": "foo||bar"
+      },
+      "summary": "unparseable"
+    }
+  ]
+}

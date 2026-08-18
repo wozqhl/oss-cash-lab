@@ -1,0 +1,36 @@
+{
+  "test_results": [
+    {
+      "name": "france-capital",
+      "success": true,
+      "input": "What is the capital of France?",
+      "actual_output": "Paris",
+      "expected_output": "Paris",
+      "metrics_data": [
+        {
+          "name": "AnswerRelevancyMetric",
+          "threshold": 0.5,
+          "success": true,
+          "score": 0.95,
+          "reason": "Output names the capital"
+        }
+      ]
+    },
+    {
+      "name": "math-2plus2",
+      "success": true,
+      "input": "Compute 2+2",
+      "actual_output": "4",
+      "expected_output": "4",
+      "metrics_data": [
+        {
+          "name": "CorrectnessMetric",
+          "threshold": 0.5,
+          "success": true,
+          "score": 1.0,
+          "reason": "Equals 4"
+        }
+      ]
+    }
+  ]
+}

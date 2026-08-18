@@ -33,6 +33,7 @@ From bets/a-sdk-mcp-gen (or a future standalone repo):
     tar tzf oss-cash-lab-sdk-mcp-gen-0.1.0.tgz
 
 Inspect the tarball. Do not upload the package from CI or agents.
+`npm pack` is the local proof; publish is still manual.
 The files field includes src/, examples/, action.yml, and docs.
 The bin field already points at ./src/cli.js. Engines: Node >=18.
 If LICENSE/NOTICE are missing here, copy them from the portfolio root first.

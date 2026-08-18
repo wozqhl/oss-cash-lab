@@ -1,0 +1,38 @@
+{
+  "testCases": [
+    {
+      "name": "france-capital",
+      "success": true,
+      "input": "What is the capital of France?",
+      "actualOutput": "Paris",
+      "expectedOutput": "Paris",
+      "metricsData": [
+        {
+          "name": "AnswerRelevancyMetric",
+          "threshold": 0.5,
+          "success": true,
+          "score": 0.95,
+          "reason": "Output names the capital"
+        }
+      ]
+    },
+    {
+      "name": "math-2plus2",
+      "success": false,
+      "input": "Compute 2+2",
+      "actualOutput": "5",
+      "expectedOutput": "4",
+      "metricsData": [
+        {
+          "name": "CorrectnessMetric",
+          "threshold": 0.5,
+          "success": false,
+          "score": 0.0,
+          "reason": "got & <fail>"
+        }
+      ]
+    }
+  ],
+  "testPassed": 1,
+  "testFailed": 1
+}

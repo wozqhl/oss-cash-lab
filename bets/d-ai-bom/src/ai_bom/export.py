@@ -5,7 +5,7 @@ The scan result (custom AI-BOM with summary) stays the internal model.
 SARIF reuses scanner.to_sarif (same builder as CLI --sarif).
 CycloneDX XML reuses to_cyclonedx (same components/licenses/properties).
 SPDX XML reuses to_spdx (same packages/licenseConcluded).
-SPDX 3 (`spdx3`) is a compact 3.0.1 JSON document from the same scan fields (not a full graph).
+SPDX 3 (`spdx3`) is a compact 3.0.1 JSON document from the same scan fields (software_File + contains only when a hashed file was observed; not a full graph).
 Markdown (`md`) is a human/Slack summary of summary counts — not another SBOM spec.
 GHA (`gha` / `annotations`) is GitHub Actions workflow commands (`::error` / `::notice`) — not an SBOM spec.
 HTML (`html`) is a self-contained BOM summary (stdlib `html.escape`, inline CSS, no CDN) — not an SBOM spec.
@@ -135,6 +135,23 @@ def _basename(raw: Any) -> str:
     return s.rstrip("/").split("/")[-1]
 
 
+def _observed_sha256(src: dict[str, Any]) -> str:
+    """Return a sha256 hex the scan computed. Empty if not observed (never invented)."""
+    digest = str(src.get("sha256") or "").strip()
+    if digest and len(digest) == 64 and all(c in "0123456789abcdefABCDEF" for c in digest):
+        return digest.lower()
+    hashes = src.get("hashes")
+    if isinstance(hashes, list):
+        for item in hashes:
+            if not isinstance(item, dict):
+                continue
+            alg = str(item.get("alg") or item.get("algorithm") or "").upper().replace("_", "-")
+            content = str(item.get("content") or item.get("checksumValue") or item.get("hashValue") or "").strip()
+            if alg in {"SHA-256", "SHA256"} and len(content) == 64:
+                return content.lower()
+    return ""
+
+
 def _cdx_component(src: dict[str, Any], idx: int) -> dict[str, Any]:
     name = str(src.get("name") or f"component-{idx}")
     ctype = _cdx_type(src.get("type"))
@@ -145,17 +162,33 @@ def _cdx_component(src: dict[str, Any], idx: int) -> dict[str, Any]:
     version = src.get("version")
     if version not in (None, ""):
         out["version"] = str(version)
+    desc = src.get("description")
+    if desc not in (None, ""):
+        out["description"] = str(desc)
     purl = src.get("purl")
     if purl:
         out["purl"] = str(purl)
     bref = src.get("bom-ref") or purl or f"{out['type']}:{name}:{idx}"
     out["bom-ref"] = str(bref)
+    digest = _observed_sha256(src)
+    if digest:
+        out["hashes"] = [{"alg": "SHA-256", "content": digest}]
     licenses = src.get("licenses")
     if isinstance(licenses, list) and licenses:
-        out["licenses"] = licenses
+        out["licenses"] = [e if isinstance(e, dict) else e for e in licenses]
     else:
         out["licenses"] = [{"license": {"name": "UNKNOWN"}}]
-    # ML-BOM fields the scanner already has. Do not invent architecture / datasets / metrics.
+    lic_url = str(src.get("licenseUrl") or "").strip()
+    if lic_url.startswith(("http://", "https://")):
+        first = out["licenses"][0] if out["licenses"] and isinstance(out["licenses"][0], dict) else None
+        if first is not None and isinstance(first.get("license"), dict):
+            lic = dict(first["license"])
+            if not lic.get("url"):
+                lic["url"] = lic_url
+                out["licenses"] = [{"license": lic}, *out["licenses"][1:]]
+        elif first is None:
+            out["licenses"] = [{"license": {"name": "UNKNOWN", "url": lic_url}}]
+    # ML-BOM: scan-observed fields only. Do not invent architecture / datasets / metrics.
     if ctype == "machine-learning-model":
         card_props: list[dict[str, str]] = []
         fmt = src.get("format")
@@ -164,6 +197,13 @@ def _cdx_component(src: dict[str, Any], idx: int) -> dict[str, Any]:
         src_name = _basename(src.get("path"))
         if src_name:
             card_props.append({"name": "aibom:sourcePath", "value": src_name})
+        card_name = src.get("cardName")
+        if card_name not in (None, ""):
+            card_props.append({"name": "aibom:cardName", "value": str(card_name)})
+        if desc not in (None, ""):
+            card_props.append({"name": "aibom:cardDescription", "value": str(desc)})
+        if lic_url.startswith(("http://", "https://")):
+            card_props.append({"name": "aibom:licenseUrl", "value": lic_url})
         if card_props:
             out["modelCard"] = {"properties": card_props}
     if ctype == "data":
@@ -326,8 +366,23 @@ def to_spdx(bom: dict[str, Any]) -> dict[str, Any]:
                 }
             ]
         ctype = src.get("type")
+        notes = []
         if ctype:
-            pkg["comment"] = f"ai-bom component type={ctype}"
+            notes.append(f"ai-bom component type={ctype}")
+        card_name = src.get("cardName")
+        if card_name not in (None, ""):
+            notes.append(f"modelCard.name={card_name}")
+        if notes:
+            pkg["comment"] = " ".join(notes)
+        desc = src.get("description")
+        if desc not in (None, ""):
+            pkg["description"] = str(desc)
+        digest = _observed_sha256(src)
+        if digest:
+            pkg["checksums"] = [{"algorithm": "SHA256", "checksumValue": digest}]
+        lic_url = str(src.get("licenseUrl") or "").strip()
+        if lic_url.startswith(("http://", "https://")):
+            pkg["seeAlso"] = [lic_url]
         packages.append(pkg)
 
     extracted: list[dict[str, Any]] = []
@@ -386,6 +441,8 @@ def to_spdx3(bom: dict[str, Any]) -> dict[str, Any]:
 
     Compact SpdxDocument: spdxId, name, creationInfo (specVersion 3.0.1),
     element[] of software_Package + simplelicensing_LicenseExpression.
+    software_File + package contains file only when a component has an
+    observed file path and sha256 (never invented).
     Licenses reuse the same concluded values as SPDX 2.3.
     Not a full SPDX 3 graph — omitted fields are listed on `comment`.
     """
@@ -432,6 +489,7 @@ def to_spdx3(bom: dict[str, Any]) -> dict[str, Any]:
         }
     ]
     license_elems: list[dict[str, Any]] = []
+    file_elems: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
     license_ids: dict[str, str] = {}
 
@@ -492,8 +550,55 @@ def to_spdx3(bom: dict[str, Any]) -> dict[str, Any]:
         if purl:
             pkg["software_packageUrl"] = str(purl)
         ctype = src.get("type")
+        notes = []
         if ctype:
-            pkg["comment"] = f"ai-bom component type={ctype}"
+            notes.append(f"ai-bom component type={ctype}")
+        card_name = src.get("cardName")
+        if card_name not in (None, ""):
+            notes.append(f"modelCard.name={card_name}")
+        lic_url = str(src.get("licenseUrl") or "").strip()
+        if lic_url.startswith(("http://", "https://")):
+            notes.append(f"licenseUrl={lic_url}")
+        if notes:
+            pkg["comment"] = " ".join(notes)
+        desc = src.get("description")
+        if desc not in (None, ""):
+            pkg["description"] = str(desc)
+        digest = _observed_sha256(src)
+        if digest:
+            pkg["verifiedUsing"] = [
+                {"type": "Hash", "algorithm": "sha256", "hashValue": digest}
+            ]
+        file_name = _basename(src.get("path"))
+        # File element only when the scan hashed a real path (e.g. .gguf).
+        # Text-only model names have a source path but no sha256 — skip.
+        if file_name and digest:
+            file_id = f"{namespace}#{_spdx3_local_id('File', file_name, i)}"
+            file_elem: dict[str, Any] = {
+                "type": "software_File",
+                "spdxId": file_id,
+                "name": file_name,
+                "creationInfo": creation_info,
+                "software_copyrightText": "NOASSERTION",
+                "verifiedUsing": [
+                    {"type": "Hash", "algorithm": "sha256", "hashValue": digest}
+                ],
+            }
+            fmt = src.get("format")
+            if fmt not in (None, ""):
+                file_elem["comment"] = f"ai-bom observed file format={fmt}"
+            file_elems.append(file_elem)
+            relationships.append(
+                {
+                    "type": "Relationship",
+                    "spdxId": f"{namespace}#SPDXRef-Relationship-{i}-contains",
+                    "name": "contains",
+                    "creationInfo": creation_info,
+                    "from": pkg_id,
+                    "relationshipType": "contains",
+                    "to": [file_id],
+                }
+            )
         packages.append(pkg)
         _license_rels(pkg_id, concluded, str(i))
 
@@ -507,8 +612,10 @@ def to_spdx3(bom: dict[str, Any]) -> dict[str, Any]:
         f"(summary.policyHits={policy_hits}"
         + (f" waived={waived_n}" if waived_n else "")
         + "). "
-        "Omitted (scanner lacks data — not invented): software_File, Hash/verifiedUsing, "
-        "contains/dependsOn graph, SPDX 3 AI profile / model cards, security/CVE profile, "
+        "Hash/verifiedUsing and declared model-card name/description/license URL only when the scan observed them. "
+        "software_File + contains only when a component had an observed file path and sha256. "
+        "Omitted (scanner lacks data — not invented): "
+        "contains/dependsOn graph beyond observed files, SPDX 3 AI profile, security/CVE profile, "
         "ExpandedLicensing parse trees, CBOM/crypto assets, copyright text beyond NOASSERTION, "
         "external document map. Policy hits are not CVEs."
     )
@@ -521,7 +628,7 @@ def to_spdx3(bom: dict[str, Any]) -> dict[str, Any]:
         "creationInfo": creation_info,
         "profileConformance": ["core", "software", "simpleLicensing"],
         "rootElement": [root_pkg_id],
-        "element": [agent, tool, *packages, *license_elems, *relationships],
+        "element": [agent, tool, *packages, *file_elems, *license_elems, *relationships],
         "comment": comment,
     }
 
@@ -575,6 +682,8 @@ def _xml_licenses(licenses: list[Any], indent: int) -> str:
             parts.append(_xml_elem("name", lic.get("name"), indent + 2))
         if lic.get("expression") not in (None, "") and not lic.get("id") and not lic.get("name"):
             parts.append(_xml_elem("expression", lic.get("expression"), indent + 2))
+        if lic.get("url") not in (None, ""):
+            parts.append(_xml_elem("url", lic.get("url"), indent + 2))
         parts.append(f"{inner}</license>\n")
     parts.append(f"{pad}</licenses>\n")
     return "".join(parts)
@@ -591,8 +700,22 @@ def _xml_component(comp: dict[str, Any], indent: int) -> str:
     parts.append(_xml_elem("name", comp.get("name") or "", indent + 1))
     if comp.get("version") not in (None, ""):
         parts.append(_xml_elem("version", comp.get("version"), indent + 1))
+    if comp.get("description") not in (None, ""):
+        parts.append(_xml_elem("description", comp.get("description"), indent + 1))
     if comp.get("purl"):
         parts.append(_xml_elem("purl", comp.get("purl"), indent + 1))
+    hashes = comp.get("hashes")
+    if isinstance(hashes, list) and hashes:
+        parts.append(f"{pad}  <hashes>\n")
+        for h in hashes:
+            if not isinstance(h, dict):
+                continue
+            alg = _xml_escape(h.get("alg") or "")
+            content = _xml_escape(h.get("content") or "")
+            if not alg or not content:
+                continue
+            parts.append(f'{pad}    <hash alg="{alg}">{content}</hash>\n')
+        parts.append(f"{pad}  </hashes>\n")
     licenses = comp.get("licenses")
     if isinstance(licenses, list) and licenses:
         parts.append(_xml_licenses(licenses, indent + 1))
@@ -694,6 +817,7 @@ def _xml_spdx_package(pkg: dict[str, Any], indent: int) -> str:
         "licenseConcluded",
         "licenseDeclared",
         "copyrightText",
+        "description",
         "comment",
     ):
         if key not in pkg and key != "licenseConcluded":
@@ -723,6 +847,24 @@ def _xml_spdx_package(pkg: dict[str, Any], indent: int) -> str:
                     parts.append(_xml_elem(k, ref.get(k), indent + 3))
             parts.append(f"{ref_pad}</externalRef>\n")
         parts.append(f"{inner}</externalRefs>\n")
+    checksums = pkg.get("checksums")
+    if isinstance(checksums, list) and checksums:
+        inner = "  " * (indent + 1)
+        ck_pad = "  " * (indent + 2)
+        parts.append(f"{inner}<checksums>\n")
+        for ck in checksums:
+            if not isinstance(ck, dict):
+                continue
+            parts.append(f"{ck_pad}<checksum>\n")
+            if ck.get("algorithm") not in (None, ""):
+                parts.append(_xml_elem("algorithm", ck.get("algorithm"), indent + 3))
+            if ck.get("checksumValue") not in (None, ""):
+                parts.append(_xml_elem("checksumValue", ck.get("checksumValue"), indent + 3))
+            parts.append(f"{ck_pad}</checksum>\n")
+        parts.append(f"{inner}</checksums>\n")
+    for url in pkg.get("seeAlso") or []:
+        if url not in (None, ""):
+            parts.append(_xml_elem("seeAlso", url, indent + 1))
     parts.append(f"{pad}</package>\n")
     return "".join(parts)
 

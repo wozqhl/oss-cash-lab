@@ -11,11 +11,11 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] 飞书请假 / 用印本地演示（`scripts/demo-feishu-approval.sh`，无公网）
 - [x] 钉钉 / 企微请假 / 用印本地演示（`demo-dingtalk-approval.sh` / `demo-wecom-approval.sh`，或 `--platform dingtalk|wecom|all`，无公网）
 - [x] `docs/cn-onprem.md`：私有化 + 等保诚实说明 + 与 Dify 的前后关系
+- [x] 审批通过后对 Dify / n8n 的示例 webhook 接线（`APPROVAL_FORWARD_URL`；仍是适配器）
 
 ## Still open
 
 - [ ] 生产飞书 / 钉钉 / 企微验签与发卡片（对照官方文档替换 mock）
-- [ ] 审批通过后对 Dify / n8n 的示例 webhook 接线（仍是适配器，不内嵌编排）
 - [ ] 多级审批 / 与飞书官方审批中心同步（付费向）
 
 ## Paid later (not this tree)

@@ -43,6 +43,7 @@ PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --format gha
 PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --fail-under 80
 PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo.xml --fail-under 80
 PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.json --junit out/junit-promptfoo-bad.xml --fail-under 80  # exit 1
+PYTHONPATH=src python3 -m agent_ci from-deepeval --in fixtures/deepeval/good.json --junit out/junit-deepeval.xml --fail-under 80
 PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --diff-baseline out/baseline.json
 PYTHONPATH=src python3 -m agent_ci diff --from out/run-a.json --to out/run-b.json
 PYTHONPATH=src python3 -m agent_ci diff --from out/run-a.json --to out/run-b.json --format md
@@ -164,6 +165,19 @@ PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.js
 Composite Action: [`action.yml`](./action.yml) — `uses: wozqhl/oss-cash-lab/bets/c-agent-ci@main`. Inputs: `results` (JSON path), optional `command` (run promptfoo / a fixture producer), `fail-under`, `junit`, optional `tap`. Copy-paste workflow: [`examples/github-actions/agent-ci-promptfoo.yml`](../../examples/github-actions/agent-ci-promptfoo.yml) (smoke uses the good fixture; live `npx promptfoo eval` is commented).
 
 This is a **wrapper**, not a Promptfoo or DeepEval replacement. Promptfoo already ships its own GHA and JUnit export; we convert its JSON so a platform team has one agent-ci reporter next to cassette suites.
+
+## DeepEval-shaped JSON adapter (not full compatibility)
+
+`from-deepeval` reads a consumer dump that looks like DeepEval `evaluate()` / TestRun JSON (`test_results[]` or `testCases[]` with `name`, `success`, optional `metrics_data` / `metricsData`) and reuses the same JUnit / TAP13 / Markdown reporters + `--fail-under`. It does **not** run DeepEval and does not claim the full schema (no traces / conversational turns / Confident AI).
+
+```bash
+PYTHONPATH=src python3 -m agent_ci from-deepeval --in fixtures/deepeval/good.json --junit out/junit-deepeval.xml --tap out/deepeval.tap --md out/deepeval.md --fail-under 80
+# → exit 0, JUnit failures="0"
+PYTHONPATH=src python3 -m agent_ci from-deepeval --in fixtures/deepeval/bad.json --junit out/junit-deepeval-bad.xml --fail-under 80
+# → exit 1 (1 pass / 1 fail, score 50)
+```
+
+Composite Action `results` input can point at that JSON with `adapter: deepeval` (default stays `promptfoo`).
 
 ## GitHub Actions (JUnit + job summary + annotations + run-vs-run diff)
 

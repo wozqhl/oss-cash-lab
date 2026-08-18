@@ -12,10 +12,13 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Generated TS / Python / Go clients retry transient HTTP (429 / 5xx / network; max 2 retries; Retry-After <30s)
 - [x] Generated TS / Python / Go iterate* page helpers (page/cursor; cap 1000; existing names unchanged)
 - [x] Generated TS / Python / Go request timeout (default 10s; constructor / SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC; per attempt so retry still works)
+- [x] Generated TS / Python / Go + MCP servers send OpenAPI auth per operation `security` (http bearer, apiKey header/query; env SDK_* / MCP_*; optional attach-if-set; unsecured ops omit credentials; oauth2 / openIdConnect skipped)
+- [x] Demo script in README (`scripts/demo.sh` generates petstore SDK+MCP into out/demo and prints client.ts / mcp-server.mjs / mcp.json)
+- [x] Generated Java / Kotlin / C# clients: per-attempt timeout + 429/5xx/network retry (Retry-After <30s) + per-op bearer/apiKey auth (same policy as TS/Python/Go)
+- [x] Generated Java / Kotlin / C# iterate* page helpers (page/cursor; cap 1000; existing names unchanged)
 
 ## Still open
 
-- [ ] Demo script in README (MVP checklist leftover)
 - [ ] Human upload of @oss-cash-lab/sdk-mcp-gen (needs org / access)
 - [ ] Human MCP Registry listing of a generated server under io.github.wozqhl/sdk-mcp-gen (wrap mcp-server.mjs; do not list this CLI as stdio)
 - [ ] Copy action.yml into a standalone repo if this bet is extracted

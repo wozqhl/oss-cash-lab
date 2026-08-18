@@ -445,6 +445,180 @@ assert (bom.get("summary") or {}).get("advisoryHitCount", 0) >= 1
 print("advisory fixtures ok: planted hit 1, clean 0, missing-file-flag 2")
 PYADV
 
+echo "==> convert-advisories --from-osv (offline; range match, not identity-only)"
+python3 -m ai_bom convert-advisories --from-osv examples/advisories/osv-sample.json --out /tmp/d-osv-converted.json
+test -f /tmp/d-osv-converted.json
+python3 - <<"PYOSV"
+import json
+from pathlib import Path
+doc = json.loads(Path("/tmp/d-osv-converted.json").read_text())
+assert doc.get("schema") == "ai-bom-advisories/v1", doc.get("schema")
+ids = [a.get("id") for a in (doc.get("advisories") or [])]
+assert any(str(i).startswith("OSV-") for i in ids), ids
+assert not any(str(i).startswith("ADV-FIXTURE-") for i in ids), ids
+assert any((a.get("component") or {}).get("name") == "openai" for a in (doc.get("advisories") or [])), doc
+rngs = [(a.get("component") or {}).get("versionRange") or "" for a in (doc.get("advisories") or [])]
+assert any((">" in r or "<" in r or "=" in r) for r in rngs), rngs
+print("osv convert schema ok", ids, rngs)
+PYOSV
+RANGE_TMP="$(mktemp -d)"
+mkdir -p "$RANGE_TMP/in" "$RANGE_TMP/out"
+printf "%s\n" "[project]" "name = \"openai\"" "version = \"1.2.3\"" > "$RANGE_TMP/in/pyproject.toml"
+printf "%s\n" "[project]" "name = \"openai\"" "version = \"9.9.9\"" > "$RANGE_TMP/out/pyproject.toml"
+set +e
+python3 -m ai_bom scan "$RANGE_TMP/in" --advisories /tmp/d-osv-converted.json --gate-vulns >/tmp/d-osv-hit.out 2>&1
+osv_hit=$?
+python3 -m ai_bom scan "$RANGE_TMP/out" --advisories /tmp/d-osv-converted.json --gate-vulns >/tmp/d-osv-miss.out 2>&1
+osv_miss=$?
+python3 -m ai_bom scan examples/cra-fixtures/license-pass --advisories /tmp/d-osv-converted.json --gate-vulns >/tmp/d-osv-clean.out 2>&1
+osv_clean=$?
+python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/range-in.json --gate-vulns >/tmp/d-range-in.out 2>&1
+range_in=$?
+python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/range-out.json --gate-vulns >/tmp/d-range-out.out 2>&1
+range_out=$?
+set -e
+if [ "$osv_hit" -ne 1 ]; then
+  echo "expected exit 1 for converted OSV --gate-vulns on in-range version, got $osv_hit"
+  cat /tmp/d-osv-hit.out
+  exit 1
+fi
+if [ "$osv_miss" -ne 0 ]; then
+  echo "expected exit 0 for converted OSV --gate-vulns on out-of-range version, got $osv_miss"
+  cat /tmp/d-osv-miss.out
+  exit 1
+fi
+if [ "$osv_clean" -ne 0 ]; then
+  echo "expected exit 0 for converted OSV --gate-vulns on clean tree, got $osv_clean"
+  cat /tmp/d-osv-clean.out
+  exit 1
+fi
+if [ "$range_in" -ne 1 ]; then
+  echo "expected exit 1 for range-in.json --gate-vulns, got $range_in"
+  cat /tmp/d-range-in.out
+  exit 1
+fi
+if [ "$range_out" -ne 0 ]; then
+  echo "expected exit 0 for range-out.json --gate-vulns, got $range_out"
+  cat /tmp/d-range-out.out
+  exit 1
+fi
+grep -q "OSV-" /tmp/d-osv-hit.out
+echo "osv-convert-ok"
+echo "range-ok"
+
+echo "==> observed ML-BOM hashes + on-disk model card (no invented fields)"
+OBS_TMP="$(mktemp -d)"
+NEG_TMP="$(mktemp -d)"
+mkdir -p "$OBS_TMP/models"
+printf 'tiny-weights\n' > "$OBS_TMP/models/tiny.gguf"
+cat > "$OBS_TMP/models/model-card.md" <<'CARD'
+# Observed Tiny Model
+
+A fixture description only.
+
+License: https://example.com/observed-license
+CARD
+printf '%s\n' 'MODEL = "gpt-4o-mini"' > "$NEG_TMP/app.py"
+python3 -m ai_bom scan "$OBS_TMP" --format cyclonedx --out "$OBS_TMP/bom.cdx.json"
+python3 -m ai_bom scan "$OBS_TMP" --format spdx --out "$OBS_TMP/bom.spdx.json"
+python3 -m ai_bom scan "$OBS_TMP" --format spdx3 --out "$OBS_TMP/bom.spdx3.json"
+python3 -m ai_bom scan "$NEG_TMP" --format cyclonedx --out "$NEG_TMP/bom.cdx.json"
+python3 -m ai_bom scan "$NEG_TMP" --format spdx3 --out "$NEG_TMP/bom.spdx3.json"
+OBS_TMP="$OBS_TMP" NEG_TMP="$NEG_TMP" python3 - <<"PYMLBOM"
+import hashlib, json, os
+from pathlib import Path
+obs = Path(os.environ["OBS_TMP"])
+neg = Path(os.environ["NEG_TMP"])
+want = hashlib.sha256((obs / "models" / "tiny.gguf").read_bytes()).hexdigest()
+cdx = json.loads((obs / "bom.cdx.json").read_text())
+assert cdx.get("specVersion") == "1.7", cdx.get("specVersion")
+ml = [c for c in (cdx.get("components") or []) if c.get("type") == "machine-learning-model"]
+assert ml, "expected ML component"
+hashed = [c for c in ml if any(
+    (h.get("alg") == "SHA-256" and h.get("content") == want)
+    for h in (c.get("hashes") or [])
+)]
+assert hashed, (want, ml)
+card_ok = any(
+    any(p.get("name") == "aibom:cardName" and p.get("value") == "Observed Tiny Model"
+        for p in ((c.get("modelCard") or {}).get("properties") or []))
+    or c.get("description") == "A fixture description only."
+    for c in ml
+)
+assert card_ok, ml
+assert any(
+    (e.get("license") or {}).get("url") == "https://example.com/observed-license"
+    for c in ml for e in (c.get("licenses") or [])
+) or any(
+    any(p.get("name") == "aibom:licenseUrl" and "example.com/observed-license" in str(p.get("value") or "")
+        for p in ((c.get("modelCard") or {}).get("properties") or []))
+    for c in ml
+), ml
+blob = json.dumps(cdx)
+assert "accuracy" not in blob.lower() or "Observed Tiny Model" in blob
+assert "datasets" not in blob
+assert "quantitativeAnalysis" not in blob
+spdx = json.loads((obs / "bom.spdx.json").read_text())
+assert any(
+    any(ck.get("algorithm") == "SHA256" and ck.get("checksumValue") == want
+        for ck in (pkg.get("checksums") or []))
+    for pkg in (spdx.get("packages") or [])
+), spdx.get("packages")
+spdx3 = json.loads((obs / "bom.spdx3.json").read_text())
+assert (spdx3.get("creationInfo") or {}).get("specVersion") == "3.0.1"
+elems = [e for e in (spdx3.get("element") or []) if isinstance(e, dict)]
+assert any(
+    any(h.get("algorithm") == "sha256" and h.get("hashValue") == want
+        for h in (e.get("verifiedUsing") or []))
+    for e in elems
+), "spdx3 missing observed hash"
+neg_cdx = json.loads((neg / "bom.cdx.json").read_text())
+neg_ml = [c for c in (neg_cdx.get("components") or []) if c.get("type") == "machine-learning-model"]
+assert neg_ml, "negative fixture still has a mentioned model"
+assert not any(c.get("hashes") for c in neg_ml), neg_ml
+assert not any(
+    any(p.get("name") in {"aibom:cardName", "aibom:cardDescription", "aibom:licenseUrl"}
+        for p in ((c.get("modelCard") or {}).get("properties") or []))
+    for c in neg_ml
+), neg_ml
+neg_spdx3 = json.loads((neg / "bom.spdx3.json").read_text())
+neg_elems = [e for e in (neg_spdx3.get("element") or []) if isinstance(e, dict)]
+assert not any(e.get("verifiedUsing") for e in neg_elems), "negative must not invent hashes"
+print("mlbom-obs-ok", {"sha256": want[:12] + "…", "ml": len(ml)})
+PYMLBOM
+rm -rf "$OBS_TMP" "$NEG_TMP"
+echo "mlbom-obs-ok"
+
+echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST; not a CRA declaration)"
+PACK_TMP="$(mktemp -d)"
+python3 -m ai_bom evidence-pack --dir examples/sample-app --out "$PACK_TMP/sample"   --policy policies/default.json --advisories examples/advisories/sample.json
+test -f "$PACK_TMP/sample/bom.cdx.json"
+test -f "$PACK_TMP/sample/bom.spdx3.json"
+test -f "$PACK_TMP/sample/MANIFEST.md"
+python3 -m ai_bom evidence-pack --dir examples/cra-fixtures/license-pass --out "$PACK_TMP/pass"   --policy policies/default.json --advisories examples/advisories/clean.json
+python3 -m ai_bom evidence-pack --dir examples/cra-fixtures/license-fail --out "$PACK_TMP/fail"   --policy policies/default.json --advisories examples/advisories/clean.json
+test -f "$PACK_TMP/pass/bom.cdx.json" && test -f "$PACK_TMP/pass/bom.spdx3.json" && test -f "$PACK_TMP/pass/MANIFEST.md"
+test -f "$PACK_TMP/fail/bom.cdx.json" && test -f "$PACK_TMP/fail/bom.spdx3.json" && test -f "$PACK_TMP/fail/MANIFEST.md"
+PACK_TMP="$PACK_TMP" python3 - <<"PYPACK"
+import json, os
+from pathlib import Path
+root = Path(os.environ["PACK_TMP"])
+cdx = json.loads((root / "sample" / "bom.cdx.json").read_text())
+spdx3 = json.loads((root / "sample" / "bom.spdx3.json").read_text())
+man = (root / "sample" / "MANIFEST.md").read_text()
+assert cdx.get("bomFormat") == "CycloneDX" and cdx.get("specVersion") == "1.7", cdx.get("specVersion")
+assert (spdx3.get("creationInfo") or {}).get("specVersion") == "3.0.1", spdx3.get("creationInfo")
+assert "not a CRA declaration" in man
+assert "compliant" not in man.lower()
+fail_man = (root / "fail" / "MANIFEST.md").read_text()
+pass_man = (root / "pass" / "MANIFEST.md").read_text()
+assert "| license (`--gate-licenses`) | 1 |" in fail_man, fail_man
+assert "| license (`--gate-licenses`) | 0 |" in pass_man, pass_man
+print("evidence-pack artifacts ok")
+PYPACK
+rm -rf "$PACK_TMP"
+echo "evidence-pack-ok"
+
 echo "==> temp package.json GPL-3.0 -> strict fails + evidence/sarif license hits"
 LIC_TMP="$(mktemp -d)"
 cat > "$LIC_TMP/package.json" <<'JSON'
@@ -1816,4 +1990,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+evidence-pack)"

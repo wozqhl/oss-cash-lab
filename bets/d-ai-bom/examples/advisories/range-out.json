@@ -1,0 +1,17 @@
+{
+  "schema": "ai-bom-advisories/v1",
+  "source": "fixture",
+  "note": "out-range",
+  "advisories": [
+    {
+      "id": "ADV-FIXTURE-RANGE-OUT",
+      "severity": "medium",
+      "component": {
+        "name": "ai-bom-sample-app",
+        "purl": "pkg:npm/ai-bom-sample-app",
+        "versionRange": ">=9.0.0,<10.0.0"
+      },
+      "summary": "out-range"
+    }
+  ]
+}

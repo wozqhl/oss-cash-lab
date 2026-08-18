@@ -1,0 +1,14 @@
+{
+  "ghsa_id": "GHSA-xxxx-xxxx-samp",
+  "summary": "Offline GitHub Advisory sample for ai-bom convert-advisories. Not a real GHSA.",
+  "severity": "medium",
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "pip",
+        "name": "openai"
+      },
+      "vulnerable_version_range": "< 9.9.9"
+    }
+  ]
+}

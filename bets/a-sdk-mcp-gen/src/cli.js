@@ -36,6 +36,9 @@ import {
   schemaExample,
   paginationInfo,
   iterateHelperName,
+  collectClientAuth,
+  listSecuritySchemes,
+  resolveOpSecurity,
 } from "./openapi.js";
 import { loadOpenApiSpec } from "./yaml.js";
 import { fetchOpenApiText, parseFetchHeaderLines, redactSecretsInText, pollRemoteOpenApi, specWatchStateFromFetch, remoteSpecChange, hashSpecBody } from "./fetch-spec.js";
@@ -1034,6 +1037,568 @@ function smokeZip(cliPath, specPath, tmp) {
   }
 }
 
+function smokeNpmPack(pkgRoot, tmp) {
+  const dest = path.join(tmp, "npm-pack");
+  fs.mkdirSync(dest, { recursive: true });
+  const packed = spawnSync("npm", ["pack", "--pack-destination", dest], {
+    cwd: pkgRoot,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env },
+  });
+  if (packed.error || packed.status !== 0) {
+    console.error("smoke npm pack failed", packed.status, packed.stderr, packed.error);
+    process.exit(1);
+  }
+  const names = fs.readdirSync(dest).filter((n) => n.endsWith(".tgz"));
+  if (!names.length) {
+    console.error("smoke npm pack tgz missing", dest, packed.stdout, packed.stderr);
+    process.exit(1);
+  }
+  const tgzPath = path.join(dest, names[0]);
+  if (!fs.existsSync(tgzPath) || !fs.statSync(tgzPath).isFile()) {
+    console.error("smoke npm pack tgz not a file", tgzPath);
+    process.exit(1);
+  }
+  const tz = spawnSync("tar", ["tzf", tgzPath], { encoding: "utf8", timeout: 8000 });
+  if (tz.error || tz.status !== 0) {
+    console.error("smoke npm pack tar tzf failed", tz.status, tz.stderr, tz.error);
+    process.exit(1);
+  }
+  const listing = String(tz.stdout || "");
+  const lines = listing.split(/\r?\n/).map((l) => l.trim().replace(/^\.\//, "")).filter(Boolean);
+  const has = (want) => lines.some((l) => l === want);
+  if (!has("package/src/cli.js") || !has("package/package.json")) {
+    console.error("smoke npm pack listing missing package/src/cli.js or package/package.json", listing);
+    process.exit(1);
+  }
+}
+
+
+const SMOKE_SDK_TOKEN = "sk_smoke_auth_7f2c";
+
+function spawnArgvAsync(file, args, opts = {}, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { env: opts.env || process.env, cwd: opts.cwd, input: undefined });
+    if (opts.input != null) child.stdin.write(opts.input);
+    if (child.stdin) child.stdin.end();
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+    }, timeoutMs);
+    if (child.stdout) { child.stdout.setEncoding("utf8"); child.stdout.on("data", (d) => { stdout += d; }); }
+    if (child.stderr) { child.stderr.setEncoding("utf8"); child.stderr.on("data", (d) => { stderr += d; }); }
+    child.on("error", (error) => finish({ status: 1, stdout, stderr, error }));
+    child.on("close", (status) => finish({ status, stdout, stderr }));
+  });
+}
+
+function listenClientAuthEcho() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push({ authorization: String(req.headers.authorization || ""), url: String(req.url || "") });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("[]");
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({ server, seen, url: `http://127.0.0.1:${addr.port}` });
+    });
+    server.on("error", reject);
+  });
+}
+
+
+function listenPageCursorStub() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    const url = String(req.url || "");
+    seen.push({ method: String(req.method || ""), url });
+    res.writeHead(200, { "content-type": "application/json" });
+    if (url.includes("cursor=abc")) {
+      res.end(JSON.stringify({ data: [{ id: 3 }], next_cursor: "" }));
+    } else {
+      res.end(JSON.stringify({ data: [{ id: 1 }, { id: 2 }], next_cursor: "abc" }));
+    }
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({ server, seen, url: `http://127.0.0.1:${addr.port}` });
+    });
+    server.on("error", reject);
+  });
+}
+
+function listenRetryAuthStub() {
+  const seen = [];
+  let gets = 0;
+  const server = http.createServer((req, res) => {
+    seen.push({ method: String(req.method || ""), authorization: String(req.headers.authorization || ""), url: String(req.url || "") });
+    if (String(req.method || "").toUpperCase() === "GET") {
+      gets += 1;
+      if (gets === 1) {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "0" });
+        res.end("{\"error\":\"rate\"}");
+        return;
+      }
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("[]");
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({ server, seen, url: `http://127.0.0.1:${addr.port}` });
+    });
+    server.on("error", reject);
+  });
+}
+
+async function smokeJvmClients(petstoreSpec, tmp) {
+  const jvmDir = path.join(tmp, "petstore-jvm");
+  generateToDir(petstoreSpec, jvmDir, ["java", "kotlin", "csharp"]);
+  const petJava = fs.readFileSync(path.join(jvmDir, "Client.java"), "utf8");
+  const petKt = fs.readFileSync(path.join(jvmDir, "Client.kt"), "utf8");
+  const petCs = fs.readFileSync(path.join(jvmDir, "Client.cs"), "utf8");
+  if (!petJava.includes("bearerToken") || !petJava.includes("SDK_BEARER_TOKEN") || !petJava.includes("Authorization") || !petJava.includes("retryDelayMs") || !petJava.includes("429")) {
+    console.error("smoke petstore Client.java missing bearer/retry");
+    process.exit(1);
+  }
+  if (!petJava.includes("public Object listPets") || !petJava.includes("public Object createPet")) {
+    console.error("smoke java public method names changed");
+    process.exit(1);
+  }
+  if (!petJava.includes("public List<Object> iterateListPets") || !petJava.includes("next_cursor") || !petJava.includes("nextPageToken")) {
+    console.error("smoke petstore Client.java missing iterateListPets helper");
+    process.exit(1);
+  }
+  if (!petKt.includes("fun iterateListPets") || !petKt.includes("next_cursor") || !petKt.includes("nextPageToken")) {
+    console.error("smoke petstore Client.kt missing iterateListPets helper");
+    process.exit(1);
+  }
+  if (!petCs.includes("public List<object> IterateListPets") || !petCs.includes("next_cursor") || !petCs.includes("nextPageToken")) {
+    console.error("smoke petstore Client.cs missing IterateListPets helper");
+    process.exit(1);
+  }
+  const listSlice = petJava.slice(petJava.indexOf("public Object listPets"), petJava.indexOf("public Object listPets") + 450);
+  const createSlice = petJava.slice(petJava.indexOf("public Object createPet"), petJava.indexOf("public Object createPet") + 450);
+  if (!listSlice.includes("true, null, null") || !createSlice.includes("false, null, null")) {
+    console.error("smoke java listPets must attach bearer; createPet must omit", listSlice, createSlice);
+    process.exit(1);
+  }
+  if (!petKt.includes("bearerToken") || !petKt.includes("SDK_BEARER_TOKEN") || !petKt.includes("Authorization") || !petKt.includes("retryDelayMs") || !petKt.includes("fun listPets")) {
+    console.error("smoke petstore Client.kt missing bearer/retry");
+    process.exit(1);
+  }
+  if (!petCs.includes("BearerToken") || !petCs.includes("SDK_BEARER_TOKEN") || !petCs.includes("Authorization") || !petCs.includes("RetryDelayMs") || !petCs.includes("public object ListPets")) {
+    console.error("smoke petstore Client.cs missing bearer/retry");
+    process.exit(1);
+  }
+  const javac = spawnSync("javac", ["-version"], { encoding: "utf8", timeout: 5000 });
+  if (javac.error || (javac.status !== 0 && javac.status !== null && !String(javac.stderr || javac.stdout || "").includes("javac"))) {
+    console.error("smoke javac required for java-auth-ok / java-retry-ok / java-page-ok", javac.status, javac.stderr, javac.error);
+    process.exit(1);
+  }
+  const echo = await listenRetryAuthStub();
+  try {
+    const work = path.join(tmp, "java-http-smoke");
+    fs.mkdirSync(work, { recursive: true });
+    fs.copyFileSync(path.join(jvmDir, "Client.java"), path.join(work, "Client.java"));
+    const smokeMain = [
+      "package client;",
+      "import java.util.HashMap;",
+      "import java.util.Map;",
+      "public class SmokeMain {",
+      "    public static void main(String[] args) throws Exception {",
+      "        String base = System.getenv(\"AUTH_BASE\");",
+      "        String tok = System.getenv(\"SMOKE_SDK_TOKEN\");",
+      "        Client c = new Client(base);",
+      "        c.timeoutMs = 2000;",
+      "        if (tok != null && tok.trim().length() > 0) {",
+      "            c.bearerToken = tok.trim();",
+      "        }",
+      "        c.listPets(new HashMap<String, Object>());",
+      "        System.out.println(\"java-retry-ok\");",
+      "        Map<String, Object> body = new HashMap<String, Object>();",
+      "        body.put(\"name\", \"x\");",
+      "        c.createPet(body);",
+      "        System.out.println(\"java-auth-ok\");",
+      "    }",
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(work, "SmokeMain.java"), smokeMain);
+    const compiled = spawnSync("javac", ["-d", work, "Client.java", "SmokeMain.java"], { encoding: "utf8", timeout: 20000, cwd: work });
+    if (compiled.error || compiled.status !== 0) {
+      console.error("smoke javac Client.java failed", compiled.status, compiled.stdout, compiled.stderr, compiled.error);
+      process.exit(1);
+    }
+    const run = await spawnArgvAsync("java", ["-cp", work, "client.SmokeMain"], {
+      env: { ...process.env, AUTH_BASE: echo.url, SMOKE_SDK_TOKEN: SMOKE_SDK_TOKEN, SDK_BEARER_TOKEN: "" },
+    }, 15000);
+    const out = String(run.stdout || "");
+    const err = String(run.stderr || "");
+    if (run.error || run.status !== 0 || !out.includes("java-auth-ok") || !out.includes("java-retry-ok")) {
+      console.error("smoke java HTTP stub failed", run.status, run.stdout, run.stderr, run.error, echo.seen);
+      process.exit(1);
+    }
+    if (out.includes(SMOKE_SDK_TOKEN) || err.includes(SMOKE_SDK_TOKEN)) {
+      console.error("smoke java leaked token");
+      process.exit(1);
+    }
+    const gets = echo.seen.filter((s) => s.method.toUpperCase() === "GET");
+    const posts = echo.seen.filter((s) => s.method.toUpperCase() === "POST");
+    if (gets.length < 2) {
+      console.error("smoke java 429 was not retried", echo.seen);
+      process.exit(1);
+    }
+    if (gets.some((s) => s.authorization !== "Bearer " + SMOKE_SDK_TOKEN)) {
+      console.error("smoke java GET missing Authorization on secured op", echo.seen);
+      process.exit(1);
+    }
+    if (!posts.length || posts.some((s) => s.authorization)) {
+      console.error("smoke java POST must omit Authorization", echo.seen);
+      process.exit(1);
+    }
+    console.log("java-retry-ok");
+    console.log("java-auth-ok");
+  } finally {
+    await new Promise((r) => echo.server.close(() => r()));
+  }
+
+  const pageEcho = await listenPageCursorStub();
+  try {
+    const work = path.join(tmp, "java-page-smoke");
+    fs.mkdirSync(work, { recursive: true });
+    fs.copyFileSync(path.join(jvmDir, "Client.java"), path.join(work, "Client.java"));
+    const pageMain = [
+      "package client;",
+      "import java.util.HashMap;",
+      "import java.util.List;",
+      "import java.util.Map;",
+      "public class SmokePage {",
+      "    public static void main(String[] args) throws Exception {",
+      "        String base = System.getenv(\"PAGE_BASE\");",
+      "        Client c = new Client(base);",
+      "        c.timeoutMs = 2000;",
+      "        Map<String, Object> q = new HashMap<String, Object>();",
+      "        q.put(\"limit\", Integer.valueOf(2));",
+      "        List<Object> pages = c.iterateListPets(q);",
+      "        if (pages == null || pages.size() != 2) {",
+      "            throw new RuntimeException(\"pages \" + (pages == null ? -1 : pages.size()));",
+      "        }",
+      "        System.out.println(\"java-page-ok\");",
+      "    }",
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(work, "SmokePage.java"), pageMain);
+    const pageCompiled = spawnSync("javac", ["-d", work, "Client.java", "SmokePage.java"], { encoding: "utf8", timeout: 20000, cwd: work });
+    if (pageCompiled.error || pageCompiled.status !== 0) {
+      console.error("smoke javac iterateListPets failed", pageCompiled.status, pageCompiled.stdout, pageCompiled.stderr, pageCompiled.error);
+      process.exit(1);
+    }
+    const pageRun = await spawnArgvAsync("java", ["-cp", work, "client.SmokePage"], {
+      env: { ...process.env, PAGE_BASE: pageEcho.url, SDK_BEARER_TOKEN: "" },
+    }, 15000);
+    const pageOut = String(pageRun.stdout || "");
+    if (pageRun.error || pageRun.status !== 0 || !pageOut.includes("java-page-ok")) {
+      console.error("smoke java iterateListPets stub failed", pageRun.status, pageRun.stdout, pageRun.stderr, pageRun.error, pageEcho.seen);
+      process.exit(1);
+    }
+    if (pageEcho.seen.length < 2 || !String(pageEcho.seen[1].url || "").includes("cursor=abc")) {
+      console.error("smoke java iterateListPets did not follow next_cursor", pageEcho.seen);
+      process.exit(1);
+    }
+    console.log("java-page-ok");
+  } finally {
+    await new Promise((r) => pageEcho.server.close(() => r()));
+  }
+}
+
+async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
+  const petOps = listOperations(petstoreSpec);
+  const listOp = petOps.find((o) => o.operationId === "listPets");
+  const auth = collectClientAuth(petOps);
+  if (!listOp || !auth.some((s) => s.kind === "bearer")) {
+    console.error("smoke petstore listPets should resolve optional bearerAuth", listOp && listOp.security, auth);
+    process.exit(1);
+  }
+  for (const id of ["createPet", "getPet", "deletePet"]) {
+    if (petOps.find((o) => o.operationId === id)?.security?.length) {
+      console.error("smoke", id, "should not require auth (optional bearer is on listPets only)");
+      process.exit(1);
+    }
+  }
+  const schemes = listSecuritySchemes(petstoreSpec);
+  if (!schemes.supported.some((s) => s.kind === "bearer") || schemes.skipped.length) {
+    console.error("smoke petstore listSecuritySchemes", schemes);
+    process.exit(1);
+  }
+  const petTs = fs.readFileSync(path.join(petClients, "client.ts"), "utf8");
+  const petPy = fs.readFileSync(path.join(petClients, "client.py"), "utf8");
+  const petGo = fs.readFileSync(path.join(petClients, "client.go"), "utf8");
+  if (!petTs.includes("bearerToken") || !petTs.includes("SDK_BEARER_TOKEN") || !petTs.includes("Authorization") && !petTs.includes("authorization")) {
+    console.error("smoke petstore client.ts missing bearer auth");
+    process.exit(1);
+  }
+  if (!petPy.includes("bearer_token") || !petPy.includes("SDK_BEARER_TOKEN") || !petPy.includes("Authorization")) {
+    console.error("smoke petstore client.py missing bearer auth");
+    process.exit(1);
+  }
+  if (!petGo.includes("BearerToken") || !petGo.includes("SDK_BEARER_TOKEN") || !petGo.includes("Authorization")) {
+    console.error("smoke petstore client.go missing bearer auth");
+    process.exit(1);
+  }
+  if (!/return \{\s*listPets,/.test(petTs) || !petTs.includes("async function listPets")) {
+    console.error("smoke petstore auth must keep listPets export");
+    process.exit(1);
+  }
+  if (!petTs.includes("bearer: true") || !petPy.includes('"bearer": True') || !petGo.includes("&reqAuth{Bearer: true}")) {
+    console.error("smoke listPets should attach bearer per operation security");
+    process.exit(1);
+  }
+  for (const [label, blob, needle] of [
+    ["ts", petTs, "bearer: true"],
+    ["py", petPy, '"bearer": True'],
+    ["go", petGo, "&reqAuth{Bearer: true}"],
+  ]) {
+    for (const fn of ["createPet", "getPet", "deletePet"]) {
+      const start = blob.indexOf(fn === "createPet" && label === "go" ? "func (c *Client) CreatePet" : label === "go" ? `func (c *Client) ${fn[0].toUpperCase()}${fn.slice(1)}` : label === "py" ? `def ${fn}` : `async function ${fn}`);
+      if (start < 0) {
+        console.error("smoke missing", fn, "in", label);
+        process.exit(1);
+      }
+      const slice = blob.slice(start, start + 500);
+      if (slice.includes(needle)) {
+        console.error("smoke", fn, "must not attach auth in", label);
+        process.exit(1);
+      }
+    }
+  }
+  const mcpJs = fs.readFileSync(path.join(petClients, MCP_SERVER_FILE), "utf8");
+  const mcpPy = fs.readFileSync(path.join(petClients, MCP_SERVER_PY_FILE), "utf8");
+  const mcpGo = fs.readFileSync(path.join(petClients, MCP_SERVER_GO_FILE), "utf8");
+  if (!mcpJs.includes("MCP_BEARER_TOKEN") || !mcpJs.includes("SDK_BEARER_TOKEN")) {
+    console.error("smoke mcp-server.mjs missing bearer env");
+    process.exit(1);
+  }
+  if (!mcpPy.includes("MCP_BEARER_TOKEN") || !mcpGo.includes("MCP_BEARER_TOKEN")) {
+    console.error("smoke mcp py/go missing bearer env");
+    process.exit(1);
+  }
+
+  const authPy = path.join(petClients, "_auth_smoke.py");
+  fs.writeFileSync(authPy, [
+    "from client import Client",
+    "class FakeRes:",
+    "    def __init__(self):",
+    "        self._b = b'[]'",
+    "    def read(self):",
+    "        return self._b",
+    "    def __enter__(self):",
+    "        return self",
+    "    def __exit__(self, *a):",
+    "        return False",
+    "class RecOpener:",
+    "    def __init__(self):",
+    "        self.n = 0",
+    "        self.auths = []",
+    "    def open(self, req, timeout=None):",
+    "        self.n += 1",
+    "        h = req.get_header('Authorization') or (req.headers.get('Authorization') if hasattr(req, 'headers') else None)",
+    "        self.auths.append(h)",
+    "        if self.n == 1:",
+    "            raise TimeoutError('slow')",
+    "        return FakeRes()",
+    "tok = __import__('os').environ['SMOKE_SDK_TOKEN']",
+    "op = RecOpener()",
+    "Client('http://example.test', opener=op, bearer_token=tok).listPets({})",
+    "assert op.n == 2, op.n",
+    "want = 'Bearer ' + tok",
+    "assert op.auths == [want, want], 'header not replayed on retry'",
+    "op2 = RecOpener()",
+    "Client('http://example.test', opener=op2).listPets({})",
+    "assert op2.auths == [want, want], 'env fallback missing'",
+    "op3 = RecOpener()",
+    "Client('http://example.test', opener=op3, bearer_token=tok).createPet({'name': 'x'})",
+    "assert op3.n == 2, op3.n",
+    "assert all((not h) for h in op3.auths), 'createPet must omit Authorization'",
+    "print('auth-header-ok')",
+    "print('auth-op-ok')",
+    "",
+  ].join("\n"));
+  const authEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1", SMOKE_SDK_TOKEN: SMOKE_SDK_TOKEN, SDK_BEARER_TOKEN: SMOKE_SDK_TOKEN };
+  const authRun = spawnSync("python3", [authPy], { encoding: "utf8", timeout: 8000, cwd: petClients, env: authEnv });
+  if (authRun.error || authRun.status !== 0 || !String(authRun.stdout || "").includes("auth-header-ok")) {
+    console.error("smoke generated client auth header/retry failed", authRun.status, authRun.stdout, authRun.stderr, authRun.error);
+    process.exit(1);
+  }
+  if (String(authRun.stdout || "").includes(SMOKE_SDK_TOKEN) || String(authRun.stderr || "").includes(SMOKE_SDK_TOKEN)) {
+    console.error("smoke auth python leaked token");
+    process.exit(1);
+  }
+
+  const echo = await listenClientAuthEcho();
+  try {
+    const httpPy = path.join(petClients, "_auth_http_smoke.py");
+    fs.writeFileSync(httpPy, [
+      "import os",
+      "from client import Client",
+      "c = Client(os.environ['AUTH_BASE'], bearer_token=os.environ['SMOKE_SDK_TOKEN'])",
+      "c.listPets({})",
+      "c.createPet({'name': 'x'})",
+      "print('auth-http-ok')",
+      "",
+    ].join("\n"));
+    const httpRun = await spawnArgvAsync("python3", [httpPy], {
+      cwd: petClients,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", AUTH_BASE: echo.url, SMOKE_SDK_TOKEN: SMOKE_SDK_TOKEN },
+    }, 8000);
+    if (httpRun.error || httpRun.status !== 0 || !String(httpRun.stdout || "").includes("auth-http-ok")) {
+      console.error("smoke auth HTTP stub client failed", httpRun.status, httpRun.stdout, httpRun.stderr, httpRun.error);
+      process.exit(1);
+    }
+    if (!echo.seen.length || echo.seen[0].authorization !== "Bearer " + SMOKE_SDK_TOKEN) {
+      console.error("smoke auth HTTP stub missing Authorization header", echo.seen);
+      process.exit(1);
+    }
+    if (echo.seen.length < 2 || echo.seen[1].authorization) {
+      console.error("smoke createPet must omit Authorization when only listPets is secured", echo.seen);
+      process.exit(1);
+    }
+    if (String(httpRun.stdout || "").includes(SMOKE_SDK_TOKEN) || String(httpRun.stderr || "").includes(SMOKE_SDK_TOKEN)) {
+      console.error("smoke auth HTTP client leaked token");
+      process.exit(1);
+    }
+    echo.seen.length = 0;
+    const rpc = [
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "listPets", arguments: {} } }),
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "createPet", arguments: { name: "x" } } }),
+    ].join("\n") + "\n";
+    const mcpRun = await spawnArgvAsync(process.execPath, [path.join(petClients, MCP_SERVER_FILE)], {
+      input: rpc,
+      env: { ...process.env, MCP_BASE_URL: echo.url, MCP_BEARER_TOKEN: SMOKE_SDK_TOKEN },
+    }, 8000);
+    if (mcpRun.error || mcpRun.status !== 0) {
+      console.error("smoke mcp auth tools/call failed", mcpRun.status, mcpRun.stdout, mcpRun.stderr, mcpRun.error);
+      process.exit(1);
+    }
+    if (!echo.seen.length || echo.seen[0].authorization !== "Bearer " + SMOKE_SDK_TOKEN) {
+      console.error("smoke mcp auth HTTP stub missing Authorization", echo.seen);
+      process.exit(1);
+    }
+    if (echo.seen.length < 2 || echo.seen[1].authorization) {
+      console.error("smoke mcp createPet must omit Authorization", echo.seen);
+      process.exit(1);
+    }
+    if (String(mcpRun.stdout || "").includes(SMOKE_SDK_TOKEN) || String(mcpRun.stderr || "").includes(SMOKE_SDK_TOKEN)) {
+      console.error("smoke mcp auth leaked token");
+      process.exit(1);
+    }
+  } finally {
+    await new Promise((r) => echo.server.close(() => r()));
+  }
+
+  const apiKeySpec = {
+    openapi: "3.0.3",
+    info: { title: "Key API", version: "1.0.0" },
+    components: {
+      securitySchemes: {
+        apiKey: { type: "apiKey", in: "header", name: "X-API-Key" },
+        qKey: { type: "apiKey", in: "query", name: "api_key" },
+        oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: "https://example.test/oauth", scopes: {} } } },
+        oidc: { type: "openIdConnect", openIdConnectUrl: "https://example.test/.well-known" },
+      },
+    },
+    security: [{ apiKey: [] }, { qKey: [] }],
+    paths: { "/ping": { get: { operationId: "ping", responses: { "200": { description: "ok" } } } } },
+  };
+  const keySchemes = listSecuritySchemes(apiKeySpec);
+  if (!keySchemes.supported.some((s) => s.kind === "apiKey" && s.in === "header" && s.paramName === "X-API-Key")) {
+    console.error("smoke apiKey header scheme", keySchemes);
+    process.exit(1);
+  }
+  if (!keySchemes.supported.some((s) => s.kind === "apiKey" && s.in === "query")) {
+    console.error("smoke apiKey query scheme", keySchemes);
+    process.exit(1);
+  }
+  if (!keySchemes.skipped.some((s) => s.type === "oauth2") || !keySchemes.skipped.some((s) => s.type === "openidconnect")) {
+    console.error("smoke oauth2/openIdConnect should be skipped", keySchemes.skipped);
+    process.exit(1);
+  }
+  const keyDir = path.join(tmp, "apikey-auth");
+  generateToDir(apiKeySpec, keyDir, ["ts", "python", "go"]);
+  const keyTs = fs.readFileSync(path.join(keyDir, "client.ts"), "utf8");
+  const keyPy = fs.readFileSync(path.join(keyDir, "client.py"), "utf8");
+  const keyGo = fs.readFileSync(path.join(keyDir, "client.go"), "utf8");
+  if (!keyTs.includes("X-API-Key") || !keyTs.includes("api_key") || !keyTs.includes("SDK_API_KEY") || !keyTs.includes("apiKey")) {
+    console.error("smoke apiKey client.ts missing named header/query");
+    process.exit(1);
+  }
+  if (keyTs.includes("https://example.test/oauth") || keyTs.includes("https://example.test/.well-known") || keyTs.includes("authorizationUrl") || keyTs.includes("tokenUrl")) {
+    console.error("smoke apiKey client.ts must not fake oauth tokens");
+    process.exit(1);
+  }
+  if (!keyPy.includes("X-API-Key") || !keyPy.includes("SDK_API_KEY") || !keyGo.includes("X-API-Key") || !keyGo.includes("SDK_API_KEY")) {
+    console.error("smoke apiKey py/go missing header");
+    process.exit(1);
+  }
+  if (!keyTs.includes("async function ping") || !keyPy.includes("def ping") || !keyGo.includes("func (c *Client) Ping")) {
+    console.error("smoke apiKey public method names changed");
+    process.exit(1);
+  }
+
+  const oauthOnly = {
+    openapi: "3.0.3",
+    info: { title: "OAuth API", version: "1.0.0" },
+    components: { securitySchemes: { oauth: { type: "oauth2", flows: { implicit: { authorizationUrl: "https://example.test/auth", scopes: {} } } } } },
+    security: [{ oauth: ["read"] }],
+    paths: { "/x": { get: { operationId: "getX", responses: { "200": { description: "ok" } } } } },
+  };
+  const oauthOps = listOperations(oauthOnly);
+  if (collectClientAuth(oauthOps).length || resolveOpSecurity(oauthOnly, oauthOnly.paths["/x"].get).length) {
+    console.error("smoke oauth-only must not emit supported auth", collectClientAuth(oauthOps));
+    process.exit(1);
+  }
+  const oauthTs = generateTsClient(oauthOps, "OAuth API");
+  if (oauthTs.includes("SDK_BEARER_TOKEN") || oauthTs.includes("bearerToken") || oauthTs.includes("authorization")) {
+    console.error("smoke oauth-only client must not fake bearer");
+    process.exit(1);
+  }
+  const oauthJava = generateJavaClient(oauthOps, "OAuth API");
+  if (oauthJava.includes("SDK_BEARER_TOKEN") || oauthJava.includes("bearerToken") || oauthJava.includes("Authorization")) {
+    console.error("smoke oauth-only java must not fake bearer");
+    process.exit(1);
+  }
+  generateToDir(apiKeySpec, keyDir, ["java", "kotlin", "csharp"]);
+  const keyJava = fs.readFileSync(path.join(keyDir, "Client.java"), "utf8");
+  const keyKt = fs.readFileSync(path.join(keyDir, "Client.kt"), "utf8");
+  const keyCs = fs.readFileSync(path.join(keyDir, "Client.cs"), "utf8");
+  if (!keyJava.includes("X-API-Key") || !keyJava.includes("api_key") || !keyJava.includes("SDK_API_KEY") || !keyJava.includes("apiKey")) {
+    console.error("smoke apiKey Client.java missing named header/query");
+    process.exit(1);
+  }
+  if (!keyKt.includes("X-API-Key") || !keyCs.includes("X-API-Key") || !keyKt.includes("SDK_API_KEY") || !keyCs.includes("SDK_API_KEY")) {
+    console.error("smoke apiKey kotlin/csharp missing header");
+    process.exit(1);
+  }
+  if (!keyJava.includes("public Object ping") || !keyKt.includes("fun ping") || !keyCs.includes("public object Ping")) {
+    console.error("smoke apiKey jvm public method names changed");
+    process.exit(1);
+  }
+  await smokeJvmClients(petstoreSpec, tmp);
+}
 const cmd = process.argv[2] || "help";
 if (cmd === "--version" || cmd === "-V") {
   console.log(VERSION);
@@ -1119,7 +1684,11 @@ if (cmd === "--version" || cmd === "-V") {
     !java.includes("HttpURLConnection") ||
     !java.includes("public class Client") ||
     !java.includes("public Object listPets") ||
-    !java.includes("public Object createPet")
+    !java.includes("public Object createPet") ||
+    !java.includes("retryDelayMs") ||
+    !java.includes("429") ||
+    !java.includes("SDK_TIMEOUT_MS") ||
+    !java.includes("SDK_TIMEOUT_SEC")
   ) {
     console.error("smoke java client failed");
     process.exit(1);
@@ -1142,7 +1711,11 @@ if (cmd === "--version" || cmd === "-V") {
     !csharp.includes("public class Client") ||
     !csharp.includes("public object ListPets") ||
     !csharp.includes("public object CreatePet") ||
-    !csharp.includes("public object GetPet")
+    !csharp.includes("public object GetPet") ||
+    !csharp.includes("RetryDelayMs") ||
+    !csharp.includes("429") ||
+    !csharp.includes("SDK_TIMEOUT_MS") ||
+    !csharp.includes("SDK_TIMEOUT_SEC")
   ) {
     console.error("smoke csharp client failed");
     process.exit(1);
@@ -1155,6 +1728,10 @@ if (cmd === "--version" || cmd === "-V") {
     !kotlin.includes("fun listPets") ||
     !kotlin.includes("fun createPet") ||
     !kotlin.includes("fun getPet") ||
+    !kotlin.includes("retryDelayMs") ||
+    !kotlin.includes("429") ||
+    !kotlin.includes("SDK_TIMEOUT_MS") ||
+    !kotlin.includes("SDK_TIMEOUT_SEC") ||
     /okhttp3|\bOkHttp\b|import\s+okhttp/i.test(kotlin)
   ) {
     console.error("smoke kotlin client failed");
@@ -2241,14 +2818,16 @@ if (cmd === "--version" || cmd === "-V") {
       process.exit(1);
     }
 
+    await smokeGeneratedClientAuth(petstoreSpec, petClients, tmp);
     await smokeUrlAuthHeaders(cliPath, mini31Path, tmp);
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
+    smokeNpmPack(path.resolve(path.dirname(cliPath), ".."), tmp);
 
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, pack-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {
