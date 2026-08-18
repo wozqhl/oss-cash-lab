@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (AbortController / urllib timeout / context.WithTimeout; MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*). Smoke prints mcp-timeout-ok.
 - Generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries, Retry-After <30s; Idempotency-Key reused). Smoke prints mcp-retry-ok.
 
 - Generated stdio MCP servers send User-Agent / X-Request-Id / Idempotency-Key on tools/call upstream HTTP. Smoke prints mcp-id-ok.

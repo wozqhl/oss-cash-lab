@@ -63,6 +63,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] Generated TS / Python / Go / Java (and other langs) clients send `Idempotency-Key` on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via constructor / env `SDK_IDEMPOTENCY_KEY`. Smoke prints idem-ok.
 - [x] Generated stdio MCP servers send the same identity headers on tools/call upstream HTTP (`User-Agent` sdk-mcp-gen/0.1.0 unless set, `X-Request-Id` per attempt, `Idempotency-Key` on POST/PUT/PATCH/DELETE). Smoke prints mcp-id-ok.
 - [x] Generated stdio MCP servers retry 429 / 5xx / network on tools/call upstream HTTP (max 2 retries, ~100ms backoff, honor Retry-After <30s; Idempotency-Key reused). Smoke prints mcp-retry-ok.
+- [x] Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call upstream HTTP (AbortController / urllib timeout / context.WithTimeout; override MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*). Smoke prints mcp-timeout-ok.
 - [x] Demo script in README (`scripts/demo.sh`)
 
 ## Demo
@@ -210,7 +211,7 @@ MCP_BASE_URL=http://localhost:8080 go run out/petstore/mcp_server.go
 # stdout: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"listPets",...},...]}}
 ```
 
-Runtime `MCP_BASE_URL` wins over the baked `--base-url` (or OpenAPI `servers[0].url`). Bearer / apiKey specs also read `MCP_BEARER_TOKEN` / `MCP_API_KEY` (fallback `SDK_*`) on upstream HTTP; values never logged. `tools/call` attaches the same identity headers as the SDK (`User-Agent` sdk-mcp-gen/0.1.0 unless set, `X-Request-Id` per attempt, `Idempotency-Key` on POST/PUT/PATCH/DELETE). Compatible with B gateway `upstream.type=stdio` (`command: node`, `args: [mcp-server.mjs]` or `command: python3`, `args: [mcp_server.py]` or `command: go`, `args: [run, mcp_server.go]`).
+Runtime `MCP_BASE_URL` wins over the baked `--base-url` (or OpenAPI `servers[0].url`). Bearer / apiKey specs also read `MCP_BEARER_TOKEN` / `MCP_API_KEY` (fallback `SDK_*`) on upstream HTTP; values never logged. `tools/call` attaches the same identity headers as the SDK (`User-Agent` sdk-mcp-gen/0.1.0 unless set, `X-Request-Id` per attempt, `Idempotency-Key` on POST/PUT/PATCH/DELETE) and a per-attempt 10s timeout (`MCP_TIMEOUT_MS` / `MCP_TIMEOUT_SEC` or `SDK_TIMEOUT_*`). Compatible with B gateway `upstream.type=stdio` (`command: node`, `args: [mcp-server.mjs]` or `command: python3`, `args: [mcp_server.py]` or `command: go`, `args: [run, mcp_server.go]`).
 
 Paste `mcp.json` into your **MCP servers config JSON** (Cursor / Claude Desktop / Claude Code). `args` are **relative** to the generate `--out` directory (`./mcp-server.mjs`). Server key is `--package-name` when set, otherwise the OpenAPI title slug. A second `…-py` entry uses `python3` + `./mcp_server.py`; `…-go` uses `go run ./mcp_server.go` when that file is generated. Default `env.MCP_BASE_URL` is `--base-url` or `http://127.0.0.1:8080`.
 

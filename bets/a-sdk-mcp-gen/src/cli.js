@@ -1998,6 +1998,126 @@ async function smokeMcpRetry(petstoreSpec, tmp) {
   }
 }
 
+function listenMcpHangStub() {
+  const seen = [];
+  const server = http.createServer((req) => {
+    seen.push({ method: String(req.method || ""), url: String(req.url || "") });
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({
+        server,
+        seen,
+        url: `http://127.0.0.1:${addr.port}`,
+        reset() {
+          seen.length = 0;
+        },
+      });
+    });
+    server.on("error", reject);
+  });
+}
+
+function assertMcpTimeoutSource(label, blob) {
+  const hasMs = blob.includes("MCP_TIMEOUT_MS") && blob.includes("SDK_TIMEOUT_MS");
+  const hasSec = blob.includes("MCP_TIMEOUT_SEC") && blob.includes("SDK_TIMEOUT_SEC");
+  const hasPrimitive =
+    blob.includes("AbortController") ||
+    blob.includes("timeout=_env_timeout_s()") ||
+    blob.includes("timeout=_env_timeout_s") ||
+    /urlopen\(.*timeout=/.test(blob) ||
+    blob.includes("context.WithTimeout");
+  if (!hasMs || !hasSec || !hasPrimitive) {
+    console.error("smoke mcp timeout", label, "missing timeout primitive or MCP_/SDK_TIMEOUT_*");
+    process.exit(1);
+  }
+}
+
+function assertMcpTimeoutReply(label, stdout) {
+  const raw = String(stdout || "");
+  const line = raw.split(/\n/).filter((l) => l.trim().startsWith("{")).pop();
+  if (!line) {
+    console.error("smoke mcp timeout", label, "no JSON-RPC line", raw);
+    process.exit(1);
+  }
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch (err) {
+    console.error("smoke mcp timeout", label, "bad JSON", line, err);
+    process.exit(1);
+  }
+  const result = msg && msg.result;
+  const inner = result && result.result;
+  const failed =
+    (result && result.ok === false) ||
+    (inner && (inner.ok === false || inner.error === "fetch_failed"));
+  if (!failed) {
+    console.error("smoke mcp timeout", label, "expected fetch_failed / ok:false", msg);
+    process.exit(1);
+  }
+}
+
+async function smokeMcpTimeout(petstoreSpec, tmp) {
+  const idDir = path.join(tmp, "mcp-timeout");
+  generateToDir(petstoreSpec, idDir, ["ts"]);
+  for (const [label, name] of [
+    ["js", MCP_SERVER_FILE],
+    ["py", MCP_SERVER_PY_FILE],
+    ["go", MCP_SERVER_GO_FILE],
+  ]) {
+    assertMcpTimeoutSource(label, fs.readFileSync(path.join(idDir, name), "utf8"));
+  }
+  const rpc = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "listPets", arguments: {} } }) + "\n";
+  const hang = await listenMcpHangStub();
+  const envBase = { ...process.env, MCP_BASE_URL: hang.url, MCP_TIMEOUT_MS: "200", SDK_REQUEST_ID: "", SDK_IDEMPOTENCY_KEY: "", MCP_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "" };
+  try {
+    const t0 = Date.now();
+    const jsRun = await spawnArgvAsync(process.execPath, [path.join(idDir, MCP_SERVER_FILE)], {
+      input: rpc,
+      env: envBase,
+    }, 8000);
+    if (jsRun.error || jsRun.status !== 0) {
+      console.error("smoke mcp js tools/call timeout failed", jsRun.status, jsRun.stdout, jsRun.stderr, jsRun.error);
+      process.exit(1);
+    }
+    assertMcpTimeoutReply("js", jsRun.stdout);
+    hang.reset();
+
+    const pyRun = await spawnArgvAsync("python3", [path.join(idDir, MCP_SERVER_PY_FILE)], {
+      input: rpc,
+      env: { ...envBase, PYTHONDONTWRITEBYTECODE: "1" },
+    }, 8000);
+    if (pyRun.error || pyRun.status !== 0) {
+      console.error("smoke mcp py tools/call timeout failed", pyRun.status, pyRun.stdout, pyRun.stderr, pyRun.error);
+      process.exit(1);
+    }
+    assertMcpTimeoutReply("py", pyRun.stdout);
+    hang.reset();
+
+    const goVer = spawnSync("go", ["version"], { encoding: "utf8", timeout: 5000, env: { ...process.env } });
+    if (!goVer.error && goVer.status === 0) {
+      const goRun = await spawnArgvAsync("go", ["run", path.join(idDir, MCP_SERVER_GO_FILE)], {
+        input: rpc,
+        env: envBase,
+      }, 30000);
+      if (goRun.error || goRun.status !== 0) {
+        console.error("smoke mcp go tools/call timeout failed", goRun.status, goRun.stdout, goRun.stderr, goRun.error);
+        process.exit(1);
+      }
+      assertMcpTimeoutReply("go", goRun.stdout);
+    }
+    if (Date.now() - t0 > 45000) {
+      console.error("smoke mcp timeout hung too long", Date.now() - t0);
+      process.exit(1);
+    }
+    console.log("mcp-timeout-ok");
+  } finally {
+    await new Promise((r) => hang.server.close(() => r()));
+  }
+}
+
 async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
 
   const petOps = listOperations(petstoreSpec);
@@ -3560,6 +3680,7 @@ if (cmd === "--version" || cmd === "-V") {
     await smokeClientIdempotency(petstoreSpec, tmp);
     await smokeMcpIdentity(petstoreSpec, tmp);
     await smokeMcpRetry(petstoreSpec, tmp);
+    await smokeMcpTimeout(petstoreSpec, tmp);
     await smokeUrlAuthHeaders(cliPath, mini31Path, tmp);
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
@@ -3568,7 +3689,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok, mcp-id-ok, mcp-retry-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok, mcp-id-ok, mcp-retry-ok, mcp-timeout-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

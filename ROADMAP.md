@@ -128,6 +128,7 @@
 - [x] A generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (retries reuse; SDK_IDEMPOTENCY_KEY pin; smoke idem-ok)
 - [x] A generated stdio MCP servers send User-Agent + X-Request-Id + Idempotency-Key on tools/call (smoke mcp-id-ok)
 - [x] A generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries; Idempotency-Key reused; smoke mcp-retry-ok)
+- [x] A generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*; smoke mcp-timeout-ok)
 ### D · AI-BOM (Python) scaffold→MVP
 - [x] Scan dir for model IDs, prompts, MCP deps
 - [x] CycloneDX-like JSON

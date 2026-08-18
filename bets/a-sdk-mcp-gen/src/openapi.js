@@ -469,6 +469,18 @@ function emitJsMcpIdentityFns() {
   lines.push('  return "";');
   lines.push("}");
   lines.push("");
+  lines.push("function envTimeoutMs() {");
+  lines.push("  const mcpMs = Number(process.env.MCP_TIMEOUT_MS);");
+  lines.push("  if (Number.isFinite(mcpMs) && mcpMs > 0) return mcpMs;");
+  lines.push("  const mcpSec = Number(process.env.MCP_TIMEOUT_SEC);");
+  lines.push("  if (Number.isFinite(mcpSec) && mcpSec > 0) return Math.floor(mcpSec * 1000);");
+  lines.push("  const ms = Number(process.env.SDK_TIMEOUT_MS);");
+  lines.push("  if (Number.isFinite(ms) && ms > 0) return ms;");
+  lines.push("  const sec = Number(process.env.SDK_TIMEOUT_SEC);");
+  lines.push("  if (Number.isFinite(sec) && sec > 0) return Math.floor(sec * 1000);");
+  lines.push("  return 10000;");
+  lines.push("}");
+  lines.push("");
   lines.push("function newRequestId() {");
   lines.push("  const c = globalThis.crypto;");
   lines.push('  if (c && typeof c.randomUUID === "function") return c.randomUUID();');
@@ -515,6 +527,7 @@ function emitJsMcpIdentityFns() {
  * Runtime HTTP backend: env MCP_BASE_URL (wins) or baked --base-url.
  * Identity headers on tools/call upstream HTTP: User-Agent, X-Request-Id per attempt, Idempotency-Key on writes (reused across retries).
  * Retry transient HTTP (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.
+ * Per-attempt timeout (default 10s): AbortController. Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*.
  */
 export function generateMcpServer(ops, title = "API", { baseUrl = "", packageName } = {}) {
   const tools = buildMcpServerTools(ops);
@@ -530,6 +543,7 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push(" * HTTP backend: env MCP_BASE_URL or baked --base-url");
   lines.push(" * Identity: default User-Agent " + userAgent + " unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.");
   lines.push(" * Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).");
+  lines.push(" * Timeout: per-attempt 10s (AbortController). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.");
   if (auth.any) {
     lines.push(" * Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.");
   }
@@ -631,14 +645,17 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push("  }");
   lines.push('  const mutating = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";');
   lines.push('  const opIdem = mutating ? (envIdentity("MCP_IDEMPOTENCY_KEY", "SDK_IDEMPOTENCY_KEY") || newRequestId()) : "";');
+  lines.push("  const timeoutMs = envTimeoutMs();");
   lines.push("  const maxAttempts = 3;");
   lines.push("  let lastErr;");
   lines.push("  for (let attempt = 0; attempt < maxAttempts; attempt++) {");
   lines.push("    const headers = { ...headersBase };");
   lines.push('    if (isBodyMethod) headers["content-type"] = "application/json";');
   lines.push("    applyIdentityHeaders(headers, method, opIdem);");
+  lines.push("    const ac = new AbortController();");
+  lines.push("    const timer = setTimeout(() => ac.abort(), timeoutMs);");
   lines.push("    try {");
-  lines.push("      const res = await fetch(url, { method, headers, body });");
+  lines.push("      const res = await fetch(url, { method, headers, body, signal: ac.signal });");
   lines.push("      const text = await res.text();");
   lines.push("      let parsed = text;");
   lines.push("      if (text) {");
@@ -658,6 +675,8 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push("        continue;");
   lines.push("      }");
   lines.push('      return { ok: false, error: "fetch_failed", message: String(err && err.message ? err.message : err) };');
+  lines.push("    } finally {");
+  lines.push("      clearTimeout(timer);");
   lines.push("    }");
   lines.push("  }");
   lines.push('  return { ok: false, error: "fetch_failed", message: String(lastErr && lastErr.message ? lastErr.message : lastErr || "network") };');
@@ -812,6 +831,7 @@ export function generateMcpServerPy(ops, title = "API", { baseUrl = "", packageN
 # HTTP backend: env MCP_BASE_URL or baked --base-url
 # Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 # Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
+# Timeout: per-attempt 10s (urllib timeout). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.
 # Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 # Stdlib only (urllib). Compatible with B gateway stdio upstream.
 
@@ -861,6 +881,42 @@ def _env_identity(mcp_name, sdk_name):
     if raw and str(raw).strip():
         return str(raw).strip()
     return ""
+
+
+def _env_timeout_s():
+    raw = os.environ.get("MCP_TIMEOUT_MS")
+    if raw:
+        try:
+            ms = float(raw)
+            if ms > 0:
+                return ms / 1000.0
+        except (TypeError, ValueError):
+            pass
+    raw = os.environ.get("MCP_TIMEOUT_SEC")
+    if raw:
+        try:
+            sec = float(raw)
+            if sec > 0:
+                return sec
+        except (TypeError, ValueError):
+            pass
+    raw = os.environ.get("SDK_TIMEOUT_MS")
+    if raw:
+        try:
+            ms = float(raw)
+            if ms > 0:
+                return ms / 1000.0
+        except (TypeError, ValueError):
+            pass
+    raw = os.environ.get("SDK_TIMEOUT_SEC")
+    if raw:
+        try:
+            sec = float(raw)
+            if sec > 0:
+                return sec
+        except (TypeError, ValueError):
+            pass
+    return 10.0
 
 
 def _new_request_id():
@@ -961,7 +1017,7 @@ def invoke_http(tool, args):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             try:
-                with urllib.request.urlopen(req) as res:
+                with urllib.request.urlopen(req, timeout=_env_timeout_s()) as res:
                     raw = res.read()
                     status = getattr(res, "status", None) or res.getcode()
                     text = raw.decode("utf-8") if raw else ""
@@ -1161,6 +1217,7 @@ export function generateMcpServerGo(ops, title = "API", { baseUrl = "", packageN
 // HTTP backend: env MCP_BASE_URL or baked --base-url
 // Identity: default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 // Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
+// Timeout: per-attempt 10s (context.WithTimeout). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.
 // Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 // Stdlib only (net/http). Compatible with B gateway stdio upstream.
 // Run: go run mcp_server.go   (Go 1.21+; no extra modules)
@@ -1169,6 +1226,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -1244,6 +1302,31 @@ func envIdentity(mcpName, sdkName string) string {
 		return v
 	}
 	return strings.TrimSpace(os.Getenv(sdkName))
+}
+
+// envTimeout is the per-attempt request timeout (default 10s). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.
+func envTimeout() time.Duration {
+	if raw := os.Getenv("MCP_TIMEOUT_MS"); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	if raw := os.Getenv("MCP_TIMEOUT_SEC"); raw != "" {
+		if sec, err := strconv.Atoi(raw); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	if raw := os.Getenv("SDK_TIMEOUT_MS"); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	if raw := os.Getenv("SDK_TIMEOUT_SEC"); raw != "" {
+		if sec, err := strconv.Atoi(raw); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	return 10 * time.Second
 }
 
 func newRequestID() string {
@@ -1388,8 +1471,10 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 		if payload != nil {
 			body = bytes.NewReader(payload)
 		}
-		req, err := http.NewRequest(method, urlStr, body)
+		ctx, cancel := context.WithTimeout(context.Background(), envTimeout())
+		req, err := http.NewRequestWithContext(ctx, method, urlStr, body)
 		if err != nil {
+			cancel()
 			return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
 		}
 		if isBody {
@@ -1399,6 +1484,7 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 		applyIdentityHeaders(req, method, opIdem)
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
+			cancel()
 			lastErr = err
 			if attempt < 2 {
 				time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
@@ -1408,6 +1494,7 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 		}
 		data, err := io.ReadAll(res.Body)
 		res.Body.Close()
+		cancel()
 		if err != nil {
 			lastErr = err
 			if attempt < 2 {
@@ -6751,9 +6838,9 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
   }
   files.push(`- \`mcp-tools.json\` — MCP tools list`);
   if (mcp) {
-    files.push(`- \`mcp-server.mjs\` — stdio MCP server (JSON-RPC initialize / tools/list / tools/call; Node, no extra deps; 429/5xx/network retry)`);
-    files.push(`- \`mcp_server.py\` — stdio MCP server (same JSON-RPC; Python 3 stdlib urllib, no extra deps; 429/5xx/network retry)`);
-    files.push(`- \`mcp_server.go\` — stdio MCP server (same JSON-RPC; Go 1.21+ stdlib net/http, package main, no extra deps; 429/5xx/network retry)`);
+    files.push(`- \`mcp-server.mjs\` — stdio MCP server (JSON-RPC initialize / tools/list / tools/call; Node, no extra deps; 429/5xx/network retry; per-attempt 10s timeout)`);
+    files.push(`- \`mcp_server.py\` — stdio MCP server (same JSON-RPC; Python 3 stdlib urllib, no extra deps; 429/5xx/network retry; per-attempt 10s timeout)`);
+    files.push(`- \`mcp_server.go\` — stdio MCP server (same JSON-RPC; Go 1.21+ stdlib net/http, package main, no extra deps; 429/5xx/network retry; per-attempt 10s timeout)`);
     files.push(`- \`mcp.json\` — MCP servers config JSON snippet (paste into Cursor / Claude Desktop / Claude Code)`);
   }
   if (opts.license !== false) {
@@ -6772,7 +6859,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     ``,
     ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
     ...(auth.any ? [`Auth: constructor bearerToken / apiKey (or bearer_token / api_key / Client.BearerToken / APIKey) or env SDK_BEARER_TOKEN / SDK_API_KEY, attached per OpenAPI operation security (optional schemes when creds are set; ops without security omit credentials). MCP servers read MCP_BEARER_TOKEN / MCP_API_KEY (same SDK_* fallback). oauth2 / openIdConnect skipped (no fake tokens). Values never logged.`, ``] : []),
-    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY). Stdio MCP servers send the same headers on tools/call upstream HTTP and retry 429 / 5xx / network (max 2 retries; Idempotency-Key reused).`,
+    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY). Stdio MCP servers send the same headers on tools/call upstream HTTP, retry 429 / 5xx / network (max 2 retries; Idempotency-Key reused), and apply a per-attempt 10s timeout (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*).`,
     ``,
     `Files:`,
     ...files,
