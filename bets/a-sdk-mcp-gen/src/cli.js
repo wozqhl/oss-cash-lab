@@ -1547,8 +1547,8 @@ async function smokeClientIdentity(petstoreSpec, petClients, tmp) {
     ["go", petGo],
     ["java", petJava],
   ]) {
-    if (!blob.includes("sdk-mcp-gen/0.1.0") || !blob.includes("SDK_REQUEST_ID") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id"))) {
-      console.error("smoke", label, "missing User-Agent / X-Request-Id identity headers");
+    if (!blob.includes("sdk-mcp-gen/0.1.0") || !blob.includes("SDK_REQUEST_ID") || !blob.includes("SDK_IDEMPOTENCY_KEY") || (!blob.includes("User-Agent") && !blob.includes("user-agent")) || (!blob.includes("X-Request-Id") && !blob.includes("x-request-id")) || (!blob.includes("Idempotency-Key") && !blob.includes("idempotency-key"))) {
+      console.error("smoke", label, "missing User-Agent / X-Request-Id / Idempotency-Key identity headers");
       process.exit(1);
     }
   }
@@ -1632,6 +1632,139 @@ async function smokeClientIdentity(petstoreSpec, petClients, tmp) {
     }
     console.log("ua-ok");
     console.log("request-id-ok");
+  } finally {
+    await new Promise((r) => echo.server.close(() => r()));
+  }
+}
+
+function listenIdempotencyStub() {
+  const seen = [];
+  let posts = 0;
+  const server = http.createServer((req, res) => {
+    seen.push({
+      method: String(req.method || ""),
+      url: String(req.url || ""),
+      idempotencyKey: String(req.headers["idempotency-key"] || ""),
+    });
+    if (String(req.method || "").toUpperCase() === "POST") {
+      posts += 1;
+      if (posts === 1) {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "0" });
+        res.end("{\"error\":\"rate\"}");
+        return;
+      }
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("[]");
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({ server, seen, url: `http://127.0.0.1:${addr.port}` });
+    });
+    server.on("error", reject);
+  });
+}
+
+async function smokeClientIdempotency(petstoreSpec, tmp) {
+  const idDir = path.join(tmp, "idem-clients");
+  generateToDir(petstoreSpec, idDir, ["ts", "python", "go", "java"]);
+  for (const [label, name] of [
+    ["ts", "client.ts"],
+    ["py", "client.py"],
+    ["go", "client.go"],
+    ["java", "Client.java"],
+  ]) {
+    const blob = fs.readFileSync(path.join(idDir, name), "utf8");
+    if (!blob.includes("SDK_IDEMPOTENCY_KEY") || (!blob.includes("Idempotency-Key") && !blob.includes("idempotency-key"))) {
+      console.error("smoke", label, "missing Idempotency-Key");
+      process.exit(1);
+    }
+  }
+
+  const echo = await listenIdempotencyStub();
+  try {
+    const httpPy = path.join(idDir, "_idem_http_smoke.py");
+    fs.writeFileSync(httpPy, [
+      "import os",
+      "from client import Client",
+      "c = Client(os.environ['ID_BASE'])",
+      "c.listPets({})",
+      "c.createPet({'name': 'x'})",
+      "print('idem-ok')",
+      "",
+    ].join("\n"));
+    const httpRun = await spawnArgvAsync("python3", [httpPy], {
+      cwd: idDir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ID_BASE: echo.url, SDK_IDEMPOTENCY_KEY: "", SDK_REQUEST_ID: "" },
+    }, 8000);
+    if (httpRun.error || httpRun.status !== 0 || !String(httpRun.stdout || "").includes("idem-ok")) {
+      console.error("smoke idempotency HTTP stub client failed", httpRun.status, httpRun.stdout, httpRun.stderr, httpRun.error);
+      process.exit(1);
+    }
+    const gets = echo.seen.filter((s) => String(s.method).toUpperCase() === "GET");
+    const posts = echo.seen.filter((s) => String(s.method).toUpperCase() === "POST");
+    if (!gets.length) {
+      console.error("smoke listPets GET was not seen", echo.seen);
+      process.exit(1);
+    }
+    if (gets.some((s) => String(s.idempotencyKey || "").trim())) {
+      console.error("smoke listPets GET must not send Idempotency-Key", echo.seen);
+      process.exit(1);
+    }
+    if (posts.length < 2) {
+      console.error("smoke createPet 429 was not retried", echo.seen);
+      process.exit(1);
+    }
+    const k0 = String(posts[0].idempotencyKey || "").trim();
+    const k1 = String(posts[1].idempotencyKey || "").trim();
+    if (!k0 || k0 !== k1) {
+      console.error("smoke createPet retries must reuse the same Idempotency-Key", echo.seen);
+      process.exit(1);
+    }
+    echo.seen.length = 0;
+
+    const pinPy = path.join(idDir, "_idem_pin_smoke.py");
+    fs.writeFileSync(pinPy, [
+      "import os",
+      "from client import Client",
+      "c = Client(os.environ['ID_BASE'], idempotency_key=os.environ['PIN_IDEM'])",
+      "c.listPets({})",
+      "c.createPet({'name': 'y'})",
+      "print('idem-ok')",
+      "",
+    ].join("\n"));
+    const pinRun = await spawnArgvAsync("python3", [pinPy], {
+      cwd: idDir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ID_BASE: echo.url, PIN_IDEM: "fixed-idem-smoke", SDK_IDEMPOTENCY_KEY: "" },
+    }, 8000);
+    const pinGets = echo.seen.filter((s) => String(s.method).toUpperCase() === "GET");
+    const pinPosts = echo.seen.filter((s) => String(s.method).toUpperCase() === "POST");
+    if (pinRun.error || pinRun.status !== 0 || !pinPosts.length || pinPosts[0].idempotencyKey !== "fixed-idem-smoke" || pinGets.some((s) => String(s.idempotencyKey || "").trim())) {
+      console.error("smoke ctor idempotency pin failed", pinRun.status, pinRun.stdout, pinRun.stderr, echo.seen);
+      process.exit(1);
+    }
+    echo.seen.length = 0;
+
+    const envPy = path.join(idDir, "_idem_env_smoke.py");
+    fs.writeFileSync(envPy, [
+      "import os",
+      "from client import Client",
+      "c = Client(os.environ['ID_BASE'])",
+      "c.createPet({'name': 'z'})",
+      "print('idem-ok')",
+      "",
+    ].join("\n"));
+    const envRun = await spawnArgvAsync("python3", [envPy], {
+      cwd: idDir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ID_BASE: echo.url, SDK_IDEMPOTENCY_KEY: "env-idem-smoke" },
+    }, 8000);
+    const envPosts = echo.seen.filter((s) => String(s.method).toUpperCase() === "POST");
+    if (envRun.error || envRun.status !== 0 || !envPosts.length || envPosts[0].idempotencyKey !== "env-idem-smoke") {
+      console.error("smoke SDK_IDEMPOTENCY_KEY pin failed", envRun.status, envRun.stdout, envRun.stderr, echo.seen);
+      process.exit(1);
+    }
+    console.log("idem-ok");
   } finally {
     await new Promise((r) => echo.server.close(() => r()));
   }
@@ -1980,7 +2113,9 @@ if (cmd === "--version" || cmd === "-V") {
     !ts.includes("sdk-mcp-gen/0.1.0") ||
     !ts.includes("user-agent") ||
     !ts.includes("x-request-id") ||
-    !ts.includes("SDK_REQUEST_ID")
+    !ts.includes("SDK_REQUEST_ID") ||
+    !ts.includes("SDK_IDEMPOTENCY_KEY") ||
+    !ts.includes("idempotency-key")
   ) {
     console.error("smoke ts client retry/timeout failed");
     process.exit(1);
@@ -2005,7 +2140,9 @@ if (cmd === "--version" || cmd === "-V") {
     !py.includes("sdk-mcp-gen/0.1.0") ||
     !py.includes("User-Agent") ||
     !py.includes("X-Request-Id") ||
-    !py.includes("SDK_REQUEST_ID")
+    !py.includes("SDK_REQUEST_ID") ||
+    !py.includes("SDK_IDEMPOTENCY_KEY") ||
+    !py.includes("Idempotency-Key")
   ) {
     console.error("smoke python client failed");
     process.exit(1);
@@ -2024,7 +2161,9 @@ if (cmd === "--version" || cmd === "-V") {
     !go.includes("sdk-mcp-gen/0.1.0") ||
     !go.includes("User-Agent") ||
     !go.includes("X-Request-Id") ||
-    !go.includes("SDK_REQUEST_ID")
+    !go.includes("SDK_REQUEST_ID") ||
+    !go.includes("SDK_IDEMPOTENCY_KEY") ||
+    !go.includes("Idempotency-Key")
   ) {
     console.error("smoke go client failed");
     process.exit(1);
@@ -2043,7 +2182,9 @@ if (cmd === "--version" || cmd === "-V") {
     !java.includes("sdk-mcp-gen/0.1.0") ||
     !java.includes("User-Agent") ||
     !java.includes("X-Request-Id") ||
-    !java.includes("SDK_REQUEST_ID")
+    !java.includes("SDK_REQUEST_ID") ||
+    !java.includes("SDK_IDEMPOTENCY_KEY") ||
+    !java.includes("Idempotency-Key")
   ) {
     console.error("smoke java client failed");
     process.exit(1);
@@ -3188,6 +3329,7 @@ if (cmd === "--version" || cmd === "-V") {
 
     await smokeGeneratedClientAuth(petstoreSpec, petClients, tmp);
     await smokeClientIdentity(petstoreSpec, petClients, tmp);
+    await smokeClientIdempotency(petstoreSpec, tmp);
     await smokeUrlAuthHeaders(cliPath, mini31Path, tmp);
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
@@ -3196,7 +3338,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, idem-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

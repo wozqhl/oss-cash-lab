@@ -8,6 +8,8 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Generated TS / Python / Go / Java (plus other langs) clients send `Idempotency-Key` on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Constructor / env `SDK_IDEMPOTENCY_KEY` pins a test key. Smoke prints idem-ok.
+
 - Generated TS / Python / Go / Java (plus Kotlin / C# / Rust / PHP / Swift / Ruby) clients send default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set, and `X-Request-Id` new per HTTP attempt (constructor / env `SDK_REQUEST_ID` pins a test id). Smoke prints ua-ok / request-id-ok.
 
 - Generated Rust / PHP / Swift / Ruby clients retry 429 / 5xx / network (Retry-After <30s), apply a per-attempt timeout (default 10s; SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC), and send per-operation OpenAPI auth (http bearer, apiKey header/query). Stdlib only. Public method names unchanged. Rust stays TcpStream http:// (no TLS). Smoke prints rust-auth-ok, php-auth-ok.

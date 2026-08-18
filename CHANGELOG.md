@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (retries reuse; `SDK_IDEMPOTENCY_KEY` pin). Smoke idem-ok.
+
 - A generated clients send default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set, plus `X-Request-Id` new per HTTP attempt (`SDK_REQUEST_ID` pin). Smoke ua-ok / request-id-ok.
 
 - A generated Rust / PHP / Swift / Ruby clients: per-attempt timeout + 429/5xx retry + per-op bearer/apiKey auth (stdlib; Rust http-only TcpStream). Smoke rust-auth-ok / php-auth-ok.

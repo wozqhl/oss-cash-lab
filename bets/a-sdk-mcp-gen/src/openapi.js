@@ -1596,7 +1596,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// API: ${title}`);
   lines.push(`// package: ${pkg.ident}`);
   lines.push(`export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };`);
-  const optFields = ["baseUrl?: string", "fetchImpl?: typeof fetch", "timeoutMs?: number", "userAgent?: string", "requestId?: string"];
+  const optFields = ["baseUrl?: string", "fetchImpl?: typeof fetch", "timeoutMs?: number", "userAgent?: string", "requestId?: string", "idempotencyKey?: string"];
   if (auth.hasBearer) optFields.push("bearerToken?: string");
   if (auth.headerKeys.length || auth.queryKeys.length) optFields.push("apiKey?: string");
   lines.push(`export interface ClientOptions { ${optFields.join("; ")} }`);
@@ -1604,6 +1604,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Per-attempt request timeout (default 10s): AbortController. Override via ClientOptions.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via ClientOptions.requestId or env SDK_REQUEST_ID (tests).`);
+  lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via ClientOptions.idempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Constructor bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt (survives retry). Ops without security omit credentials. Values never logged.`);
@@ -1626,6 +1627,12 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  const v = env.SDK_REQUEST_ID;`);
   lines.push(`  return v && String(v).trim() ? String(v).trim() : "";`);
   lines.push(`}`);
+  lines.push(`function envIdempotencyKey(): string {`);
+  lines.push(`  const g = globalThis as { process?: { env?: { [k: string]: string | undefined } } };`);
+  lines.push(`  const env = (g.process && g.process.env) ? g.process.env : {};`);
+  lines.push(`  const v = env.SDK_IDEMPOTENCY_KEY;`);
+  lines.push(`  return v && String(v).trim() ? String(v).trim() : "";`);
+  lines.push(`}`);
   lines.push(`function newRequestId(): string {`);
   lines.push(`  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;`);
   lines.push(`  if (c && typeof c.randomUUID === "function") return c.randomUUID();`);
@@ -1636,9 +1643,11 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  for (const k of Object.keys(headers)) if (k.toLowerCase() === want) return true;`);
   lines.push(`  return false;`);
   lines.push(`}`);
-  lines.push(`function applyIdentityHeaders(headers: { [k: string]: string }, userAgent: string, pinned: string): void {`);
+  lines.push(`function applyIdentityHeaders(headers: { [k: string]: string }, userAgent: string, pinned: string, method: string, opIdem: string): void {`);
   lines.push(`  if (!hasHeader(headers, "user-agent") && userAgent) headers["user-agent"] = userAgent;`);
   lines.push(`  if (!hasHeader(headers, "x-request-id")) headers["x-request-id"] = pinned || newRequestId();`);
+  lines.push(`  const m = String(method || "").toUpperCase();`);
+  lines.push(`  if ((m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE") && opIdem && !hasHeader(headers, "idempotency-key")) headers["idempotency-key"] = opIdem;`);
   lines.push(`}`);
   if (auth.any) {
     lines.push(`function envAuthString(name: string): string {`);
@@ -1667,6 +1676,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  const timeoutMs = opts.timeoutMs != null && Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : envTimeoutMs();`);
   lines.push(`  const userAgent = (opts.userAgent != null && String(opts.userAgent).trim()) ? String(opts.userAgent).trim() : ${JSON.stringify(defaultUserAgent(opts))};`);
   lines.push(`  const pinnedRequestId = (opts.requestId != null && String(opts.requestId).trim()) ? String(opts.requestId).trim() : envRequestId();`);
+  lines.push(`  const pinnedIdempotencyKey = (opts.idempotencyKey != null && String(opts.idempotencyKey).trim()) ? String(opts.idempotencyKey).trim() : envIdempotencyKey();`);
   if (auth.hasBearer) {
     lines.push(`  const bearerToken = (opts.bearerToken != null && String(opts.bearerToken).trim()) ? String(opts.bearerToken).trim() : envAuthString("SDK_BEARER_TOKEN");`);
   }
@@ -1677,6 +1687,8 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
     ? `  async function request(method: string, path: string, body?: unknown, auth?: { bearer?: boolean; headers?: string[]; query?: string[] }) {`
     : `  async function request(method: string, path: string, body?: unknown) {`;
   lines.push(reqSig);
+  lines.push(`    const mutating = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";`);
+  lines.push(`    const opIdempotencyKey = mutating ? (pinnedIdempotencyKey || newRequestId()) : "";`);
   lines.push(`    const maxAttempts = 3;`);
   lines.push(`    for (let attempt = 0; attempt < maxAttempts; attempt++) {`);
   lines.push(`      const ac = new AbortController();`);
@@ -1698,7 +1710,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`        for (const q of auth.query) url += (url.includes("?") ? "&" : "?") + encodeURIComponent(q) + "=" + encodeURIComponent(apiKey);`);
       lines.push(`      }`);
     }
-    lines.push(`      applyIdentityHeaders(headers, userAgent, pinnedRequestId);`);
+    lines.push(`      applyIdentityHeaders(headers, userAgent, pinnedRequestId, method, opIdempotencyKey);`);
     lines.push(`      const init = {`);
     lines.push(`        method,`);
     lines.push(`        headers: Object.keys(headers).length ? headers : undefined,`);
@@ -1711,7 +1723,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   } else {
     lines.push(`      const headers: { [k: string]: string } = {};`);
     lines.push(`      if (body) headers["content-type"] = "application/json";`);
-    lines.push(`      applyIdentityHeaders(headers, userAgent, pinnedRequestId);`);
+    lines.push(`      applyIdentityHeaders(headers, userAgent, pinnedRequestId, method, opIdempotencyKey);`);
     lines.push(`      const init = {`);
     lines.push(`        method,`);
     lines.push(`        headers: Object.keys(headers).length ? headers : undefined,`);
@@ -1896,6 +1908,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`# Per-attempt request timeout (default 10s): urllib timeout. Override via Client(timeout=...) or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`# Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`# X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client(request_id=...) or env SDK_REQUEST_ID (tests).`);
+  lines.push(`# Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client(idempotency_key=...) or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
     lines.push(`# Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`# Constructor bearer_token / api_key or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -1925,6 +1938,12 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        return str(raw).strip()`);
   lines.push(`    return ""`);
   lines.push(``);
+  lines.push(`def _env_idempotency_key() -> str:`);
+  lines.push(`    raw = os.environ.get("SDK_IDEMPOTENCY_KEY")`);
+  lines.push(`    if raw and str(raw).strip():`);
+  lines.push(`        return str(raw).strip()`);
+  lines.push(`    return ""`);
+  lines.push(``);
   lines.push(`def _new_request_id() -> str:`);
   lines.push(`    return str(uuid.uuid4())`);
   lines.push(``);
@@ -1932,11 +1951,14 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    want = name.lower()`);
   lines.push(`    return any(str(k).lower() == want for k in headers)`);
   lines.push(``);
-  lines.push(`def _apply_identity(headers: dict, user_agent: str, pinned: str) -> None:`);
+  lines.push(`def _apply_identity(headers: dict, user_agent: str, pinned: str, method: str = "", op_idem: str = "") -> None:`);
   lines.push(`    if not _has_header(headers, "User-Agent") and user_agent:`);
   lines.push(`        headers["User-Agent"] = user_agent`);
   lines.push(`    if not _has_header(headers, "X-Request-Id"):`);
   lines.push(`        headers["X-Request-Id"] = pinned or _new_request_id()`);
+  lines.push(`    m = str(method or "").upper()`);
+  lines.push(`    if m in ("POST", "PUT", "PATCH", "DELETE") and op_idem and not _has_header(headers, "Idempotency-Key"):`);
+  lines.push(`        headers["Idempotency-Key"] = op_idem`);
   lines.push(``);
   lines.push(`def _retry_delay_s(headers: Any, attempt: int) -> float:`);
   lines.push(`    raw = headers.get("Retry-After") if headers is not None else None`);
@@ -1967,7 +1989,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`class Client:`);
   lines.push(`    """Sync HTTP client stub generated from OpenAPI."""`);
   lines.push(``);
-  const initArgs = ["self", "base_url: str = \"\"", "opener: Any = None", "timeout: Any = None", "user_agent: Any = None", "request_id: Any = None"];
+  const initArgs = ["self", "base_url: str = \"\"", "opener: Any = None", "timeout: Any = None", "user_agent: Any = None", "request_id: Any = None", "idempotency_key: Any = None"];
   if (auth.hasBearer) initArgs.push("bearer_token: Any = None");
   if (auth.headerKeys.length || auth.queryKeys.length) initArgs.push("api_key: Any = None");
   lines.push(`    def __init__(${initArgs.join(", ")}) -> None:`);
@@ -1989,6 +2011,10 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            self._request_id = str(request_id).strip()`);
   lines.push(`        else:`);
   lines.push(`            self._request_id = _env_request_id()`);
+  lines.push(`        if idempotency_key is not None and str(idempotency_key).strip():`);
+  lines.push(`            self._idempotency_key = str(idempotency_key).strip()`);
+  lines.push(`        else:`);
+  lines.push(`            self._idempotency_key = _env_idempotency_key()`);
   if (auth.hasBearer) {
     lines.push(`        if bearer_token is not None and str(bearer_token).strip():`);
     lines.push(`            self._bearer_token = str(bearer_token).strip()`);
@@ -2010,6 +2036,9 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            data = json.dumps(body).encode("utf-8")`);
   lines.push(`            headers["Content-Type"] = "application/json"`);
   lines.push(`        open_url = self._opener.open if self._opener is not None else urllib.request.urlopen`);
+  lines.push(`        op_idem = ""`);
+  lines.push(`        if str(method).upper() in ("POST", "PUT", "PATCH", "DELETE"):`);
+  lines.push(`            op_idem = self._idempotency_key or _new_request_id()`);
   lines.push(`        last_err: Any = None`);
   lines.push(`        for attempt in range(3):`);
   if (auth.any) {
@@ -2029,11 +2058,11 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
       lines.push(`                for q in (auth.get("query") or []):`);
       lines.push(`                    req_url = req_url + ("&" if "?" in req_url else "?") + urllib.parse.quote(q, safe="") + "=" + urllib.parse.quote(self._api_key, safe="")`);
     }
-    lines.push(`            _apply_identity(hdrs, self._user_agent, self._request_id)`);
+    lines.push(`            _apply_identity(hdrs, self._user_agent, self._request_id, method, op_idem)`);
     lines.push(`            req = urllib.request.Request(req_url, data=data, headers=hdrs, method=method)`);
   } else {
     lines.push(`            hdrs = dict(headers)`);
-    lines.push(`            _apply_identity(hdrs, self._user_agent, self._request_id)`);
+    lines.push(`            _apply_identity(hdrs, self._user_agent, self._request_id, method, op_idem)`);
     lines.push(`            req = urllib.request.Request(url, data=data, headers=hdrs, method=method)`);
   }
   lines.push(`            try:`);
@@ -2091,8 +2120,8 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
     if (hit) emitPyIterate(lines, op, hit.info, hit.iter);
   }
   lines.push(``);
-  const createArgs = ["base_url: str = \"\"", "opener: Any = None", "timeout: Any = None", "user_agent: Any = None", "request_id: Any = None"];
-  const createCall = ["base_url=base_url", "opener=opener", "timeout=timeout", "user_agent=user_agent", "request_id=request_id"];
+  const createArgs = ["base_url: str = \"\"", "opener: Any = None", "timeout: Any = None", "user_agent: Any = None", "request_id: Any = None", "idempotency_key: Any = None"];
+  const createCall = ["base_url=base_url", "opener=opener", "timeout=timeout", "user_agent=user_agent", "request_id=request_id", "idempotency_key=idempotency_key"];
   if (auth.hasBearer) {
     createArgs.push("bearer_token: Any = None");
     createCall.push("bearer_token=bearer_token");
@@ -2287,6 +2316,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\tTimeout    time.Duration`);
   lines.push(`\tUserAgent  string`);
   lines.push(`\tRequestID  string`);
+  lines.push(`\tIdempotencyKey string`);
   if (auth.hasBearer) {
     lines.push(`\tBearerToken string`);
   }
@@ -2311,8 +2341,13 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(``);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client.RequestID or env SDK_REQUEST_ID (tests).`);
+  lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client.IdempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   lines.push(`func envRequestID() string {`);
   lines.push(`\treturn strings.TrimSpace(os.Getenv("SDK_REQUEST_ID"))`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func envIdempotencyKey() string {`);
+  lines.push(`\treturn strings.TrimSpace(os.Getenv("SDK_IDEMPOTENCY_KEY"))`);
   lines.push(`}`);
   lines.push(``);
   lines.push(`func newRequestID() string {`);
@@ -2323,7 +2358,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\treturn fmt.Sprintf("%x", b[:])`);
   lines.push(`}`);
   lines.push(``);
-  lines.push(`func applyIdentityHeaders(req *http.Request, userAgent, pinned string) {`);
+  lines.push(`func applyIdentityHeaders(req *http.Request, userAgent, pinned, method, opIdem string) {`);
   lines.push(`\tif req.Header.Get("User-Agent") == "" && userAgent != "" {`);
   lines.push(`\t\treq.Header.Set("User-Agent", userAgent)`);
   lines.push(`\t}`);
@@ -2333,6 +2368,10 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\t\tid = newRequestID()`);
   lines.push(`\t\t}`);
   lines.push(`\t\treq.Header.Set("X-Request-Id", id)`);
+  lines.push(`\t}`);
+  lines.push(`\tm := strings.ToUpper(method)`);
+  lines.push(`\tif (m == "POST" || m == "PUT" || m == "PATCH" || m == "DELETE") && opIdem != "" && req.Header.Get("Idempotency-Key") == "" {`);
+  lines.push(`\t\treq.Header.Set("Idempotency-Key", opIdem)`);
   lines.push(`\t}`);
   lines.push(`}`);
   lines.push(``);
@@ -2359,6 +2398,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\tTimeout:    envTimeout(),`);
   lines.push(`\t\tUserAgent:  ${JSON.stringify(defaultUserAgent(opts))},`);
   lines.push(`\t\tRequestID:  envRequestID(),`);
+  lines.push(`\t\tIdempotencyKey: envIdempotencyKey(),`);
   lines.push(`\t}`);
   if (auth.hasBearer) {
     lines.push(`\tc.BearerToken = envAuth("SDK_BEARER_TOKEN")`);
@@ -2403,6 +2443,14 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\t\treturn nil, err`);
   lines.push(`\t\t}`);
   lines.push(`\t\tpayload = b`);
+  lines.push(`\t}`);
+  lines.push(`\topIdem := ""`);
+  lines.push(`\tswitch strings.ToUpper(method) {`);
+  lines.push(`\tcase "POST", "PUT", "PATCH", "DELETE":`);
+  lines.push(`\t\topIdem = strings.TrimSpace(c.IdempotencyKey)`);
+  lines.push(`\t\tif opIdem == "" {`);
+  lines.push(`\t\t\topIdem = newRequestID()`);
+  lines.push(`\t\t}`);
   lines.push(`\t}`);
   lines.push(`\tvar lastErr error`);
   lines.push(`\tfor attempt := 0; attempt < 3; attempt++ {`);
@@ -2455,7 +2503,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\tif ua == "" {`);
   lines.push(`\t\t\tua = ${JSON.stringify(defaultUserAgent(opts))}`);
   lines.push(`\t\t}`);
-  lines.push(`\t\tapplyIdentityHeaders(req, ua, strings.TrimSpace(c.RequestID))`);
+  lines.push(`\t\tapplyIdentityHeaders(req, ua, strings.TrimSpace(c.RequestID), method, opIdem)`);
   lines.push(`\t\tres, err := hc.Do(req)`);
   lines.push(`\t\tif err != nil {`);
   lines.push(`\t\t\tcancel()`);
@@ -2959,6 +3007,7 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via Client.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt (retries get a new id). Pin via Client.requestId or env SDK_REQUEST_ID (tests).`);
+  lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client.idempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -2968,6 +3017,7 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    public int timeoutMs;`);
   lines.push(`    public String userAgent;`);
   lines.push(`    public String requestId;`);
+  lines.push(`    public String idempotencyKey;`);
   if (auth.hasBearer) {
     lines.push(`    public String bearerToken;`);
   }
@@ -2992,6 +3042,7 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        this.timeoutMs = envTimeoutMs();`);
   lines.push(`        this.userAgent = ${JSON.stringify(defaultUserAgent(opts))};`);
   lines.push(`        this.requestId = envRequestId();`);
+  lines.push(`        this.idempotencyKey = envIdempotencyKey();`);
   if (auth.hasBearer) {
     lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN");`);
   }
@@ -3026,6 +3077,14 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(``);
   lines.push(`    private static String envRequestId() {`);
   lines.push(`        String v = System.getenv("SDK_REQUEST_ID");`);
+  lines.push(`        if (v == null) {`);
+  lines.push(`            return "";`);
+  lines.push(`        }`);
+  lines.push(`        return v.trim();`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private static String envIdempotencyKey() {`);
+  lines.push(`        String v = System.getenv("SDK_IDEMPOTENCY_KEY");`);
   lines.push(`        if (v == null) {`);
   lines.push(`            return "";`);
   lines.push(`        }`);
@@ -3071,6 +3130,14 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
     : `    private Object doRequest(String method, String path, Object body) throws Exception {`;
   lines.push(reqSig);
   lines.push(`        int timeout = this.timeoutMs > 0 ? this.timeoutMs : envTimeoutMs();`);
+  lines.push(`        String opIdem = "";`);
+  lines.push(`        String mth = method == null ? "" : method.toUpperCase();`);
+  lines.push(`        if (mth.equals("POST") || mth.equals("PUT") || mth.equals("PATCH") || mth.equals("DELETE")) {`);
+  lines.push(`            opIdem = this.idempotencyKey != null && this.idempotencyKey.trim().length() > 0 ? this.idempotencyKey.trim() : envIdempotencyKey();`);
+  lines.push(`            if (opIdem == null || opIdem.length() == 0) {`);
+  lines.push(`                opIdem = UUID.randomUUID().toString();`);
+  lines.push(`            }`);
+  lines.push(`        }`);
   lines.push(`        Exception last = null;`);
   lines.push(`        for (int attempt = 0; attempt < 3; attempt++) {`);
   lines.push(`            HttpURLConnection conn = null;`);
@@ -3104,6 +3171,9 @@ export function generateJavaClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                        rid = UUID.randomUUID().toString();`);
   lines.push(`                    }`);
   lines.push(`                    conn.setRequestProperty("X-Request-Id", rid);`);
+  lines.push(`                }`);
+  lines.push(`                if (opIdem != null && opIdem.length() > 0 && conn.getRequestProperty("Idempotency-Key") == null) {`);
+  lines.push(`                    conn.setRequestProperty("Idempotency-Key", opIdem);`);
   lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                if (authBearer && this.bearerToken != null && this.bearerToken.trim().length() > 0) {`);
@@ -3344,6 +3414,7 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): connect + read/write. Override via Client.timeout_ms or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already present. X-Request-Id new per attempt; pin via request_id or env SDK_REQUEST_ID.`);
+  lines.push(`// Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotency_key or env SDK_IDEMPOTENCY_KEY.`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearer_token / api_key or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -3353,6 +3424,7 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    pub timeout_ms: u64,`);
   lines.push(`    pub user_agent: String,`);
   lines.push(`    pub request_id: String,`);
+  lines.push(`    pub idempotency_key: String,`);
   if (auth.hasBearer) {
     lines.push(`    pub bearer_token: String,`);
   }
@@ -3372,6 +3444,7 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            timeout_ms: env_timeout_ms(),`);
   lines.push(`            user_agent: ${JSON.stringify(defaultUserAgent(opts))}.to_string(),`);
   lines.push(`            request_id: env_request_id(),`);
+  lines.push(`            idempotency_key: env_idempotency_key(),`);
   if (auth.hasBearer) {
     lines.push(`            bearer_token: env_auth("SDK_BEARER_TOKEN"),`);
   }
@@ -3385,11 +3458,20 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
     ? `    fn request(&self, method: &str, rel_path: &str, body: Option<&str>, auth_bearer: bool, auth_headers: &[&str], auth_query: &[&str]) -> Result<String, String> {`
     : `    fn request(&self, method: &str, rel_path: &str, body: Option<&str>) -> Result<String, String> {`;
   lines.push(reqSig);
+  lines.push(`        let op_idem = {`);
+  lines.push(`            let m = method.to_ascii_uppercase();`);
+  lines.push(`            if m == "POST" || m == "PUT" || m == "PATCH" || m == "DELETE" {`);
+  lines.push(`                let t = self.idempotency_key.trim();`);
+  lines.push(`                if !t.is_empty() { t.to_string() } else { new_request_id() }`);
+  lines.push(`            } else {`);
+  lines.push(`                String::new()`);
+  lines.push(`            }`);
+  lines.push(`        };`);
   lines.push(`        let mut last = String::from("network");`);
   lines.push(`        for attempt in 0..3u32 {`);
   const onceCall = auth.any
-    ? `            match self.request_once(method, rel_path, body, auth_bearer, auth_headers, auth_query) {`
-    : `            match self.request_once(method, rel_path, body) {`;
+    ? `            match self.request_once(method, rel_path, body, auth_bearer, auth_headers, auth_query, &op_idem) {`
+    : `            match self.request_once(method, rel_path, body, &op_idem) {`;
   lines.push(onceCall);
   lines.push(`                Ok((code, retry_after, body_text)) => {`);
   lines.push(`                    if (200..300).contains(&code) {`);
@@ -3417,8 +3499,8 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   const headersP = auth.headerKeys.length ? "auth_headers: &[&str]" : "_auth_headers: &[&str]";
   const queryP = auth.queryKeys.length ? "auth_query: &[&str]" : "_auth_query: &[&str]";
   const onceSig = auth.any
-    ? `    fn request_once(&self, method: &str, rel_path: &str, body: Option<&str>, ${bearerP}, ${headersP}, ${queryP}) -> Result<(u16, Option<String>, String), String> {`
-    : `    fn request_once(&self, method: &str, rel_path: &str, body: Option<&str>) -> Result<(u16, Option<String>, String), String> {`;
+    ? `    fn request_once(&self, method: &str, rel_path: &str, body: Option<&str>, ${bearerP}, ${headersP}, ${queryP}, op_idem: &str) -> Result<(u16, Option<String>, String), String> {`
+    : `    fn request_once(&self, method: &str, rel_path: &str, body: Option<&str>, op_idem: &str) -> Result<(u16, Option<String>, String), String> {`;
   lines.push(onceSig);
   lines.push(`        let timeout = Duration::from_millis(if self.timeout_ms > 0 {`);
   lines.push(`            self.timeout_ms`);
@@ -3516,6 +3598,11 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            req.push_str(&rid);`);
   lines.push(`            req.push_str("\\r\\n");`);
   lines.push(`        }`);
+  lines.push(`        if !op_idem.is_empty() && !req.to_ascii_lowercase().contains("idempotency-key:") {`);
+  lines.push(`            req.push_str("Idempotency-Key: ");`);
+  lines.push(`            req.push_str(op_idem);`);
+  lines.push(`            req.push_str("\\r\\n");`);
+  lines.push(`        }`);
   lines.push(`        if let Some(b) = body {`);
   lines.push(`            req.push_str("Content-Type: application/json\\r\\n");`);
   lines.push(`            req.push_str(&format!("Content-Length: {}\\r\\n", b.len()));`);
@@ -3598,6 +3685,13 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(``);
   lines.push(`fn env_request_id() -> String {`);
   lines.push(`    match env::var("SDK_REQUEST_ID") {`);
+  lines.push(`        Ok(v) => v.trim().to_string(),`);
+  lines.push(`        Err(_) => String::new(),`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn env_idempotency_key() -> String {`);
+  lines.push(`    match env::var("SDK_IDEMPOTENCY_KEY") {`);
   lines.push(`        Ok(v) => v.trim().to_string(),`);
   lines.push(`        Err(_) => String::new(),`);
   lines.push(`    }`);
@@ -4250,6 +4344,7 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`// Per-attempt request timeout (default 10s): CancellationToken. Override via Client.TimeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt. Pin via Client.RequestId or env SDK_REQUEST_ID (tests).`);
+  lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via Client.IdempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set BearerToken / APIKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -4265,6 +4360,7 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`        public int TimeoutMs;`);
   lines.push(`        public string UserAgent;`);
   lines.push(`        public string RequestId;`);
+  lines.push(`        public string IdempotencyKey;`);
   if (auth.hasBearer) {
     lines.push(`        public string BearerToken;`);
   }
@@ -4294,6 +4390,7 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`            this.TimeoutMs = EnvTimeoutMs();`);
   lines.push(`            this.UserAgent = ${JSON.stringify(defaultUserAgent(opts))};`);
   lines.push(`            this.RequestId = EnvRequestId();`);
+  lines.push(`            this.IdempotencyKey = EnvIdempotencyKey();`);
   if (auth.hasBearer) {
     lines.push(`            this.BearerToken = EnvAuth("SDK_BEARER_TOKEN");`);
   }
@@ -4322,6 +4419,12 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`        private static string EnvRequestId()`);
   lines.push(`        {`);
   lines.push(`            string v = Environment.GetEnvironmentVariable("SDK_REQUEST_ID");`);
+  lines.push(`            return string.IsNullOrWhiteSpace(v) ? "" : v.Trim();`);
+  lines.push(`        }`);
+  lines.push(``);
+  lines.push(`        private static string EnvIdempotencyKey()`);
+  lines.push(`        {`);
+  lines.push(`            string v = Environment.GetEnvironmentVariable("SDK_IDEMPOTENCY_KEY");`);
   lines.push(`            return string.IsNullOrWhiteSpace(v) ? "" : v.Trim();`);
   lines.push(`        }`);
   lines.push(``);
@@ -4363,6 +4466,16 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(reqSig);
   lines.push(`        {`);
   lines.push(`            int timeout = this.TimeoutMs > 0 ? this.TimeoutMs : EnvTimeoutMs();`);
+  lines.push(`            string opIdem = "";`);
+  lines.push(`            string mth = method == null ? "" : method.ToUpperInvariant();`);
+  lines.push(`            if (mth == "POST" || mth == "PUT" || mth == "PATCH" || mth == "DELETE")`);
+  lines.push(`            {`);
+  lines.push(`                opIdem = string.IsNullOrWhiteSpace(this.IdempotencyKey) ? EnvIdempotencyKey() : this.IdempotencyKey.Trim();`);
+  lines.push(`                if (string.IsNullOrWhiteSpace(opIdem))`);
+  lines.push(`                {`);
+  lines.push(`                    opIdem = Guid.NewGuid().ToString();`);
+  lines.push(`                }`);
+  lines.push(`            }`);
   lines.push(`            Exception last = null;`);
   lines.push(`            for (int attempt = 0; attempt < 3; attempt++)`);
   lines.push(`            {`);
@@ -4395,6 +4508,10 @@ export function generateCsharpClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`                        rid = Guid.NewGuid().ToString();`);
   lines.push(`                    }`);
   lines.push(`                    req.Headers.TryAddWithoutValidation("X-Request-Id", rid);`);
+  lines.push(`                }`);
+  lines.push(`                if (!string.IsNullOrWhiteSpace(opIdem) && !req.Headers.Contains("Idempotency-Key"))`);
+  lines.push(`                {`);
+  lines.push(`                    req.Headers.TryAddWithoutValidation("Idempotency-Key", opIdem);`);
   lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                if (authBearer && !string.IsNullOrWhiteSpace(this.BearerToken))`);
@@ -5051,6 +5168,7 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`// Per-attempt request timeout (default 10s): connect + read timeout. Override via timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`// X-Request-Id: new id per HTTP attempt. Pin via requestId or env SDK_REQUEST_ID (tests).`);
+  lines.push(`// Idempotency-Key: on POST/PUT/PATCH/DELETE when unset. New key per logical call (retries reuse). Pin via idempotencyKey or env SDK_IDEMPOTENCY_KEY (tests).`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -5060,6 +5178,7 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`    var timeoutMs: Int`);
   lines.push(`    var userAgent: String`);
   lines.push(`    var requestId: String`);
+  lines.push(`    var idempotencyKey: String`);
   if (auth.hasBearer) {
     lines.push(`    var bearerToken: String`);
   }
@@ -5072,6 +5191,7 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`        this.timeoutMs = envTimeoutMs()`);
   lines.push(`        this.userAgent = ${JSON.stringify(defaultUserAgent(opts))}`);
   lines.push(`        this.requestId = envRequestId()`);
+  lines.push(`        this.idempotencyKey = envIdempotencyKey()`);
   if (auth.hasBearer) {
     lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN")`);
   }
@@ -5093,6 +5213,7 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`        this.timeoutMs = envTimeoutMs()`);
   lines.push(`        this.userAgent = ${JSON.stringify(defaultUserAgent(opts))}`);
   lines.push(`        this.requestId = envRequestId()`);
+  lines.push(`        this.idempotencyKey = envIdempotencyKey()`);
   if (auth.hasBearer) {
     lines.push(`        this.bearerToken = envAuth("SDK_BEARER_TOKEN")`);
   }
@@ -5127,6 +5248,14 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(``);
   lines.push(`    private fun envRequestId(): String {`);
   lines.push(`        val v = System.getenv("SDK_REQUEST_ID")`);
+  lines.push(`        if (v == null) {`);
+  lines.push(`            return ""`);
+  lines.push(`        }`);
+  lines.push(`        return v.trim()`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private fun envIdempotencyKey(): String {`);
+  lines.push(`        val v = System.getenv("SDK_IDEMPOTENCY_KEY")`);
   lines.push(`        if (v == null) {`);
   lines.push(`            return ""`);
   lines.push(`        }`);
@@ -5171,6 +5300,14 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
     : `    private fun doRequest(method: String, path: String, body: Any?): Any? {`;
   lines.push(reqSig);
   lines.push(`        val timeout = if (this.timeoutMs > 0) this.timeoutMs else envTimeoutMs()`);
+  lines.push(`        var opIdem = ""`);
+  lines.push(`        val mth = if (method == null) "" else method.uppercase()`);
+  lines.push(`        if (mth == "POST" || mth == "PUT" || mth == "PATCH" || mth == "DELETE") {`);
+  lines.push(`            opIdem = if (this.idempotencyKey != null && this.idempotencyKey.trim().isNotEmpty()) this.idempotencyKey.trim() else envIdempotencyKey()`);
+  lines.push(`            if (opIdem.isEmpty()) {`);
+  lines.push(`                opIdem = java.util.UUID.randomUUID().toString()`);
+  lines.push(`            }`);
+  lines.push(`        }`);
   lines.push(`        var last: Exception? = null`);
   lines.push(`        var attempt = 0`);
   lines.push(`        while (attempt < 3) {`);
@@ -5206,6 +5343,9 @@ export function generateKotlinClient(ops, title = "GeneratedClient", opts = {}) 
   lines.push(`                        rid = java.util.UUID.randomUUID().toString()`);
   lines.push(`                    }`);
   lines.push(`                    conn.setRequestProperty("X-Request-Id", rid)`);
+  lines.push(`                }`);
+  lines.push(`                if (opIdem.isNotEmpty() && conn.getRequestProperty("Idempotency-Key") == null) {`);
+  lines.push(`                    conn.setRequestProperty("Idempotency-Key", opIdem)`);
   lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                val tok = this.bearerToken`);
@@ -5448,6 +5588,7 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`// Per-attempt request timeout (default 10s): URLRequest.timeoutInterval. Override via timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already set. X-Request-Id new per attempt; pin via requestId or env SDK_REQUEST_ID.`);
+  lines.push(`// Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotencyKey or env SDK_IDEMPOTENCY_KEY.`);
   if (auth.any) {
     lines.push(`// Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`// Set bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -5458,6 +5599,7 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    public var timeoutMs: Int`);
   lines.push(`    public var userAgent: String`);
   lines.push(`    public var requestId: String`);
+  lines.push(`    public var idempotencyKey: String`);
   if (auth.hasBearer) {
     lines.push(`    public var bearerToken: String`);
   }
@@ -5475,6 +5617,7 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        self.timeoutMs = Client.envTimeoutMs()`);
   lines.push(`        self.userAgent = ${JSON.stringify(defaultUserAgent(opts))}`);
   lines.push(`        self.requestId = Client.envRequestId()`);
+  lines.push(`        self.idempotencyKey = Client.envIdempotencyKey()`);
   if (auth.hasBearer) {
     lines.push(`        self.bearerToken = Client.envAuth("SDK_BEARER_TOKEN")`);
   }
@@ -5504,6 +5647,11 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        return v.trimmingCharacters(in: .whitespacesAndNewlines)`);
   lines.push(`    }`);
   lines.push(``);
+  lines.push(`    private static func envIdempotencyKey() -> String {`);
+  lines.push(`        let v = ProcessInfo.processInfo.environment["SDK_IDEMPOTENCY_KEY"] ?? ""`);
+  lines.push(`        return v.trimmingCharacters(in: .whitespacesAndNewlines)`);
+  lines.push(`    }`);
+  lines.push(``);
   if (auth.any) {
     lines.push(`    private static func envAuth(_ name: String) -> String {`);
     lines.push(`        let v = ProcessInfo.processInfo.environment[name] ?? ""`);
@@ -5528,6 +5676,13 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
     : `    private func doRequest(method: String, path: String, body: [String: Any]?) throws -> Any? {`;
   lines.push(reqSig);
   lines.push(`        let timeout = self.timeoutMs > 0 ? self.timeoutMs : Client.envTimeoutMs()`);
+  lines.push(`        var opIdem = ""`);
+  lines.push(`        let mth = method.uppercased()`);
+  lines.push(`        if mth == "POST" || mth == "PUT" || mth == "PATCH" || mth == "DELETE" {`);
+  lines.push(`            opIdem = self.idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)`);
+  lines.push(`            if opIdem.isEmpty { opIdem = Client.envIdempotencyKey() }`);
+  lines.push(`            if opIdem.isEmpty { opIdem = UUID().uuidString }`);
+  lines.push(`        }`);
   lines.push(`        var lastError: Error?`);
   lines.push(`        for attempt in 0..<3 {`);
   lines.push(`            do {`);
@@ -5558,6 +5713,9 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`                    if rid.isEmpty { rid = Client.envRequestId() }`);
   lines.push(`                    if rid.isEmpty { rid = UUID().uuidString }`);
   lines.push(`                    req.setValue(rid, forHTTPHeaderField: "X-Request-Id")`);
+  lines.push(`                }`);
+  lines.push(`                if !opIdem.isEmpty && req.value(forHTTPHeaderField: "Idempotency-Key") == nil {`);
+  lines.push(`                    req.setValue(opIdem, forHTTPHeaderField: "Idempotency-Key")`);
   lines.push(`                }`);
   if (auth.hasBearer) {
     lines.push(`                if authBearer {`);
@@ -5731,6 +5889,7 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`# Retry transient HTTP failures (429 / 5xx / network): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
   lines.push(`# Per-attempt request timeout (default 10s): open/read timeout. Override via timeout_ms or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`# Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless already set. X-Request-Id new per attempt; pin via request_id or env SDK_REQUEST_ID.`);
+  lines.push(`# Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotency_key or env SDK_IDEMPOTENCY_KEY.`);
   if (auth.any) {
     lines.push(`# Auth from OpenAPI securitySchemes (http bearer, apiKey header/query). oauth2 / openIdConnect skipped (no fake tokens).`);
     lines.push(`# Set bearer_token / api_key or env SDK_BEARER_TOKEN / SDK_API_KEY. Attached per OpenAPI operation security on every attempt. Ops without security omit credentials. Values never logged.`);
@@ -5739,6 +5898,7 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  attr_accessor :timeout_ms`);
   lines.push(`  attr_accessor :user_agent`);
   lines.push(`  attr_accessor :request_id`);
+  lines.push(`  attr_accessor :idempotency_key`);
   if (auth.hasBearer) {
     lines.push(`  attr_accessor :bearer_token`);
   }
@@ -5752,6 +5912,7 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    @timeout_ms = self.class.env_timeout_ms`);
   lines.push(`    @user_agent = ${JSON.stringify(defaultUserAgent(opts))}`);
   lines.push(`    @request_id = self.class.env_request_id`);
+  lines.push(`    @idempotency_key = self.class.env_idempotency_key`);
   if (auth.hasBearer) {
     lines.push(`    @bearer_token = self.class.env_auth("SDK_BEARER_TOKEN")`);
   }
@@ -5803,6 +5964,12 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    v.to_s.strip`);
   lines.push(`  end`);
   lines.push(``);
+  lines.push(`  def self.env_idempotency_key`);
+  lines.push(`    v = ENV["SDK_IDEMPOTENCY_KEY"]`);
+  lines.push(`    return "" if v.nil?`);
+  lines.push(`    v.to_s.strip`);
+  lines.push(`  end`);
+  lines.push(``);
   if (auth.any) {
     lines.push(`  def self.env_auth(name)`);
     lines.push(`    v = ENV[name]`);
@@ -5836,6 +6003,13 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(reqSig);
   lines.push(`    timeout = (@timeout_ms && @timeout_ms.to_i > 0) ? @timeout_ms.to_i : self.class.env_timeout_ms`);
   lines.push(`    timeout_s = timeout / 1000.0`);
+  lines.push(`    op_idem = ""`);
+  lines.push(`    mth = method.to_s.upcase`);
+  lines.push(`    if ["POST", "PUT", "PATCH", "DELETE"].include?(mth)`);
+  lines.push(`      op_idem = @idempotency_key.to_s.strip`);
+  lines.push(`      op_idem = self.class.env_idempotency_key if op_idem.empty?`);
+  lines.push(`      op_idem = SecureRandom.uuid if op_idem.empty?`);
+  lines.push(`    end`);
   lines.push(`    last = nil`);
   lines.push(`    3.times do |attempt|`);
   lines.push(`      begin`);
@@ -5868,6 +6042,9 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`          rid = self.class.env_request_id if rid.empty?`);
   lines.push(`          rid = SecureRandom.uuid if rid.empty?`);
   lines.push(`          req["X-Request-Id"] = rid`);
+  lines.push(`        end`);
+  lines.push(`        if !op_idem.to_s.empty? && req["Idempotency-Key"].to_s.empty?`);
+  lines.push(`          req["Idempotency-Key"] = op_idem`);
   lines.push(`        end`);
   if (auth.hasBearer) {
     lines.push(`        if auth_bearer && @bearer_token && !@bearer_token.to_s.strip.empty?`);
@@ -5989,6 +6166,7 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(" * Minimal HTTP client stub generated from OpenAPI (stdlib fopen / stream wrappers; curl-extension-free).");
   lines.push(" * Retry 429 / 5xx / network (Retry-After <30s). Per-attempt timeout default 10s (timeoutMs / SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC).");
   lines.push(" * Default User-Agent " + defaultUserAgent(opts) + " unless already set. X-Request-Id new per attempt; pin via requestId or env SDK_REQUEST_ID.");
+  lines.push(" * Idempotency-Key on POST/PUT/PATCH/DELETE when unset; new per logical call (retries reuse). Pin via idempotencyKey or env SDK_IDEMPOTENCY_KEY.");
   if (auth.any) {
     lines.push(" * Auth: bearerToken / apiKey or env SDK_BEARER_TOKEN / SDK_API_KEY. Per-op security; unsecured ops omit credentials. Values never logged.");
   }
@@ -5998,6 +6176,7 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("    public $timeoutMs;");
   lines.push("    public $userAgent;");
   lines.push("    public $requestId;");
+  lines.push("    public $idempotencyKey;");
   if (auth.hasBearer) {
     lines.push("    public $bearerToken;");
   }
@@ -6011,6 +6190,7 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("        $this->timeoutMs = self::envTimeoutMs();");
   lines.push("        $this->userAgent = " + JSON.stringify(defaultUserAgent(opts)) + ";");
   lines.push("        $this->requestId = self::envRequestId();");
+  lines.push("        $this->idempotencyKey = self::envIdempotencyKey();");
   if (auth.hasBearer) {
     lines.push("        $this->bearerToken = self::envAuth(\"SDK_BEARER_TOKEN\");");
   }
@@ -6039,6 +6219,14 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("");
   lines.push("    private static function envRequestId() {");
   lines.push("        $v = getenv(\"SDK_REQUEST_ID\");");
+  lines.push("        if ($v === false) {");
+  lines.push("            return \"\";");
+  lines.push("        }");
+  lines.push("        return trim((string) $v);");
+  lines.push("    }");
+  lines.push("");
+  lines.push("    private static function envIdempotencyKey() {");
+  lines.push("        $v = getenv(\"SDK_IDEMPOTENCY_KEY\");");
   lines.push("        if ($v === false) {");
   lines.push("            return \"\";");
   lines.push("        }");
@@ -6113,6 +6301,14 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(reqSig);
   lines.push("        $timeout = $this->timeoutMs > 0 ? $this->timeoutMs : self::envTimeoutMs();");
   lines.push("        $timeoutSec = $timeout / 1000.0;");
+  lines.push("        $opIdem = \"\";");
+  lines.push("        $mth = strtoupper((string) $method);");
+  lines.push("        if ($mth === \"POST\" || $mth === \"PUT\" || $mth === \"PATCH\" || $mth === \"DELETE\") {");
+  lines.push("            $opIdem = is_string($this->idempotencyKey) && trim($this->idempotencyKey) !== \"\" ? trim($this->idempotencyKey) : self::envIdempotencyKey();");
+  lines.push("            if ($opIdem === \"\") {");
+  lines.push("                $opIdem = function_exists(\"random_bytes\") ? bin2hex(random_bytes(16)) : uniqid(\"\", true);");
+  lines.push("            }");
+  lines.push("        }");
   lines.push("        $last = null;");
   lines.push("        for ($attempt = 0; $attempt < 3; $attempt++) {");
   lines.push("            $reqPath = $path;");
@@ -6155,6 +6351,9 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("                    $rid = function_exists(\"random_bytes\") ? bin2hex(random_bytes(16)) : uniqid(\"\", true);");
   lines.push("                }");
   lines.push("                $headers .= \"X-Request-Id: \" . $rid . \"\\r\\n\";");
+  lines.push("            }");
+  lines.push("            if ($opIdem !== \"\" && stripos($headers, \"Idempotency-Key:\") === false) {");
+  lines.push("                $headers .= \"Idempotency-Key: \" . $opIdem . \"\\r\\n\";");
   lines.push("            }");
   lines.push("            if ($body !== null) {");
   lines.push("                $content = json_encode($body);");
@@ -6315,7 +6514,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     ``,
     ...(pageable.length ? [`Page helpers: ${pageable.map((o) => iterateHelperName(o.operationId)).join(", ")} (page/cursor; cap 1000; not a full pager)`, ``] : []),
     ...(auth.any ? [`Auth: constructor bearerToken / apiKey (or bearer_token / api_key / Client.BearerToken / APIKey) or env SDK_BEARER_TOKEN / SDK_API_KEY, attached per OpenAPI operation security (optional schemes when creds are set; ops without security omit credentials). MCP servers read MCP_BEARER_TOKEN / MCP_API_KEY (same SDK_* fallback). oauth2 / openIdConnect skipped (no fake tokens). Values never logged.`, ``] : []),
-    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID).`,
+    `Identity: default User-Agent ${defaultUserAgent({ packageName })} unless already set; X-Request-Id is new per HTTP attempt (pin via constructor requestId / request_id / RequestID or env SDK_REQUEST_ID). Idempotency-Key on POST/PUT/PATCH/DELETE when unset (new per logical call, retries reuse; pin via constructor idempotencyKey / idempotency_key / IdempotencyKey or env SDK_IDEMPOTENCY_KEY).`,
     ``,
     `Files:`,
     ...files,

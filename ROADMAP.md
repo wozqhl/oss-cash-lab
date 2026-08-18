@@ -125,6 +125,7 @@
 
 - [x] A generated Rust / PHP / Swift / Ruby timeout + 429/5xx retry + per-op bearer/apiKey auth (same policy as TS/Python/Go/Java; Rust TcpStream http://)
 - [x] A generated clients default User-Agent `sdk-mcp-gen/0.1.0` (or package name) unless already set + `X-Request-Id` per HTTP attempt (`SDK_REQUEST_ID` pin; smoke ua-ok / request-id-ok)
+- [x] A generated clients send Idempotency-Key on POST/PUT/PATCH/DELETE when unset (retries reuse; SDK_IDEMPOTENCY_KEY pin; smoke idem-ok)
 ### D · AI-BOM (Python) scaffold→MVP
 - [x] Scan dir for model IDs, prompts, MCP deps
 - [x] CycloneDX-like JSON
