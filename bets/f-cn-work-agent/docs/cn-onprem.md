@@ -53,7 +53,7 @@ bash scripts/demo-wecom-approval.sh
 |----|---------------------|
 | 部署 | 单进程 `python3 -m cn_work_agent serve`，stdlib，无强制云依赖 |
 | 数据 | 审批 / 审计 JSONL 落本机 `data/`，不默认外发 |
-| 出站 | 可选审批决定 webhook + 可选 Dify/n8n 示例 forward（`APPROVAL_FORWARD_URL`）；空则关闭。不主动连飞书 / 钉钉 / 企微开放平台 |
+| 出站 | 可选审批决定 webhook + 可选 Dify/n8n 示例 forward（`APPROVAL_FORWARD_URL`；可选 `APPROVAL_FORWARD_SECRET` → `X-Webhook-Signature`）；空则关闭。不主动连飞书 / 钉钉 / 企微开放平台 |
 | 配置 | `config.example.json` + `--config`；密钥优先环境变量 |
 | 容器 | Dockerfile 是占位（`python:3.12-alpine`，EXPOSE 8790）；镜像未发布 |
 

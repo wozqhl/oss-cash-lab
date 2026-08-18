@@ -23,6 +23,7 @@ cp config.example.json config.local.json
 | `cors.origins` | 数组 / CSV | 可选 CORS 白名单（空 = 默认拒绝；`*` 允许任意 Origin） |
 | `approval_webhook_url` | 字符串 | 可选审批决定 webhook（空 = 关闭；HMAC 用 env `APPROVAL_WEBHOOK_SECRET`） |
 | `approval_forward_url` | 字符串 | 可选 Dify / n8n **示例** webhook（`APPROVAL_FORWARD_URL` / `--forward-url`；空 = 关闭；示例接线，不是 Dify 插件） |
+| `approval_forward_secret` | 字符串 | 可选出站 HMAC（`APPROVAL_FORWARD_SECRET`；`X-Webhook-Signature: sha256=<hex>`；空 = 不签名，默认） |
 | `feishu.callbackSecret`（及钉钉/企微） | 字符串 | 可选 **入站** 审批回调 HMAC（空 = 关闭，默认；POST `/approvals/{id}/decide` 需 `X-Callback-Signature`；GET 卡片按钮仍不验签） |
 
 环境变量若已设置会覆盖配置文件中的同名密钥。

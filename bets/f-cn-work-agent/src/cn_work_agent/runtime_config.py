@@ -50,6 +50,10 @@ FORBIDDEN_RUNTIME_CONFIG_KEYS = (
     "approval_forward_url",
     "forwardUrl",
     "forward_url",
+    "APPROVAL_FORWARD_SECRET",
+    "approval_forward_secret",
+    "forwardSecret",
+    "forward_secret",
 )
 
 FORBIDDEN_KEY_SET = {k.lower() for k in FORBIDDEN_RUNTIME_CONFIG_KEYS}
@@ -64,6 +68,7 @@ RUNTIME_CONFIG_SECRET_NEEDLES = (
     "dt-secret-must-not-leak",
     "wc-tok-must-not-leak",
     "whsec_must_not_leak",
+    "fwdsec_must_not_leak",
     "planted_url_token",
     "http_url_token_must_not_leak",
     "http_whsec_must_not_leak",
@@ -146,6 +151,7 @@ def summarize_runtime_config(
     webhook_secret: str | None = None,
     approvals_max: int | None = None,
     forward_url: str | None = None,
+    forward_secret: str | None = None,
     config: Mapping[str, Any] | None = None,
     enabled: list[str] | None = None,
     env: Mapping[str, str] | None = None,
@@ -165,6 +171,7 @@ def summarize_runtime_config(
     url = parse_webhook_url(webhook_url) if webhook_url else None
     secret = parse_webhook_secret(webhook_secret) if webhook_secret else None
     fwd = parse_forward_url(forward_url) if forward_url else None
+    fwd_secret = parse_webhook_secret(forward_secret) if forward_secret else None
     return {
         "ok": True,
         "approvalTtlSec": approval_ttl_seconds,
@@ -175,6 +182,7 @@ def summarize_runtime_config(
             "hasUrl": bool(url),
             "hasSecret": bool(secret),
             "hasForwardUrl": bool(fwd),
+            "hasForwardSecret": bool(fwd_secret),
         },
         "platforms": list(plat.get("platforms") or []),
     }

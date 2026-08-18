@@ -44,7 +44,7 @@ CN office IM is the default enterprise agent entry. Ship on-prem webhook → int
 | OpenAPI 3 (`GET /openapi.json`) + A dogfood SDK stubs | Hosted connector SDKs / vendor-shaped clients |
 | Prometheus `GET /metrics` (pending / decided_total / webhooks_total) | Hosted Grafana / fleet dashboards |
 | Optional approval-decision webhook (`APPROVAL_WEBHOOK_URL`) + simple HMAC-SHA256 (`X-Webhook-Signature`) + `X-Webhook-Timestamp` + **1 retry** on 5xx/timeout | Webhook exponential backoff / queues, HMAC key rotation, timestamp replay window enforcement |
-| Optional Dify / n8n **sample** forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant\|app,title}`; 1 retry; no secrets in body; **example wiring, not a Dify plugin**) | Vendor Dify/n8n plugins, embedded orchestration, queue/backoff |
+| Optional Dify / n8n **sample** forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant\|app,title}`; 1 retry; no secrets in body; optional HMAC `APPROVAL_FORWARD_SECRET` → `X-Webhook-Signature`; **example wiring, not a Dify plugin**) | Vendor Dify/n8n plugins, embedded orchestration, queue/backoff |
 | Optional inbound IM decide HMAC (`callbackSecret` → `X-Callback-Signature`; POST only; GET cards unsigned) | Real Feishu/DingTalk/WeCom card-callback adapters, key rotation, signed card URLs |
 | Serve `--watch` (config mtime poll ~300ms; reload CORS/TTL/webhook/rate-limit/approvals-max; env wins if already set) | Hosted config sync / remote policy |
 | Decided-approvals cap (`--approvals-max` / `APPROVALS_MAX` default 2000; drop oldest decided; pending kept) | Persistent audit archive, SIEM retention |
@@ -72,7 +72,7 @@ CN office IM is the default enterprise agent entry. Ship on-prem webhook → int
 - [x] `GET /ready` 200 `{ok:true, service}` + same snapshot as `/health` when healthy; 503 `shutting_down` on SIGTERM/SIGINT (not rate-limited; Compose stays on `/health`)
 - [x] Prometheus `GET /metrics` (`cn_work_agent_approvals_pending`, `cn_work_agent_approvals_decided_total`, `cn_work_agent_webhooks_total`; CORS same as other GET)
 - [x] Approval-decision webhook (`APPROVAL_WEBHOOK_URL` / `--webhook-url`; optional HMAC `--webhook-secret`)
-- [x] Dify / n8n sample forward (`APPROVAL_FORWARD_URL` / `--forward-url`; fire-and-forget `{event,approval_id,status,tenant|app,title}` on approved/rejected; 1 retry; example wiring, not a plugin)
+- [x] Dify / n8n sample forward (`APPROVAL_FORWARD_URL` / `--forward-url`; fire-and-forget `{event,approval_id,status,tenant|app,title}` on approved/rejected; 1 retry; optional HMAC `APPROVAL_FORWARD_SECRET` → `X-Webhook-Signature`; example wiring, not a plugin)
 - [x] Inbound IM decide HMAC (`callbackSecret` / `FEISHU_CALLBACK_SECRET`; POST `X-Callback-Signature`; GET unsigned for demo cards)
 - [x] Serve `--watch` (poll `--config` mtime ~300ms; reload CORS/TTL/webhook url+secret/rate-limit/approvals-max; env wins if already set; local-mvp isolated copy prove)
 - [x] Decided-approvals cap (`--approvals-max` / `APPROVALS_MAX` default 2000; `0` = unlimited; drop oldest approved/rejected/expired; pending kept; GET by id 404; smoke + isolated local-mvp `--approvals-max 2`)
@@ -254,10 +254,11 @@ When an approval is **approved** or **rejected** (including TTL-expired), option
 | `approval_forward_url` in config JSON | same |
 | `--forward-url` | CLI wins when provided |
 | `tenant` / `APPROVAL_FORWARD_TENANT` | optional; else `app` from `bot_name` |
+| `APPROVAL_FORWARD_SECRET` / `--forward-secret` / `approval_forward_secret` | optional HMAC (`X-Webhook-Signature: sha256=<hex>` of raw body; default off; same as B/E) |
 
 ```bash
 APPROVAL_FORWARD_URL=http://127.0.0.1:8816/webhook PYTHONPATH=src python3 -m cn_work_agent serve --port 8817
-# smoke prints forward-ok when a local stub receives the POST after approve
+# smoke prints forward-ok; with APPROVAL_FORWARD_SECRET also forward-hmac-ok
 ```
 
 ### Inbound IM callback HMAC (OSS)

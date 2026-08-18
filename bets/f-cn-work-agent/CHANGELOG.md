@@ -7,6 +7,7 @@ The format is based on Keep a Changelog.
 ## [Unreleased]
 
 ### Added
+- Optional HMAC on Dify/n8n approval forward: `APPROVAL_FORWARD_SECRET` / `--forward-secret` / `approval_forward_secret` → `X-Webhook-Signature: sha256=<hex>` of the raw JSON body (stdlib; default off). Smoke prints `forward-hmac-ok`.
 
 - Dify / n8n **sample** approval forward: `APPROVAL_FORWARD_URL` / `--forward-url` POSTs `{event,approval_id,status,tenant|app,title}` after approved/rejected (fire-and-forget, 1 retry; no secrets). Example wiring, not a Dify plugin. Smoke stub prints `forward-ok`.
 - Local Feishu approval demo: `scripts/demo-feishu-approval.sh` (请假 + 用印).

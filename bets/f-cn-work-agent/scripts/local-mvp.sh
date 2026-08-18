@@ -25,6 +25,7 @@ unset CORS_ORIGINS || true
 unset APPROVAL_WEBHOOK_URL || true
 unset APPROVAL_WEBHOOK_SECRET || true
 unset APPROVAL_FORWARD_URL || true
+unset APPROVAL_FORWARD_SECRET || true
 unset FEISHU_CALLBACK_SECRET || true
 unset DINGTALK_CALLBACK_SECRET || true
 unset WECOM_CALLBACK_SECRET || true
@@ -1347,6 +1348,7 @@ unset CORS_ORIGINS || true
 unset APPROVAL_WEBHOOK_URL || true
 unset APPROVAL_WEBHOOK_SECRET || true
 unset APPROVAL_FORWARD_URL || true
+unset APPROVAL_FORWARD_SECRET || true
 python3 -m cn_work_agent serve --port "$WATCH_PORT" --config "$WATCH_CFG" \
   --audit "$WATCH_AUDIT" --approvals "$WATCH_APPROVALS" --watch \
   >"$WATCH_LOG" 2>&1 &

@@ -7,9 +7,12 @@ expired), fire-and-forget POST a small JSON to APPROVAL_FORWARD_URL /
 Body shape (Dify / n8n webhook-trigger friendly):
   {event, approval_id, status, tenant|app, title}
 
-No secrets / tokens / HMAC / notes in the body. Reuses the existing
-outbound POST + 1 retry (~50ms on 5xx/timeout). This is example wiring,
-not a Dify plugin and not an n8n node.
+No secrets / tokens / notes in the body. Optional HMAC-SHA256
+(`APPROVAL_FORWARD_SECRET` / `--forward-secret` / `approval_forward_secret`)
+→ `X-Webhook-Signature: sha256=<hex>` of the raw JSON body (same as B/E).
+Default off (unsigned). Reuses the existing outbound POST + 1 retry
+(~50ms on 5xx/timeout). This is example wiring, not a Dify plugin and
+not an n8n node.
 """
 from __future__ import annotations
 
@@ -20,12 +23,15 @@ from typing import Any, Mapping
 from cn_work_agent.webhook import (
     DEFAULT_RETRY_DELAY_S,
     DEFAULT_TIMEOUT_S,
+    parse_webhook_secret,
     parse_webhook_url,
     post_approval_webhook,
 )
 
 ENV_FORWARD_URL = "APPROVAL_FORWARD_URL"
 CONFIG_FORWARD_URL = "approval_forward_url"
+ENV_FORWARD_SECRET = "APPROVAL_FORWARD_SECRET"
+CONFIG_FORWARD_SECRET = "approval_forward_secret"
 ENV_FORWARD_TENANT = "APPROVAL_FORWARD_TENANT"
 ENV_FORWARD_APP = "APPROVAL_FORWARD_APP"
 FORWARD_STATUSES = frozenset({"approved", "rejected"})
@@ -53,6 +59,29 @@ def resolve_forward_url(
         return parse_forward_url(environ.get(ENV_FORWARD_URL, ""))
     if config:
         return parse_forward_url(config.get(CONFIG_FORWARD_URL))
+    return None
+
+
+def parse_forward_secret(raw: str | None) -> str | None:
+    return parse_webhook_secret(raw)
+
+
+def resolve_forward_secret(
+    cli_value: str | None,
+    env: Mapping[str, str] | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> str | None:
+    """CLI `--forward-secret` wins when provided (including empty);
+    else env `APPROVAL_FORWARD_SECRET` if set; else config `approval_forward_secret`.
+    Default off (unsigned).
+    """
+    if cli_value is not None:
+        return parse_forward_secret(cli_value)
+    environ = env if env is not None else os.environ
+    if ENV_FORWARD_SECRET in environ:
+        return parse_forward_secret(environ.get(ENV_FORWARD_SECRET, ""))
+    if config:
+        return parse_forward_secret(config.get(CONFIG_FORWARD_SECRET))
     return None
 
 
@@ -153,15 +182,22 @@ def notify_approval_forward(
     retry_delay: float | None = None,
     env: Mapping[str, str] | None = None,
     config: Mapping[str, Any] | None = None,
+    secret: str | None = None,
 ) -> None:
-    """Fire-and-forget Dify/n8n-shaped POST. Never raises. Never blocks decide."""
+    """Fire-and-forget Dify/n8n-shaped POST. Never raises. Never blocks decide.
+
+    When `secret` is set, POST includes `X-Webhook-Signature: sha256=<hex>`
+    HMAC-SHA256 of the raw JSON body (same header as B/E/F decision webhooks).
+    Omit / empty = unsigned (default).
+    """
     try:
         if not url or not should_forward(record):
             return
         payload = build_forward_payload(record, env=env, config=config)
+        key = parse_forward_secret(secret)
         kwargs = {
             "timeout": timeout,
-            "secret": None,
+            "secret": key,
             "urlopen": urlopen,
             "sleep": sleep,
             "retry_delay": retry_delay if retry_delay is not None else DEFAULT_RETRY_DELAY_S,
@@ -192,6 +228,7 @@ def notify_approval_forwards(
     retry_delay: float | None = None,
     env: Mapping[str, str] | None = None,
     config: Mapping[str, Any] | None = None,
+    secret: str | None = None,
 ) -> None:
     """Forward each decided/expired record. Never raises."""
     try:
@@ -208,6 +245,7 @@ def notify_approval_forwards(
                 retry_delay=retry_delay,
                 env=env,
                 config=config,
+                secret=secret,
             )
     except Exception:
         return

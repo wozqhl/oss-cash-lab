@@ -26,5 +26,6 @@
     "origins": []
   },
   "approval_webhook_url": "",
-  "approval_forward_url": ""
+  "approval_forward_url": "",
+  "approval_forward_secret": ""
 }

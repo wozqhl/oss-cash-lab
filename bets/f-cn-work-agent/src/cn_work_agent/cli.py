@@ -65,10 +65,12 @@ from cn_work_agent.webhook import (
     webhook_unix_seconds,
 )
 from cn_work_agent.forward import (
+    ENV_FORWARD_SECRET,
     ENV_FORWARD_URL,
     build_forward_payload,
     notify_approval_forward,
     notify_approval_forwards,
+    resolve_forward_secret,
     resolve_forward_url,
     should_forward,
 )
@@ -1387,6 +1389,7 @@ def _smoke() -> int:
         and (cfg_payload.get("webhooks") or {}).get("hasUrl") is True
         and (cfg_payload.get("webhooks") or {}).get("hasSecret") is True
         and (cfg_payload.get("webhooks") or {}).get("hasForwardUrl") is False
+        and (cfg_payload.get("webhooks") or {}).get("hasForwardSecret") is False
         and any(r.get("id") == "feishu" for r in cfg_plats)
         and any(r.get("hasCallbackSecret") is True for r in cfg_plats)
         and cfg_safe.get("ok") is True
@@ -1417,6 +1420,7 @@ def _smoke() -> int:
         and (empty_cfg.get("webhooks") or {}).get("hasUrl") is False
         and (empty_cfg.get("webhooks") or {}).get("hasSecret") is False
         and (empty_cfg.get("webhooks") or {}).get("hasForwardUrl") is False
+        and (empty_cfg.get("webhooks") or {}).get("hasForwardSecret") is False
         and empty_cfg.get("approvalsMax") == 0
         and (empty_cfg.get("cors") or {}).get("origins") == []
         and assert_runtime_config_safe(empty_cfg).get("ok") is True
@@ -1429,15 +1433,18 @@ def _smoke() -> int:
         webhook_secret=None,
         approvals_max=0,
         forward_url="http://127.0.0.1:9/dify?token=planted_fwd_token",
-        config={},
+        forward_secret="fwdsec_must_not_leak",
+        config={"approval_forward_secret": "fwdsec_must_not_leak"},
         enabled=["feishu"],
         env={},
     )
     fwd_cfg_blob = json.dumps(fwd_cfg, ensure_ascii=False)
     fwd_cfg_ok = (
         (fwd_cfg.get("webhooks") or {}).get("hasForwardUrl") is True
+        and (fwd_cfg.get("webhooks") or {}).get("hasForwardSecret") is True
         and "planted_fwd_token" not in fwd_cfg_blob
         and "http://127.0.0.1:9/dify" not in fwd_cfg_blob
+        and "fwdsec_must_not_leak" not in fwd_cfg_blob
         and assert_runtime_config_safe(fwd_cfg).get("ok") is True
     )
     if not cfg_ok or not cfg_safe.get("ok") or not empty_ok or not fwd_cfg_ok:
@@ -1712,6 +1719,36 @@ def _smoke() -> int:
         and should_forward({"status": "rejected", "reason": "expired"})
         and not should_forward({"status": "pending"})
         and not should_forward(None)
+        and ENV_FORWARD_SECRET == "APPROVAL_FORWARD_SECRET"
+        and resolve_forward_secret(None, env={}) is None
+        and resolve_forward_secret(
+            None, env={"APPROVAL_FORWARD_SECRET": "fwdsec_env"}
+        )
+        == "fwdsec_env"
+        and resolve_forward_secret("", env={"APPROVAL_FORWARD_SECRET": "fwdsec_env"})
+        is None
+        and resolve_forward_secret(
+            "fwdsec_cli", env={"APPROVAL_FORWARD_SECRET": "fwdsec_env"}
+        )
+        == "fwdsec_cli"
+        and resolve_forward_secret(
+            None,
+            env={},
+            config={"approval_forward_secret": "fwdsec_cfg"},
+        )
+        == "fwdsec_cfg"
+        and resolve_forward_secret(
+            None,
+            env={"APPROVAL_FORWARD_SECRET": "fwdsec_env"},
+            config={"approval_forward_secret": "fwdsec_cfg"},
+        )
+        == "fwdsec_env"
+        and resolve_forward_secret(
+            None,
+            env={"APPROVAL_FORWARD_SECRET": ""},
+            config={"approval_forward_secret": "fwdsec_cfg"},
+        )
+        is None
     )
     if not fwd_ok:
         print("smoke failed forward resolve/should_forward")
@@ -1910,6 +1947,66 @@ def _smoke() -> int:
         return 1
     print("forward-ok")
 
+    # Optional HMAC (default off): stub checks X-Webhook-Signature vs raw body.
+    fwd_hmac_calls: list = []
+
+    def urlopen_fwd_hmac(req, timeout=None):
+        fwd_hmac_calls.append(req)
+        return _FakeResp(200)
+
+    notify_approval_forward(
+        "http://127.0.0.1:9/dify",
+        {"id": "appr_fwdhmac", "status": "approved", "text": "请假"},
+        wait=True,
+        urlopen=urlopen_fwd_hmac,
+        secret="fwdsec_smoke",
+        env={},
+        config={"bot_name": "fwd-hmac"},
+        retry_delay=0,
+    )
+    if len(fwd_hmac_calls) != 1:
+        print(f"smoke failed forward HMAC call count {len(fwd_hmac_calls)}")
+        return 1
+    fwd_hmac_req = fwd_hmac_calls[0]
+    fwd_hmac_sig = _req_header(fwd_hmac_req, SIGNATURE_HEADER)
+    fwd_hmac_expected = sign_webhook_body("fwdsec_smoke", fwd_hmac_req.data)
+    if fwd_hmac_sig != fwd_hmac_expected or not verify_webhook_signature(
+        "fwdsec_smoke", fwd_hmac_req.data, fwd_hmac_sig
+    ):
+        print(
+            "smoke failed forward HMAC header",
+            fwd_hmac_sig,
+            fwd_hmac_expected,
+        )
+        return 1
+    fwd_unsigned_calls: list = []
+
+    def urlopen_fwd_unsigned(req, timeout=None):
+        fwd_unsigned_calls.append(req)
+        return _FakeResp(200)
+
+    notify_approval_forward(
+        "http://127.0.0.1:9/dify",
+        {"id": "appr_fwdunsigned", "status": "approved", "text": "请假"},
+        wait=True,
+        urlopen=urlopen_fwd_unsigned,
+        secret=None,
+        env={},
+        config={"bot_name": "fwd-unsigned"},
+        retry_delay=0,
+    )
+    if len(fwd_unsigned_calls) != 1 or _req_header(
+        fwd_unsigned_calls[0], SIGNATURE_HEADER
+    ):
+        print(
+            "smoke failed forward HMAC default-off",
+            _req_header(fwd_unsigned_calls[0], SIGNATURE_HEADER)
+            if fwd_unsigned_calls
+            else None,
+        )
+        return 1
+    print("forward-hmac-ok")
+
     spec_path = Path(__file__).resolve().parents[2] / "openapi" / "agent.openapi.json"
     try:
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -1993,6 +2090,7 @@ def _smoke() -> int:
         and "hasUrl" in str(schemas.get("RuntimeConfig") or "")
         and "hasSecret" in str(schemas.get("RuntimeConfig") or "")
         and "hasForwardUrl" in str(schemas.get("RuntimeConfig") or "")
+        and "hasForwardSecret" in str(schemas.get("RuntimeConfig") or "")
         and "approvalTtlSec" in str(schemas.get("RuntimeConfig") or "")
         and "GET /v1/platforms" in desc
         and "GET /v1/config" in desc
@@ -2005,6 +2103,7 @@ def _smoke() -> int:
         and "APPROVAL_WEBHOOK_URL" in desc
         and "APPROVAL_WEBHOOK_SECRET" in desc
         and "APPROVAL_FORWARD_URL" in desc
+        and "APPROVAL_FORWARD_SECRET" in desc
         and "ApprovalForwardWebhook" in schemas
         and "X-Webhook-Signature" in desc
         and "X-Webhook-Timestamp" in desc
@@ -2073,6 +2172,7 @@ def _smoke() -> int:
         "APPROVAL_WEBHOOK_URL",
         "APPROVAL_WEBHOOK_SECRET",
         "APPROVAL_FORWARD_URL",
+        "APPROVAL_FORWARD_SECRET",
         "FEISHU_CALLBACK_SECRET",
         "DINGTALK_CALLBACK_SECRET",
         "WECOM_CALLBACK_SECRET",
@@ -2200,7 +2300,7 @@ def _smoke() -> int:
 
     print(
         f"cn-work-agent {__version__} smoke OK — "
-        f"multi-IM ({','.join(PLATFORMS)}) webhook route + verify + approvals + TTL + csv + md + html + im-cards + platforms + config + rate-limit + cors + requestId + openapi + metrics + decision-webhook + hmac + retry + inbound-callback + watch + shutdown + accessLog + approvalsMax + forward"
+        f"multi-IM ({','.join(PLATFORMS)}) webhook route + verify + approvals + TTL + csv + md + html + im-cards + platforms + config + rate-limit + cors + requestId + openapi + metrics + decision-webhook + hmac + retry + inbound-callback + watch + shutdown + accessLog + approvalsMax + forward + forward-hmac"
     )
     return 0
 
@@ -2283,6 +2383,14 @@ def main(argv: list[str] | None = None) -> int:
         "never fails decide/expire; no secrets in body). "
         "Env APPROVAL_FORWARD_URL when flag omitted; else config approval_forward_url. "
         "Empty/omit = disabled. Example wiring, not a Dify plugin.",
+    )
+    p_serve.add_argument(
+        "--forward-secret",
+        default=None,
+        help="HMAC-SHA256 key for Dify/n8n approval-forward POST "
+        "(`X-Webhook-Signature: sha256=<hex>` of raw body; same as B/E). "
+        "Env APPROVAL_FORWARD_SECRET when flag omitted; else config approval_forward_secret. "
+        "Empty/omit = unsigned (default). Simple HMAC is OSS (body only).",
     )
     p_serve.add_argument(
         "--approvals-max",
@@ -2404,6 +2512,7 @@ def main(argv: list[str] | None = None) -> int:
             webhook_secret=resolve_webhook_secret(None, config=cfg),
             approvals_max=resolve_approvals_max(config=cfg),
             forward_url=resolve_forward_url(None, config=cfg),
+            forward_secret=resolve_forward_secret(None, config=cfg),
             config=cfg,
             enabled=_enabled_platforms(selected),
         )
@@ -2446,6 +2555,10 @@ def main(argv: list[str] | None = None) -> int:
             getattr(args, "forward_url", None),
             config=serve_cfg,
         )
+        forward_secret = resolve_forward_secret(
+            getattr(args, "forward_secret", None),
+            config=serve_cfg,
+        )
         serve(
             host=args.host,
             port=args.port,
@@ -2464,6 +2577,8 @@ def main(argv: list[str] | None = None) -> int:
             webhook_secret_cli=getattr(args, "webhook_secret", None),
             forward_url=forward_url,
             forward_url_cli=getattr(args, "forward_url", None),
+            forward_secret=forward_secret,
+            forward_secret_cli=getattr(args, "forward_secret", None),
             drain_ms=getattr(args, "drain_ms", None),
             log_json=resolve_log_json(getattr(args, "log_json", None)),
             approvals_max=getattr(args, "approvals_max", None),
@@ -2534,6 +2649,7 @@ def main(argv: list[str] | None = None) -> int:
         notify_approval_forwards(
             resolve_forward_url(None, config=cfg),
             expired,
+            secret=resolve_forward_secret(None, config=cfg),
             wait=True,
             config=cfg,
         )
