@@ -584,10 +584,25 @@ assert not any(
 neg_spdx3 = json.loads((neg / "bom.spdx3.json").read_text())
 neg_elems = [e for e in (neg_spdx3.get("element") or []) if isinstance(e, dict)]
 assert not any(e.get("verifiedUsing") for e in neg_elems), "negative must not invent hashes"
-print("mlbom-obs-ok", {"sha256": want[:12] + "…", "ml": len(ml)})
+ai_pkgs = [e for e in elems if e.get("type") == "ai_AIPackage"]
+assert ai_pkgs, "spdx3 missing ai_AIPackage for observed model"
+assert "ai" in (spdx3.get("profileConformance") or []), spdx3.get("profileConformance")
+assert any(e.get("software_primaryPurpose") == "model" for e in ai_pkgs)
+assert not any(e.get("type") == "ai_AIPackage" for e in neg_elems)
+assert "ai" not in (neg_spdx3.get("profileConformance") or [])
+assert not any(
+    e.get("type") == "Relationship" and e.get("relationshipType") in {"trainedOn", "testedOn"}
+    for e in elems
+), "invented trainedOn/testedOn"
+for e in elems:
+    for key in e:
+        assert key not in {"ai_metric", "ai_hyperparameter", "ai_energyConsumption"}
+print("mlbom-obs-ok", {"sha256": want[:12] + "…", "ml": len(ml), "ai": len(ai_pkgs)})
+print("spdx3-ai-ok")
 PYMLBOM
 rm -rf "$OBS_TMP" "$NEG_TMP"
 echo "mlbom-obs-ok"
+echo "spdx3-ai-ok"
 
 echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST; not a CRA declaration)"
 PACK_TMP="$(mktemp -d)"
@@ -1990,4 +2005,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+evidence-pack)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack)"

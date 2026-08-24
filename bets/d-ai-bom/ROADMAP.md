@@ -11,10 +11,11 @@ Bet-local. Portfolio root `ROADMAP.md` is separate and is not updated here.
 - CRA orientation in `docs/cra.md` (not a conformity claim). BSI “either format” is honest: CycloneDX 1.7 **or** SPDX 3.0.1.
 - Local evidence pack: `evidence-pack --dir DIR --out OUTDIR` (CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST with gate codes). Article 14 orientation, not a conformity claim.
 - Richer ML-BOM only when observed: sha256 of model files + on-disk model-card name/description/license URL. SPDX 3.0.1 `software_File` + package `contains` file when a real hashed file was scanned. No invented datasets, metrics, files, or hashes.
+- Richer SPDX 3 AI profile only when observed: `ai_AIPackage` + `profileConformance` includes `ai` only when a model/model-file had path+sha256 and/or model-card fields. Text-only model name mentions stay `software_Package`. No invented metrics, trainedOn/testedOn, or energy.
 
 ## Next (still OSS)
 
-- Richer SPDX 3 graph only when the scan observes it (AI profile). Today: compact document + packages/licenses + observed hashes/files.
+- Keep SPDX 3 AI graph honest: still no invented datasets, metrics, hyperparameters, or security/CVE profile.
 - Keep the GitHub Actions consumer example (`ai-bom-sarif.yml`) as copy-paste, not a live gate on this repo.
 - Keep converter offline: dump the feed you trust, then `convert-advisories`. No live NVD/OSV client in smoke.
 

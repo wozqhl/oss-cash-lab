@@ -4,6 +4,10 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### SPDX 3 AI profile (observed only)
+
+- `--format spdx3` emits `ai_AIPackage` (with `software_primaryPurpose=model`) and adds `ai` to `profileConformance` only when a model/model-file component had observed path+sha256 and/or model-card name/description/license URL. Text-only model mentions stay `software_Package` without an AI profile claim. No invented metrics, trainedOn/testedOn, hyperparameters, or energy.
+
 ### Evidence pack (Article 14 orientation)
 
 - `evidence-pack --dir DIR --out OUTDIR` (optional `--zip`) writes CycloneDX 1.7 JSON + SPDX 3.0.1 JSON + MANIFEST.md (files, license/advisory gate exit codes, timestamp). Inventory+match evidence, not a CRA declaration. No invented CVEs, scores, or compliant badges. Defaults: `policies/default.json` + `examples/advisories/sample.json`.
@@ -29,7 +33,7 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 ### SPDX 3.0.1 JSON
 
 - `--format spdx3` / `GET /v1/bom?format=spdx3` (alias `spdx-3`) emits compact **SPDX 3.0.1** JSON (`creationInfo.specVersion=3.0.1`, `spdxId`, `name`, `element` of `software_Package` + license expressions). Existing `spdx` / `spdx-xml` stay **SPDX 2.3**.
-- Filled from scan data only. Omitted (not invented): files, hashes, contains/dependsOn graph, SPDX 3 AI/security profiles, ExpandedLicensing, CBOM.
+- Filled from scan data only. Omitted (not invented): unobserved files/hashes, trainedOn/testedOn datasets, AI metrics, security/CVE profile, ExpandedLicensing, CBOM. AI profile only when observed.
 
 ### CycloneDX 1.7 + ML-BOM
 

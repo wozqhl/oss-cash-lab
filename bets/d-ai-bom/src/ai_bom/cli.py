@@ -502,6 +502,43 @@ def _smoke_mlbom_observed() -> str | None:
             for e in neg_elems
         ):
             return "negative must not invent contains"
+
+        # SPDX 3 AI profile only when path+sha256 / model-card fields were observed.
+        ai_pkgs = [e for e in elems if e.get("type") == "ai_AIPackage"]
+        if not ai_pkgs:
+            return "spdx3 missing ai_AIPackage for observed model file/card"
+        if "ai" not in (spdx3.get("profileConformance") or []):
+            return "spdx3 missing profileConformance ai when AIPackage present"
+        if not any(
+            e.get("software_primaryPurpose") == "model" for e in ai_pkgs
+        ):
+            return "spdx3 ai_AIPackage missing software_primaryPurpose=model"
+        # License relationships required for AI profile conformance.
+        ai_ids = {e.get("spdxId") for e in ai_pkgs}
+        for aid in ai_ids:
+            for rel in ("hasConcludedLicense", "hasDeclaredLicense"):
+                if not any(
+                    e.get("type") == "Relationship"
+                    and e.get("relationshipType") == rel
+                    and e.get("from") == aid
+                    for e in elems
+                ):
+                    return f"spdx3 ai_AIPackage missing {rel}"
+        if any(e.get("type") == "ai_AIPackage" for e in neg_elems):
+            return "negative must not invent ai_AIPackage"
+        if "ai" in (neg_spdx3.get("profileConformance") or []):
+            return "negative must not claim AI profile"
+        # No invented AI metrics / training graph as elements or relationships.
+        if any(
+            e.get("type") == "Relationship"
+            and e.get("relationshipType") in {"trainedOn", "testedOn"}
+            for e in elems
+        ):
+            return "spdx3 invented trainedOn/testedOn relationship"
+        for e in elems:
+            for key in e:
+                if key in {"ai_metric", "ai_hyperparameter", "ai_energyConsumption"} or str(key).startswith("ai_metric"):
+                    return f"spdx3 invented property {key}"
     return None
 
 
@@ -1316,6 +1353,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("mlbom-obs-ok")
         print("spdx3-files-ok")
+        print("spdx3-ai-ok")
 
         pack_err = _smoke_evidence_pack()
         if pack_err:
@@ -3208,7 +3246,7 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+evidencePack")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack")
         return 0
     if args.cmd == "convert-advisories":
         return _run_convert_advisories(args)

@@ -28,7 +28,7 @@ BSI **TR-03183-2** (German interpretation of CRA SBOM practice) treats **Cyclone
 - **Internal AI-BOM JSON** (default): CycloneDX-like `bomFormat` + `specVersion` plus a custom `summary` (policy hits, license counts). Not a conformance document.
 - **CycloneDX 1.7** (`--format cyclonedx` / `cyclonedx-xml`): `bomFormat=CycloneDX`, `specVersion=1.7`, XML `xmlns` `http://cyclonedx.org/schema/bom/1.7`. Components keep `type` / `name` / `version` / `purl` / `licenses[]`. Models map to `machine-learning-model` with a `modelCard` filled **only** from scan data the scanner already has (`aibom:format` such as `gguf`, `aibom:sourcePath` basename). Prompts map to `data` + a `data[]` configuration entry (name only — **no file contents**). Policy hits are BOM `properties` (`aibom:policyHits`, optional `aibom:forbiddenLicenses`), **not** `vulnerabilities`.
 - **SPDX 2.3** (`--format spdx` / `spdx-xml`): packages + `licenseConcluded` from scanned manifests (existing consumers unchanged).
-- **SPDX 3.0.1** (`--format spdx3`): compact JSON with `spdxId`, `name`, `creationInfo.specVersion=3.0.1`, and `element` packages/licenses from the same scan. Not a full SPDX 3 graph (no invented files, hashes, AI/security profiles, or CBOM).
+- **SPDX 3.0.1** (`--format spdx3`): compact JSON with `spdxId`, `name`, `creationInfo.specVersion=3.0.1`, and `element` packages/licenses from the same scan. `ai_AIPackage` + `profileConformance` `ai` only when a model path+sha256 or model-card fields were observed. Not a full SPDX 3 graph (no invented files, hashes, metrics, trainedOn datasets, security profile, or CBOM).
 - **SARIF 2.1.0** / Markdown / GHA annotations / HTML: review formats, not SBOMs.
 - **License-policy gate**: `policies/default.json` `forbiddenLicenseIds` (GPL-3.0 / AGPL-3.0 / SSPL-1.0 + variants). `--gate-licenses` exits **1** on a match; `--strict` also fails on pickle / disclosure gaps.
 - **Advisory-match gate** (Article 14 inventory+match): `scan --advisories examples/advisories/sample.json --gate-vulns` exits **1** on a local-list hit. Offline OSV/GHSA dumps go through `convert-advisories --from-osv` into the same schema. Not a CVE database.
@@ -41,7 +41,7 @@ CycloneDX has supported **ML-BOM** since **1.5**. Spec **1.7** was published **2
 - CRA, EU AI Act, or any other **certification**, attestation, or CE mark.
 - Completeness of the component inventory (heuristic directory scan; caps; no registry enrichment).
 - Vulnerability intelligence, exploitability, NVD completeness, or Article 14 incident reporting. The advisory gate only matches a file you pass in.
-- A full SPDX 3 relationship graph, cryptographic-asset (CBOM) completeness, or model-card fields the scan did not observe (no invented architecture, datasets, or metrics). SPDX 3.0.1 export is compact (document + packages/licenses only).
+- A full SPDX 3 relationship graph, cryptographic-asset (CBOM) completeness, or model-card / AI-profile fields the scan did not observe (no invented architecture, datasets, metrics, trainedOn, or energy). SPDX 3.0.1 export is compact; AI profile appears only when observed.
 - That emitting CycloneDX 1.7 **equals** CRA essential-requirement compliance.
 
 Use the license fixtures to see the gate, not a regulator:
