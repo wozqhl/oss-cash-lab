@@ -15,7 +15,8 @@
     "generate:petstore": "node src/cli.js generate examples/petstore.openapi.json --out out/petstore",
     "version": "node src/cli.js --version",
     "check": "node src/cli.js check",
-    "generate:petstore:check": "node src/cli.js generate examples/petstore.openapi.json --out out/petstore --check-baseline out/petstore"
+    "generate:petstore:check": "node src/cli.js generate examples/petstore.openapi.json --out out/petstore --check-baseline out/petstore",
+    "registry-pack": "node src/cli.js registry-pack"
   },
   "engines": {
     "node": ">=18"

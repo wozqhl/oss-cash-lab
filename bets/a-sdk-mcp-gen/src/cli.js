@@ -47,6 +47,7 @@ import { writeChecksumManifest, runVerifyChecksums, CHECKSUMS_FILE } from "./che
 import { writeSdkArchive, plannedArchiveName, ARCHIVE_TGZ, ARCHIVE_ZIP } from "./archive.js";
 import { writeLicenseArtifacts, removeLicenseArtifacts, LICENSE_FILE, NOTICE_FILE } from "./license.js";
 import { writeGitignoreArtifact, removeGitignoreArtifact, GITIGNORE_FILE } from "./gitignore.js";
+import { writeRegistryPack, DEFAULT_REGISTRY_NAME, GENERATOR_NPM_NAME, SERVER_JSON_FILE, REGISTRY_TGZ, OK_TOKEN as REGISTRY_PACK_OK } from "./registry-pack.js";
 
 const VERSION = "0.1.0";
 const DEFAULT_LANGS = ["ts", "python", "go", "java", "rust", "csharp", "kotlin", "swift", "ruby", "php"];
@@ -78,6 +79,9 @@ Usage:
                           Repeatable --header 'Name: value' (http/https --url only; env SDK_FETCH_HEADER).
   sdk-mcp-gen check --out <dir> --baseline <dir> [--no-clients]
   sdk-mcp-gen verify-checksums --out <dir>
+  sdk-mcp-gen registry-pack --in <generated-dir> --out <pack-dir>
+                          Dry-run: wrap generated mcp-server.mjs as local MCP Registry listing + tarball.
+                          Writes files and prints registry-pack-ok. Never POSTs to the registry or a package host.
 
 Options:
   --lang <list>           Comma-separated languages to emit (default: ts,python,go,java,rust,csharp,kotlin,swift,ruby,php).
@@ -109,6 +113,12 @@ Options:
 
 verify-checksums:
   Reads checksums.sha256 written by generate; exits 0 if all listed files match, 1 if missing/mismatch.
+
+registry-pack:
+  --in <dir>              Generated SDK+MCP tree (must contain mcp-server.mjs). Not this generator CLI.
+  --out <dir>             Where to write server.json + wrapper package.json + tarball layout (default out/registry-pack).
+  --name <ns/slug>        server.json name / mcpName (default io.github.wozqhl/sdk-mcp-gen).
+  --package <ident>       Wrapper package name (default @oss-cash-lab/<slug>-mcp). Never the generator CLI name.
 `);
 }
 
@@ -284,6 +294,39 @@ function parseVerifyChecksumsArgs(argv) {
     else if (a.startsWith("--out=")) out = a.slice("--out=".length);
   }
   return { out };
+}
+
+function rejectRegistryPackPublishFlags(argv) {
+  for (const raw of argv) {
+    const a = String(raw || "");
+    if (a === "--publish" || a === "--upload" || a === "publish" || a === "--registry-publish") {
+      console.error("registry-pack is dry-run only (writes files; never POSTs)");
+      process.exit(2);
+    }
+  }
+}
+
+function parseRegistryPackArgs(argv) {
+  rejectRegistryPackPublishFlags(argv);
+  let input = null;
+  let out = null;
+  let registryName = null;
+  let npmIdent = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--in" || a === "--from") input = argv[++i];
+    else if (a.startsWith("--in=")) input = a.slice("--in=".length);
+    else if (a === "--out" || a === "-o") out = argv[++i];
+    else if (a.startsWith("--out=")) out = a.slice("--out=".length);
+    else if (a === "--name") registryName = argv[++i];
+    else if (a.startsWith("--name=")) registryName = a.slice("--name=".length);
+    else if (a === "--package" || a === "--package-name") npmIdent = argv[++i];
+    else if (a.startsWith("--package=")) npmIdent = a.slice("--package=".length);
+    else if (a.startsWith("--package-name=")) npmIdent = a.slice("--package-name=".length);
+    else if (!String(a).startsWith("-") && !input) input = a;
+  }
+  if (out == null) out = "out/registry-pack";
+  return { input, out, registryName, npmIdent };
 }
 
 function readSpec(filePath) {
@@ -1074,6 +1117,97 @@ function smokeNpmPack(pkgRoot, tmp) {
   }
 }
 
+
+function smokeRegistryPack(cliPath, generatedDir, tmp) {
+  const dest = path.join(tmp, "registry-pack");
+  let result;
+  try {
+    result = writeRegistryPack(generatedDir, dest);
+  } catch (err) {
+    console.error("smoke registry-pack write failed", err && err.message ? err.message : err);
+    process.exit(1);
+  }
+  const serverPath = path.join(dest, SERVER_JSON_FILE);
+  const pkgPath = path.join(dest, "package.json");
+  const mcpPath = path.join(dest, MCP_SERVER_FILE);
+  if (!fs.existsSync(serverPath) || !fs.existsSync(pkgPath) || !fs.existsSync(mcpPath)) {
+    console.error("smoke registry-pack missing files", dest, result);
+    process.exit(1);
+  }
+  const listing = JSON.parse(fs.readFileSync(serverPath, "utf8"));
+  const wrap = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  if (listing.name !== DEFAULT_REGISTRY_NAME) {
+    console.error("smoke registry-pack server.json name", listing.name);
+    process.exit(1);
+  }
+  if (!/generated/i.test(String(listing.description || ""))) {
+    console.error("smoke registry-pack description must say generated", listing.description);
+    process.exit(1);
+  }
+  if (String(listing.description || "").includes(GENERATOR_NPM_NAME)) {
+    console.error("smoke registry-pack description claims the CLI", listing.description);
+    process.exit(1);
+  }
+  const ident = listing.packages && listing.packages[0] && listing.packages[0].identifier;
+  if (!ident || ident === GENERATOR_NPM_NAME || !String(ident).endsWith("-mcp")) {
+    console.error("smoke registry-pack identifier must be generated server", ident);
+    process.exit(1);
+  }
+  if (ident !== "@oss-cash-lab/petstore-mcp") {
+    console.error("smoke petstore identifier", ident);
+    process.exit(1);
+  }
+  if (wrap.name === GENERATOR_NPM_NAME || wrap.mcpName !== listing.name || wrap.name !== ident) {
+    console.error("smoke registry-pack wrapper package.json", wrap);
+    process.exit(1);
+  }
+  if (listing._meta && listing._meta["io.modelcontextprotocol.registry/publisher-provided"] && listing._meta["io.modelcontextprotocol.registry/publisher-provided"].published) {
+    console.error("smoke registry-pack must mark published false");
+    process.exit(1);
+  }
+  if (result.published) {
+    console.error("smoke registry-pack result.published must be false");
+    process.exit(1);
+  }
+  const tgz = path.join(dest, REGISTRY_TGZ);
+  if (fs.existsSync(tgz)) {
+    const tz = spawnSync("tar", ["tzf", tgz], { encoding: "utf8", timeout: 8000 });
+    if (tz.error || tz.status !== 0 || !String(tz.stdout || "").includes("package/" + MCP_SERVER_FILE)) {
+      console.error("smoke registry-pack tarball listing", tz.status, tz.stdout, tz.stderr);
+      process.exit(1);
+    }
+  }
+  const cliDest = path.join(tmp, "registry-pack-cli");
+  const packed = spawnSync(process.execPath, [cliPath, "registry-pack", "--in", generatedDir, "--out", cliDest], { encoding: "utf8", timeout: 15000, env: { ...process.env } });
+  if (packed.error || packed.status !== 0 || !String(packed.stdout || "").includes(REGISTRY_PACK_OK)) {
+    console.error("smoke registry-pack CLI failed", packed.status, packed.stdout, packed.stderr, packed.error);
+    process.exit(1);
+  }
+  const cliRoot = path.resolve(path.dirname(cliPath), "..");
+  const badOut = path.join(tmp, "registry-pack-cli-root");
+  const bad = spawnSync(process.execPath, [cliPath, "registry-pack", "--in", cliRoot, "--out", badOut], { encoding: "utf8", timeout: 8000, env: { ...process.env } });
+  if (bad.status === 0) {
+    console.error("smoke registry-pack must reject the generator CLI dir");
+    process.exit(1);
+  }
+  if (fs.existsSync(path.join(badOut, SERVER_JSON_FILE))) {
+    console.error("smoke registry-pack must not write listing for the CLI");
+    process.exit(1);
+  }
+  const empty = path.join(tmp, "registry-pack-empty");
+  fs.mkdirSync(empty, { recursive: true });
+  const miss = spawnSync(process.execPath, [cliPath, "registry-pack", "--in", empty, "--out", path.join(tmp, "registry-pack-miss")], { encoding: "utf8", timeout: 8000, env: { ...process.env } });
+  if (miss.status === 0) {
+    console.error("smoke registry-pack must reject a dir without mcp-server.mjs");
+    process.exit(1);
+  }
+  const pub = spawnSync(process.execPath, [cliPath, "registry-pack", "--in", generatedDir, "--out", path.join(tmp, "registry-pack-pub"), "--publish"], { encoding: "utf8", timeout: 8000, env: { ...process.env } });
+  if (pub.status === 0) {
+    console.error("smoke registry-pack --publish must be rejected");
+    process.exit(1);
+  }
+  console.log(REGISTRY_PACK_OK);
+}
 
 const SMOKE_SDK_TOKEN = "sk_smoke_auth_7f2c";
 
@@ -3706,11 +3840,12 @@ if (cmd === "--version" || cmd === "-V") {
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
     smokeNpmPack(path.resolve(path.dirname(cliPath), ".."), tmp);
+    smokeRegistryPack(cliPath, petDir, tmp);
 
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok, registry-pack-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {
@@ -3727,6 +3862,20 @@ if (cmd === "--version" || cmd === "-V") {
     process.exit(2);
   }
   process.exit(runVerifyChecksums(out));
+} else if (cmd === "registry-pack") {
+  const { input, out, registryName, npmIdent } = parseRegistryPackArgs(process.argv.slice(3));
+  if (!input) {
+    console.error("usage: sdk-mcp-gen registry-pack --in <generated-dir> --out <pack-dir>");
+    process.exit(2);
+  }
+  try {
+    const result = writeRegistryPack(input, out, { registryName, npmIdent });
+    console.log(JSON.stringify({ out: path.resolve(out), files: result.files, npmIdent: result.npmIdent, registryName: result.registryName, dryRun: true, published: false }));
+    console.log(REGISTRY_PACK_OK);
+  } catch (err) {
+    console.error(err && err.message ? err.message : err);
+    process.exit(1);
+  }
 } else if (cmd === "generate") {
   await runGenerate(process.argv.slice(3));
 } else {

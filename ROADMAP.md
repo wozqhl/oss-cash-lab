@@ -129,6 +129,7 @@
 - [x] A generated stdio MCP servers send User-Agent + X-Request-Id + Idempotency-Key on tools/call (smoke mcp-id-ok)
 - [x] A generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries; Idempotency-Key reused; smoke mcp-retry-ok)
 - [x] A generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*; smoke mcp-timeout-ok)
+- [x] A `registry-pack` dry-run for generated `mcp-server.mjs` (local server.json + wrapper tarball; smoke registry-pack-ok; never POSTs)
 ### D · AI-BOM (Python) scaffold→MVP
 - [x] Scan dir for model IDs, prompts, MCP deps
 - [x] CycloneDX-like JSON
@@ -280,6 +281,7 @@ W9-W12  F one connector + review
 - [x] A `generate --zip` (sdk.tgz / sdk.zip SDK drop; checksums first; dry-run lists name; smoke + local-mvp)
 - [x] A generated Apache-2.0 `LICENSE` + `NOTICE` (default on; `--no-license`; checksums + dry-run + zip; smoke + local-mvp)
 - [x] A generated `.gitignore` (default on; `--no-gitignore`; checksums + dry-run + zip; independent of `--no-mcp` / `--no-license`; smoke + local-mvp)
+- [x] A `registry-pack` dry-run (generated mcp-server.mjs listing payload; smoke registry-pack-ok; not a submitted listing)
 - [x] A GitHub Actions OpenAPI drift example (`examples/github-actions/sdk-mcp-gen-check.yml`; `generate --check-baseline`; parse-only smoke; not a live workflow here)
 - [x] A→B file wiring script + portfolio local-mvp hook
 - [x] Dogfood A→B OpenAPI SDK generate (`make dogfood-a-b`, gitignore `sdk/generated/`)

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A dry-run `registry-pack` wraps generated `mcp-server.mjs` as a local MCP Registry listing payload + tarball layout (not the generator CLI). Smoke registry-pack-ok. Never POSTs. Human still publishes.
 - A generated clients send `Accept: application/json` unless already set. Smoke accept-ok.
 - A generated stdio MCP servers send `Accept: application/json` on tools/call upstream HTTP unless already set. Smoke mcp-accept-ok.
 - A generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (AbortController / urllib timeout / context.WithTimeout; MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*). Smoke mcp-timeout-ok.

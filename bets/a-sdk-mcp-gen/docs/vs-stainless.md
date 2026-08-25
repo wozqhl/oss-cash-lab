@@ -17,6 +17,7 @@ OpenAPI Generator remains the self-hosted open-source baseline.
 
 Official MCP Registry (metadata only, not artifacts): https://registry.modelcontextprotocol.io
 This tree does **not** publish there.
+`registry-pack` can write a local server.json + tarball layout from generated mcp-server.mjs (dry-run; smoke registry-pack-ok). Still not a listing.
 
 ## What each tool is
 

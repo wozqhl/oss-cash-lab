@@ -25,6 +25,17 @@ That tree is what you would wrap for the MCP Registry, not this generator packag
 
 Reproduce: node src/cli.js generate examples/petstore.openapi.json --out out/petstore
 
+## 0. Dry-run packager (generated server, not this CLI)
+
+The generator can write the listing payload locally so a human does not have to assemble server.json by hand:
+
+    node src/cli.js generate examples/petstore.openapi.json --out out/petstore
+    node src/cli.js registry-pack --in out/petstore --out out/petstore-registry
+
+Writes server.json (2025-12-11 schema), wrapper package.json with mcpName, copied mcp-server.mjs, and registry-pack.tgz (package/ layout). Prints registry-pack-ok.
+Identifier is @oss-cash-lab/petstore-mcp (placeholder). This is not @oss-cash-lab/sdk-mcp-gen.
+Never POSTs. This repo is not listed. Do not invent a listing.
+
 ## 1. Pack the generator
 
 From bets/a-sdk-mcp-gen (or a future standalone repo):

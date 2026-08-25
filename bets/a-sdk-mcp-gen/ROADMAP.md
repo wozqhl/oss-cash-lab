@@ -27,8 +27,10 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries, Retry-After <30s; Idempotency-Key reused; smoke mcp-retry-ok)
 - [x] Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*; smoke mcp-timeout-ok)
 
+- [x] Dry-run registry-pack for generated mcp-server.mjs (local server.json + wrapper tarball layout; smoke registry-pack-ok; never POSTs; human still publishes)
+
 ## Still open
 
 - [ ] Human upload of @oss-cash-lab/sdk-mcp-gen (needs org / access)
-- [ ] Human MCP Registry listing of a generated server under io.github.wozqhl/sdk-mcp-gen (wrap mcp-server.mjs; do not list this CLI as stdio)
+- [ ] Human MCP Registry listing of a generated server under io.github.wozqhl/sdk-mcp-gen (local registry-pack writes the payload; human still uploads; do not list this CLI as stdio)
 - [ ] Copy action.yml into a standalone repo if this bet is extracted

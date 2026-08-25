@@ -5,6 +5,7 @@
 Docs: [vs Stainless / Speakeasy / OpenAPI Generator](./docs/vs-stainless.md) · [PUBLISH.md](./PUBLISH.md) · [CHANGELOG](./CHANGELOG.md) · [ROADMAP](./ROADMAP.md)
 
 `npm pack` is the local proof the tarball is installable (smoke prints `pack-ok`); publish is still manual.
+`registry-pack` writes a local listing payload for generated mcp-server.mjs (smoke prints `registry-pack-ok`); never POSTs; human still publishes.
 
 ## Thesis / 立意
 
@@ -66,6 +67,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] Generated stdio MCP servers send the same identity headers on tools/call upstream HTTP (`User-Agent` sdk-mcp-gen/0.1.0 unless set, `X-Request-Id` per attempt, `Idempotency-Key` on POST/PUT/PATCH/DELETE). Smoke prints mcp-id-ok.
 - [x] Generated stdio MCP servers retry 429 / 5xx / network on tools/call upstream HTTP (max 2 retries, ~100ms backoff, honor Retry-After <30s; Idempotency-Key reused). Smoke prints mcp-retry-ok.
 - [x] Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call upstream HTTP (AbortController / urllib timeout / context.WithTimeout; override MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*). Smoke prints mcp-timeout-ok.
+- [x] `registry-pack --in <generated-dir>` writes a local MCP Registry server.json + wrapper package + tarball layout for the generated mcp-server.mjs (not this CLI). Prints `registry-pack-ok`. Never POSTs. Human still publishes.
 - [x] Demo script in README (`scripts/demo.sh`)
 
 ## Demo
@@ -373,6 +375,21 @@ node src/cli.js generate examples/petstore.openapi.json --out out/petstore
 # .gitignore contains node_modules
 node src/cli.js generate examples/petstore.openapi.json --out out/nogi --no-gitignore
 ```
+
+## Registry pack (dry-run)
+
+Turn a **generated** stdio MCP server (`mcp-server.mjs`) into a local MCP Registry listing payload and tarball layout. This is a checklist-made-machine: write files + print `registry-pack-ok`. A human still publishes.
+
+Do **not** pass this generator CLI (`@oss-cash-lab/sdk-mcp-gen`). The listing names the generated server (example identifier `@oss-cash-lab/petstore-mcp`). Never POSTs to registry.googleapis.com, registry.modelcontextprotocol.io, or npm.
+
+```
+node src/cli.js generate examples/petstore.openapi.json --out out/petstore
+node src/cli.js registry-pack --in out/petstore --out out/petstore-registry
+```
+
+Writes `server.json` (official 2025-12-11 schema), wrapper `package.json` (`mcpName` matches `server.json` name), copied `mcp-server.mjs`, and `registry-pack.tgz` (`package/` layout) when tar is on PATH.
+
+把生成的 `mcp-server.mjs` 打成本地 Registry 清单 + 包布局；只写文件，不上传。
 
 ## Dogfood on B
 

@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Dry-run `registry-pack --in <generated-dir>` wraps generated `mcp-server.mjs` as a local MCP Registry `server.json` + wrapper package + tarball layout (not this CLI). Prints `registry-pack-ok`. Never POSTs. Human still publishes.
 - Generated TS / Python / Go / Java (plus other langs) clients send `Accept: application/json` unless already set. Smoke prints accept-ok.
 - Generated stdio MCP servers send `Accept: application/json` on tools/call upstream HTTP unless already set. Smoke prints mcp-accept-ok.
 - Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (AbortController / urllib timeout / context.WithTimeout; MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*). Smoke prints mcp-timeout-ok.

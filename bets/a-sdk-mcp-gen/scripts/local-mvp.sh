@@ -5,7 +5,7 @@ cd "$ROOT"
 
 node src/cli.js smoke
 
-rm -rf out/petstore out/petstore-yaml out/petstore-ts-only out/petstore-go-only out/petstore-java-only out/petstore-rust-only out/petstore-csharp-only out/petstore-kotlin-only out/petstore-swift-only out/petstore-ruby-only out/petstore-php-only out/petstore-baseline out/petstore-breaking out/petstore-breaking-gen out/petstore-restored out/petstore-restored-gen out/petstore-watch out/petstore-watch-spec.json out/watch.log out/petstore-mutated.openapi.json out/petstore-dry-run out/dry-run.json out/dry-run-ts.json out/petstore-dry-run-keep out/mcp-list.json out/mcp-list-py.json out/mcp-list-go.json out/petstore-pkg out/dry-run-pkg.json out/mcp-list-pkg.json out/openapi-3.1-mini out/mcp-list-31.json out/mcp-list-31-py.json out/mcp-list-31-go.json out/petstore-url out/dry-run-url.json out/mcp-list-url.json out/mcp-list-url-py.json out/mcp-list-url-go.json out/url-http.log out/petstore-url-auth out/petstore-url-envhdr out/dry-run-url-auth.json out/url-auth.out out/url-auth.err out/url-noauth.err out/hdr-nourl.err out/url-auth-http.log out/petstore-no-mcp out/petstore-no-mcp-dry out/dry-run-no-mcp.json out/petstore-watch-url out/watch-url.log out/url-watch-http.log out/petstore-zip out/dry-run-zip.json out/petstore-no-license out/petstore-no-license-dry out/dry-run-no-license.json out/petstore-no-gitignore out/petstore-no-gitignore-dry out/dry-run-no-gitignore.json
+rm -rf out/petstore out/petstore-yaml out/petstore-ts-only out/petstore-go-only out/petstore-java-only out/petstore-rust-only out/petstore-csharp-only out/petstore-kotlin-only out/petstore-swift-only out/petstore-ruby-only out/petstore-php-only out/petstore-baseline out/petstore-breaking out/petstore-breaking-gen out/petstore-restored out/petstore-restored-gen out/petstore-watch out/petstore-watch-spec.json out/watch.log out/petstore-mutated.openapi.json out/petstore-dry-run out/dry-run.json out/dry-run-ts.json out/petstore-dry-run-keep out/mcp-list.json out/mcp-list-py.json out/mcp-list-go.json out/petstore-pkg out/dry-run-pkg.json out/mcp-list-pkg.json out/openapi-3.1-mini out/mcp-list-31.json out/mcp-list-31-py.json out/mcp-list-31-go.json out/petstore-url out/dry-run-url.json out/mcp-list-url.json out/mcp-list-url-py.json out/mcp-list-url-go.json out/url-http.log out/petstore-url-auth out/petstore-url-envhdr out/dry-run-url-auth.json out/url-auth.out out/url-auth.err out/url-noauth.err out/hdr-nourl.err out/url-auth-http.log out/petstore-no-mcp out/petstore-no-mcp-dry out/dry-run-no-mcp.json out/petstore-watch-url out/watch-url.log out/url-watch-http.log out/petstore-zip out/dry-run-zip.json out/petstore-no-license out/petstore-no-license-dry out/dry-run-no-license.json out/petstore-no-gitignore out/petstore-no-gitignore-dry out/dry-run-no-gitignore.json out/petstore-registry
 echo "==> generate --dry-run (no writes; default langs include client.ts)"
 rm -rf out/petstore-dry-run out/dry-run.json out/dry-run-ts.json out/petstore-dry-run-keep
 mkdir -p out
@@ -1959,5 +1959,26 @@ test -f out/petstore/.gitignore
 grep -q 'node_modules' out/petstore/.gitignore
 node src/cli.js verify-checksums --out out/petstore
 echo "--no-gitignore OK (.gitignore skipped; default petstore unchanged)"
+
+echo "==> registry-pack dry-run (generated mcp-server.mjs, not this CLI)"
+rm -rf out/petstore-registry
+node src/cli.js registry-pack --in out/petstore --out out/petstore-registry
+test -f out/petstore-registry/server.json
+test -f out/petstore-registry/package.json
+test -f out/petstore-registry/mcp-server.mjs
+grep -q generated out/petstore-registry/server.json
+python3 - <<'PY'
+import json
+s=json.load(open("out/petstore-registry/server.json"))
+p=json.load(open("out/petstore-registry/package.json"))
+assert p["name"] != "@oss-cash-lab/sdk-mcp-gen"
+assert s["packages"][0]["identifier"] != "@oss-cash-lab/sdk-mcp-gen"
+assert "generated" in s["description"].lower()
+assert p["mcpName"] == s["name"]
+print("listing names generated server", p["name"])
+PY
+if node src/cli.js registry-pack --in . --out out/should-not-registry; then echo "must reject CLI dir" >&2; exit 1; fi
+test ! -f out/should-not-registry/server.json
+echo "registry-pack-ok"
 
 echo "a-sdk-mcp-gen local-mvp OK"
