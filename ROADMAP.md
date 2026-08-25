@@ -195,6 +195,7 @@
 - [x] E `GET /v1/tenants` per-tenant spend rollup (`{ok, count, tenants:[{id, spanCount, usd}]}`; missing → `_`; optional `budgetUsd`; cap 100 + `truncated`; empty 200; OpenAPI `listTenants`; smoke + local-mvp + stack-demo)
 - [x] E `GET /v1/tenants.csv` chargeback-lite CSV (`tenant,spend_usd,budget_usd,remaining_usd,denied_count`; alias `?format=csv`; OpenAPI `getTenantsCsv`; smoke + local-mvp `export-ok`)
 - [x] E optional calendar-day spend window (`BUDGET_PERIOD=day` / `--budget-period day`; remaining/deny reset at UTC midnight; default off; smoke `period-ok`)
+- [x] E local HTML remaining-by-tenant table (`GET /` / `--html` when `--tenant-budget`; same remaining as CSV/metrics; period label; Grafana remaining panel already existed; smoke `remain-dash-ok`)
 - [x] Tenant cost attribution (span attr `tenant`; JSON `byTenant`; CSV `tenant` last; missing → `_`)
 - [x] Local report server (`serve --port 8792`, stdlib http; GET /health /ready / /report.json /v1/costs.csv /v1/costs.md /v1/costs.gha.txt /metrics; hosted dashboard = paid later)
 - [x] E `serve --watch` mtime poll reload (200ms; snapshot for / /report.json /v1/costs.csv /v1/costs.md /metrics /health; local-mvp isolated temp-copy prove)

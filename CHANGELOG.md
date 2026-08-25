@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A generated Rust / PHP / Swift / Ruby clients: per-attempt timeout + 429/5xx retry + per-op bearer/apiKey auth (stdlib; Rust http-only TcpStream). Smoke rust-auth-ok / php-auth-ok.
 - E chargeback-lite: `GET /v1/tenants.csv` exports in-memory tenant totals (`tenant,spend_usd,budget_usd,remaining_usd,denied_count`); JSON `GET /v1/tenants` kept.
+- E local HTML remaining-by-tenant table on `GET /` when `--tenant-budget` is set (same remaining as CSV/metrics; period label). Grafana remaining panel already scraped `otel_ai_cost_budget_remaining_usd`; no new series. Smoke `remain-dash-ok`.
 - E optional UTC-day budget period (`BUDGET_PERIOD=day` / `--budget-period day`; default off) so remaining / deny / would-exceed reset at UTC midnight.
 - OpenSSF Scorecard GitHub Actions workflow (`.github/workflows/scorecard.yml`) so public-repo supply-chain results can appear in code scanning.
 - C DeepEval-shaped JSON adapter (`from-deepeval`; fixture-only, existing JUnit/TAP/Markdown + `--fail-under`; not full DeepEval compatibility).
