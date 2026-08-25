@@ -164,6 +164,7 @@
 - [x] D GET /v1/config redacted runtime knobs (public like /v1/policy; allowlist ok, rateLimit.perMinute, cors.origins, watch, scanPathBase basename only, hasPolicyFile, webhooks.hasUrl/hasSecret; never webhook URL/secret, full policy JSON, or exception contents; OpenAPI `getConfig`; smoke + local-mvp isolated + stack-demo)
 - [x] D GET /v1/components lightweight inventory (`{ok, count, components:[{name, version, license, path}]}`; path relative/basename only; empty 200; optional `?license=`; cap 500 + `truncated`; CORS + X-Request-Id; OpenAPI `listComponents`; smoke helper + HTTP; local-mvp curl 200; stack-demo curl 200 + OpenAPI)
 - [x] D GET /v1/exceptions redacted waiver inventory (`{ok, count, exceptions:[{component, license, expiresAt, expired}]}`; count=full; cap 500 + `truncated`; empty 200; optional `?expired=`; no sidecar dump / secrets; OpenAPI `listExceptions`; smoke + local-mvp + stack-demo)
+- [x] D evidence-pack CRA window clock (`pack.json` `clock` + zip + `--as-of`; daysUntil/daysOverdue vs 2026-09-11 and 2027-12-11 from observed advisory hits; calendar/evidence helper, not a CRA certificate; 日历/证据辅助，不是 CRA 合格证书; smoke `cra-clock-ok`)
 
 **Exit:** >=1 paid verbal intent on B or C; A/D smoke + demo.
 

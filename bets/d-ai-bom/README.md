@@ -54,7 +54,8 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 - [x] `--gate-licenses` CI license-policy gate (exit 1 on `forbiddenLicenseIds` only) + `examples/cra-fixtures/license-pass` / `license-fail`
 - [x] `--advisories` / `--gate-vulns` offline advisory-match gate (Article 14 inventory+match) + `convert-advisories --from-osv` + `examples/advisories/sample.json` / `clean.json` / `osv-sample.json`
 - [x] CRA orientation [`docs/cra.md`](./docs/cra.md) (Article 14 11 Sep 2026 reporting vs Dec 2027 SBOM; no certification claim)
-- [x] Local evidence pack (`evidence-pack --dir DIR --out OUTDIR`) — CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST (license/advisory gate codes); not a CRA declaration
+- [x] Local evidence pack (`evidence-pack --dir DIR --out OUTDIR`) — CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST + `pack.json` (license/advisory gate codes + window clock); not a CRA declaration
+- [x] CRA window clock (`pack.json` `clock` / `--as-of`) — days-until / days-overdue vs 2026-09-11 and 2027-12-11 from observed `--gate-vulns` hits; calendar/evidence helper, **not** a CRA compliance certificate / 日历/证据辅助，**不是** CRA 合格证书
 - [x] SPDX 2.3 XML export (`scan --format spdx-xml`; `GET /v1/bom?format=spdx-xml` / `GET /v1/bom.spdx.xml`; same packages/`licenseConcluded` as JSON; `spdx` stays JSON)
 - [x] Markdown BOM summary (`scan --format md`; `GET /v1/bom?format=md` / `GET /v1/bom.md`; `text/markdown`; human/Slack; not an SBOM spec)
 - [x] GitHub Actions workflow-command annotations (`scan --format gha`; `GET /v1/bom?format=gha` / `GET /v1/bom.gha.txt`; `text/plain`; `::error` / waived `::notice`; clean empty)
@@ -114,8 +115,11 @@ PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/clean.json --gate-vulns; echo exit=$?
 # Offline OSV/GHSA → same fixture schema (no fetch):
 PYTHONPATH=src python3 -m ai_bom convert-advisories --from-osv examples/advisories/osv-sample.json --out out/from-osv.json
-# Article 14 evidence pack (inventory+match; not a CRA declaration):
+# Article 14 evidence pack (inventory+match + calendar clock; not a CRA certificate):
 PYTHONPATH=src python3 -m ai_bom evidence-pack --dir examples/sample-app --out out/cra-pack
+# optional: --zip out/cra-pack.zip  --as-of 2026-08-26
+# pack.json clock is a calendar/evidence helper, not a CRA compliance certificate
+# pack.json 的 clock 是日历/证据辅助，不是 CRA 合格证书
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories out/from-osv.json --gate-vulns; echo exit=$?
 PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-pass --advisories out/from-osv.json --gate-vulns; echo exit=$?
 # active license/policy gate (ids/counts only):

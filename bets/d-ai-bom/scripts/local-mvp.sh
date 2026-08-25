@@ -604,35 +604,67 @@ rm -rf "$OBS_TMP" "$NEG_TMP"
 echo "mlbom-obs-ok"
 echo "spdx3-ai-ok"
 
-echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST; not a CRA declaration)"
+echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST + pack.json clock; not a CRA certificate)"
 PACK_TMP="$(mktemp -d)"
-python3 -m ai_bom evidence-pack --dir examples/sample-app --out "$PACK_TMP/sample"   --policy policies/default.json --advisories examples/advisories/sample.json
+python3 -m ai_bom evidence-pack --dir examples/sample-app --out "$PACK_TMP/sample"   --policy policies/default.json --advisories examples/advisories/sample.json --as-of 2026-08-26 --zip "$PACK_TMP/sample.zip"
 test -f "$PACK_TMP/sample/bom.cdx.json"
 test -f "$PACK_TMP/sample/bom.spdx3.json"
 test -f "$PACK_TMP/sample/MANIFEST.md"
+test -f "$PACK_TMP/sample/pack.json"
 python3 -m ai_bom evidence-pack --dir examples/cra-fixtures/license-pass --out "$PACK_TMP/pass"   --policy policies/default.json --advisories examples/advisories/clean.json
 python3 -m ai_bom evidence-pack --dir examples/cra-fixtures/license-fail --out "$PACK_TMP/fail"   --policy policies/default.json --advisories examples/advisories/clean.json
-test -f "$PACK_TMP/pass/bom.cdx.json" && test -f "$PACK_TMP/pass/bom.spdx3.json" && test -f "$PACK_TMP/pass/MANIFEST.md"
-test -f "$PACK_TMP/fail/bom.cdx.json" && test -f "$PACK_TMP/fail/bom.spdx3.json" && test -f "$PACK_TMP/fail/MANIFEST.md"
+test -f "$PACK_TMP/pass/bom.cdx.json" && test -f "$PACK_TMP/pass/bom.spdx3.json" && test -f "$PACK_TMP/pass/MANIFEST.md" && test -f "$PACK_TMP/pass/pack.json"
+test -f "$PACK_TMP/fail/bom.cdx.json" && test -f "$PACK_TMP/fail/bom.spdx3.json" && test -f "$PACK_TMP/fail/MANIFEST.md" && test -f "$PACK_TMP/fail/pack.json"
 PACK_TMP="$PACK_TMP" python3 - <<"PYPACK"
-import json, os
+import json, os, zipfile
 from pathlib import Path
 root = Path(os.environ["PACK_TMP"])
 cdx = json.loads((root / "sample" / "bom.cdx.json").read_text())
 spdx3 = json.loads((root / "sample" / "bom.spdx3.json").read_text())
 man = (root / "sample" / "MANIFEST.md").read_text()
+pack = json.loads((root / "sample" / "pack.json").read_text())
 assert cdx.get("bomFormat") == "CycloneDX" and cdx.get("specVersion") == "1.7", cdx.get("specVersion")
 assert (spdx3.get("creationInfo") or {}).get("specVersion") == "3.0.1", spdx3.get("creationInfo")
 assert "not a CRA declaration" in man
 assert "compliant" not in man.lower()
+assert "certified" not in man.lower()
 fail_man = (root / "fail" / "MANIFEST.md").read_text()
 pass_man = (root / "pass" / "MANIFEST.md").read_text()
 assert "| license (`--gate-licenses`) | 1 |" in fail_man, fail_man
 assert "| license (`--gate-licenses`) | 0 |" in pass_man, pass_man
+clock = pack.get("clock") or {}
+assert clock.get("schema") == "ai-bom-cra-clock/v1", clock.get("schema")
+assert clock.get("kind") == "calendar-helper", clock.get("kind")
+assert clock.get("asOf") == "2026-08-26", clock.get("asOf")
+a14 = (clock.get("windows") or {}).get("article14Reporting") or {}
+assert a14.get("date") == "2026-09-11", a14
+assert a14.get("daysUntil") == 16, a14
+assert a14.get("daysOverdue") == 0, a14
+sbom = (clock.get("windows") or {}).get("sbom") or {}
+assert sbom.get("date") == "2027-12-11", sbom
+assert isinstance(sbom.get("daysUntil"), int), sbom
+vulns = clock.get("observedVulns") or []
+fixture = next((v for v in vulns if str(v.get("id") or "").startswith("ADV-FIXTURE-")), None)
+assert fixture, vulns
+fw = (fixture.get("windows") or {}).get("article14Reporting") or {}
+assert fw.get("daysUntil") == 16, fixture
+assert "calendar/evidence helper" in (clock.get("disclaimerEn") or "").lower()
+assert "日历/证据辅助" in (clock.get("disclaimerZh") or "")
+assert "合格证书" in (clock.get("disclaimerZh") or "")
+assert "calendar/evidence helper" in man.lower()
+assert "日历/证据辅助" in man
+blob = json.dumps(pack, ensure_ascii=False).lower()
+assert "compliant" not in blob and "certified" not in blob
+with zipfile.ZipFile(root / "sample.zip") as zf:
+    names = set(zf.namelist())
+assert {"bom.cdx.json", "bom.spdx3.json", "MANIFEST.md", "pack.json"} <= names, names
 print("evidence-pack artifacts ok")
+print("cra-clock fields ok")
 PYPACK
 rm -rf "$PACK_TMP"
 echo "evidence-pack-ok"
+echo "evidence-zip-ok"
+echo "cra-clock-ok"
 
 echo "==> temp package.json GPL-3.0 -> strict fails + evidence/sarif license hits"
 LIC_TMP="$(mktemp -d)"
@@ -2005,4 +2037,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock)"

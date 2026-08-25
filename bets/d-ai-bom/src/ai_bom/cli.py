@@ -26,9 +26,13 @@ from ai_bom.advisories import (
 )
 from ai_bom.osv_convert import convert_files, convert_record, dumps_converted
 from ai_bom.evidence_pack import (
+    ARTICLE14_DATE,
     CDX_FILENAME,
     MANIFEST_FILENAME,
+    PACK_FILENAME,
+    SBOM_DATE,
     SPDX3_FILENAME,
+    build_cra_clock,
     default_advisories_path,
     default_policy_path,
     resolve_optional_path,
@@ -220,6 +224,7 @@ def _run_evidence_pack(args) -> int:
             zip_path=zip_path,
             policy_path=policy_path,
             advisories_path=advisories_path,
+            as_of=getattr(args, "as_of", None),
         )
     except OSError as e:
         print(f"evidence-pack IO error: {e}")
@@ -235,6 +240,16 @@ def _run_evidence_pack(args) -> int:
     lic = result.license_gate if result.license_gate is not None else "skipped"
     vul = result.vuln_gate if result.vuln_gate is not None else "skipped"
     print(f"license-gate={lic} vuln-gate={vul}")
+    clock = result.clock or {}
+    windows = clock.get("windows") or {}
+    a14 = windows.get("article14Reporting") or {}
+    sbom = windows.get("sbom") or {}
+    print(
+        f"cra-clock asOf={clock.get('asOf')} "
+        f"article14 daysUntil={a14.get('daysUntil')} daysOverdue={a14.get('daysOverdue')} "
+        f"sbom daysUntil={sbom.get('daysUntil')} daysOverdue={sbom.get('daysOverdue')} "
+        f"observedVulns={clock.get('observedVulnCount', 0)}"
+    )
     return 0
 
 
@@ -261,8 +276,9 @@ def _smoke_evidence_pack() -> str | None:
         cdx_p = sample_out / CDX_FILENAME
         spdx3_p = sample_out / SPDX3_FILENAME
         man_p = sample_out / MANIFEST_FILENAME
-        if not (cdx_p.is_file() and spdx3_p.is_file() and man_p.is_file()):
-            return f"sample-app missing artifacts {[p.name for p in (cdx_p, spdx3_p, man_p) if not p.is_file()]}"
+        pack_p = sample_out / PACK_FILENAME
+        if not (cdx_p.is_file() and spdx3_p.is_file() and man_p.is_file() and pack_p.is_file()):
+            return f"sample-app missing artifacts {[p.name for p in (cdx_p, spdx3_p, man_p, pack_p) if not p.is_file()]}"
         try:
             cdx = json.loads(cdx_p.read_text(encoding="utf-8"))
             spdx3 = json.loads(spdx3_p.read_text(encoding="utf-8"))
@@ -290,7 +306,7 @@ def _smoke_evidence_pack() -> str | None:
         ])
         if pass_rc != 0:
             return f"license-pass pack exit {pass_rc}"
-        if not all((pass_out / n).is_file() for n in (CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME)):
+        if not all((pass_out / n).is_file() for n in (CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME, PACK_FILENAME)):
             return "license-pass missing artifacts"
         fail_out = td_p / "fail-pack"
         fail_rc = main([
@@ -302,7 +318,7 @@ def _smoke_evidence_pack() -> str | None:
         ])
         if fail_rc != 0:
             return f"license-fail pack exit {fail_rc}"
-        if not all((fail_out / n).is_file() for n in (CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME)):
+        if not all((fail_out / n).is_file() for n in (CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME, PACK_FILENAME)):
             return "license-fail missing artifacts"
         fail_man = (fail_out / MANIFEST_FILENAME).read_text(encoding="utf-8")
         if "| license (`--gate-licenses`) | 1 |" not in fail_man:
@@ -323,7 +339,7 @@ def _smoke_evidence_pack() -> str | None:
         import zipfile
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
-        want = {CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME}
+        want = {CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME, PACK_FILENAME}
         if not want <= names:
             return f"zip missing {want - names}"
         miss_rc = main(["evidence-pack", "--dir", str(sample_app)])
@@ -338,6 +354,105 @@ A fixture description only.
 
 License: https://example.com/observed-license
 """
+
+
+
+def _smoke_cra_clock() -> str | None:
+    """Clock fields + fixture vuln window (frozen as-of). None = ok."""
+    from datetime import date
+
+    hits = [{"id": "ADV-FIXTURE-1", "component": "ai-bom-sample-app", "version": "0.0.1"}]
+    early = build_cra_clock(date(2026, 8, 26), hits)
+    a14 = (early.get("windows") or {}).get("article14Reporting") or {}
+    sbom = (early.get("windows") or {}).get("sbom") or {}
+    if a14.get("date") != ARTICLE14_DATE.isoformat() or sbom.get("date") != SBOM_DATE.isoformat():
+        return f"frozen dates {a14.get('date')} {sbom.get('date')}"
+    if a14.get("daysUntil") != 16 or a14.get("daysOverdue") != 0 or a14.get("status") != "until":
+        return f"2026-08-26 article14 {a14}"
+    if sbom.get("daysUntil") != (SBOM_DATE - date(2026, 8, 26)).days or sbom.get("daysOverdue") != 0:
+        return f"2026-08-26 sbom {sbom}"
+    if early.get("observedVulnCount") != 1:
+        return f"observed count {early.get('observedVulnCount')}"
+    ov = (early.get("observedVulns") or [None])[0] or {}
+    ow = (ov.get("windows") or {}).get("article14Reporting") or {}
+    if ov.get("id") != "ADV-FIXTURE-1" or ow.get("daysUntil") != 16:
+        return f"fixture vuln window {ov}"
+    late = build_cra_clock(date(2026, 9, 20), hits)
+    late_a = (late.get("windows") or {}).get("article14Reporting") or {}
+    if late_a.get("daysUntil") != 0 or late_a.get("daysOverdue") != 9 or late_a.get("status") != "overdue":
+        return f"overdue article14 {late_a}"
+    due = build_cra_clock(date(2026, 9, 11), hits)
+    due_a = (due.get("windows") or {}).get("article14Reporting") or {}
+    if due_a.get("status") != "due" or due_a.get("daysUntil") != 0 or due_a.get("daysOverdue") != 0:
+        return f"due article14 {due_a}"
+    blob = json.dumps(early, ensure_ascii=False).lower()
+    if "compliant" in blob or "certified" in blob or "conformity certificate" in blob:
+        return "clock invented conformity language"
+    if "calendar/evidence helper" not in (early.get("disclaimerEn") or "").lower():
+        return "missing EN helper disclaimer"
+    if "日历" not in (early.get("disclaimerZh") or "") or "合格证书" not in (early.get("disclaimerZh") or ""):
+        return "missing ZH helper disclaimer"
+
+    root = Path(__file__).resolve().parents[2]
+    sample_app = root / "examples" / "sample-app"
+    policy = root / "policies" / "default.json"
+    sample_adv = root / "examples" / "advisories" / "sample.json"
+    with tempfile.TemporaryDirectory() as td:
+        td_p = Path(td)
+        out = td_p / "clock-pack"
+        zip_path = td_p / "clock-pack.zip"
+        rc = main([
+            "evidence-pack",
+            "--dir", str(sample_app),
+            "--out", str(out),
+            "--zip", str(zip_path),
+            "--policy", str(policy),
+            "--advisories", str(sample_adv),
+            "--as-of", "2026-08-26",
+        ])
+        if rc != 0:
+            return f"clock pack exit {rc}"
+        pack_p = out / PACK_FILENAME
+        if not pack_p.is_file():
+            return "pack.json missing"
+        try:
+            pack = json.loads(pack_p.read_text(encoding="utf-8"))
+        except Exception as e:
+            return f"pack.json parse {e}"
+        clock = pack.get("clock") or {}
+        if clock.get("schema") != "ai-bom-cra-clock/v1":
+            return f"clock schema {clock.get('schema')}"
+        if clock.get("kind") != "calendar-helper":
+            return f"clock kind {clock.get('kind')}"
+        if clock.get("asOf") != "2026-08-26":
+            return f"clock asOf {clock.get('asOf')}"
+        ca = (clock.get("windows") or {}).get("article14Reporting") or {}
+        if ca.get("daysUntil") != 16 or ca.get("date") != "2026-09-11":
+            return f"pack article14 {ca}"
+        vulns = clock.get("observedVulns") or []
+        fixture = next((v for v in vulns if isinstance(v, dict) and str(v.get("id") or "").startswith("ADV-FIXTURE-")), None)
+        if not fixture:
+            return f"no fixture vuln in clock {vulns}"
+        fw = (fixture.get("windows") or {}).get("article14Reporting") or {}
+        if not isinstance(fw.get("daysUntil"), int) or not isinstance(fw.get("daysOverdue"), int):
+            return f"fixture window not computed {fixture}"
+        if fw.get("daysUntil") != 16:
+            return f"fixture window daysUntil {fw}"
+        man = (out / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        if "calendar/evidence helper" not in man.lower() or "日历/证据辅助" not in man:
+            return "MANIFEST missing bilingual clock disclaimer"
+        if "compliant" in man.lower() or "certified" in man.lower():
+            return "MANIFEST invented conformity badge"
+        import zipfile
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        if PACK_FILENAME not in names:
+            return f"zip missing {PACK_FILENAME}: {names}"
+        raw = zipfile.ZipFile(zip_path).read(PACK_FILENAME)
+        zpack = json.loads(raw.decode("utf-8"))
+        if not (zpack.get("clock") or {}).get("observedVulns"):
+            return "zip pack.json clock missing observedVulns"
+    return None
 
 
 def _smoke_mlbom_observed() -> str | None:
@@ -788,7 +903,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_pack = sub.add_parser(
         "evidence-pack",
-        help="Write CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST.md (Article 14 inventory+match; not a CRA declaration)",
+        help="Write CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST.md + pack.json clock (Article 14 inventory+match; calendar helper, not a CRA certificate)",
     )
     p_pack.add_argument(
         "--dir",
@@ -798,7 +913,7 @@ def main(argv: list[str] | None = None) -> int:
     p_pack.add_argument(
         "--out",
         default=None,
-        help="Write pack directory (bom.cdx.json, bom.spdx3.json, MANIFEST.md)",
+        help="Write pack directory (bom.cdx.json, bom.spdx3.json, MANIFEST.md, pack.json)",
     )
     p_pack.add_argument(
         "--zip",
@@ -817,6 +932,12 @@ def main(argv: list[str] | None = None) -> int:
         "--advisories",
         default=None,
         help="Local advisory fixture (default: examples/advisories/sample.json). Offline; not NVD.",
+    )
+    p_pack.add_argument(
+        "--as-of",
+        default=None,
+        dest="as_of",
+        help="UTC calendar date YYYY-MM-DD for the window clock (default: today UTC). Calendar helper only; not a certificate.",
     )
     args = parser.parse_args(argv)
 
@@ -1361,6 +1482,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("evidence-pack-ok")
         print("evidence-zip-ok")
+        clock_err = _smoke_cra_clock()
+        if clock_err:
+            print("smoke failed cra-clock", clock_err)
+            return 1
+        print("cra-clock-ok")
 
         sarif_doc = to_sarif(bom, tool_version=__version__)
         empty_sarif = to_sarif(
@@ -3246,7 +3372,7 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock")
         return 0
     if args.cmd == "convert-advisories":
         return _run_convert_advisories(args)

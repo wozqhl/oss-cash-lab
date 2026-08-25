@@ -4,6 +4,10 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### CRA window clock (calendar helper)
+
+- `evidence-pack` writes `pack.json` (listed in the zip + MANIFEST) with a `clock` section: `daysUntil` / `daysOverdue` vs **2026-09-11** (Article 14-style reporting) and **2027-12-11** (SBOM calendar). Observed `--gate-vulns` / `convert-advisories` hits inherit those same dates. Optional `--as-of YYYY-MM-DD` freezes the calendar. **EN:** calendar/evidence helper, not a CRA compliance certificate. **中文:** 日历/证据辅助，不是 CRA 合格证书。No invented CVE scores or conformity claims. Smoke: `cra-clock-ok`.
+
 ### SPDX 3 AI profile (observed only)
 
 - `--format spdx3` emits `ai_AIPackage` (with `software_primaryPurpose=model`) and adds `ai` to `profileConformance` only when a model/model-file component had observed path+sha256 and/or model-card name/description/license URL. Text-only model mentions stay `software_Package` without an AI profile claim. No invented metrics, trainedOn/testedOn, hyperparameters, or energy.

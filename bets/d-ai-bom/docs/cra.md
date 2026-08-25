@@ -60,10 +60,24 @@ python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/clea
 python3 -m ai_bom convert-advisories --from-osv examples/advisories/osv-sample.json --out /tmp/from-osv.json
 python3 -m ai_bom scan examples/sample-app --advisories /tmp/from-osv.json --gate-vulns
 python3 -m ai_bom evidence-pack --dir examples/sample-app --out /tmp/cra-pack
+# optional calendar freeze + zip: --as-of 2026-08-26 --zip /tmp/cra-pack.zip
 ```
+
+## Window clock (calendar helper, not a certificate)
+
+`evidence-pack` writes `pack.json` (also listed in `--zip` and MANIFEST) with a **`clock`** section:
+
+| Field | Meaning |
+|-------|---------|
+| `asOf` | UTC calendar date used for the math (default today; `--as-of YYYY-MM-DD`) |
+| `windows.article14Reporting` | daysUntil / daysOverdue vs **2026-09-11** |
+| `windows.sbom` | daysUntil / daysOverdue vs **2027-12-11** |
+| `observedVulns[]` | Each `--gate-vulns` / converted-advisory hit inherits those same two windows |
+
+This is a **calendar/evidence helper**. It is **not** a CRA compliance certificate, conformity claim, CE mark, or notified-body assessment. A fixture `ADV-FIXTURE-*` hit showing `daysUntil=16` on `--as-of 2026-08-26` only means the calendar offset was computed — not that a report is due, not that a CVE exists, and not that the product is in scope.
 
 ## 中文（摘要）
 
 《网络弹性法案》Regulation (EU) 2024/2847 于 **2024-12-10** 生效。**第 14 条**报告义务自 **2026-09-11** 起；含 SBOM 在内的完整基本要求自 **2027-12-11** 起适用。二者不是同一天。
 
-本工具导出 **CycloneDX 1.7**（JSON/XML）、**SPDX 2.3**（兼容旧消费者）与 **SPDX 3.0.1** JSON（`--format spdx3`），并带许可证策略门禁（`--gate-licenses`）与**本地 advisory 对照门禁**（`--advisories` + `--gate-vulns`）。第 14 条（2026-09-11）是 24 小时报告钟，需要库存+对照已知问题，不是 NVD 全量库；完整 SBOM 基本要求仍自 **2027-12-11** 起。买家日后可将 OSV / GitHub Advisory 离线导出经 `convert-advisories --from-osv` 转成同一 JSON，CLI 不联网拉取。这是库存/准备辅助，**不是** CRA 合格评定、CE 标志或 BSI 认证。BSI TR-03183-2 的解读是 CycloneDX 1.6+ **或** SPDX 3.0.1+；二者现均可导出，故“任一格式”的说法是诚实的。未观察到的 SPDX 3 图/模型卡字段不会编造。正式页面：<https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act>；ML-BOM 指南：<https://cyclonedx.org/guides/OWASP_CycloneDX-Authoritative-Guide-to-AI-ML-BOM-en.pdf>。
+本工具导出 **CycloneDX 1.7**（JSON/XML）、**SPDX 2.3**（兼容旧消费者）与 **SPDX 3.0.1** JSON（`--format spdx3`），并带许可证策略门禁（`--gate-licenses`）与**本地 advisory 对照门禁**（`--advisories` + `--gate-vulns`）。第 14 条（2026-09-11）是 24 小时报告钟，需要库存+对照已知问题，不是 NVD 全量库；完整 SBOM 基本要求仍自 **2027-12-11** 起。买家日后可将 OSV / GitHub Advisory 离线导出经 `convert-advisories --from-osv` 转成同一 JSON，CLI 不联网拉取。`evidence-pack` 的 `pack.json` 含 **window clock**（`daysUntil` / `daysOverdue` 相对上述两日，观察到的 fixture 漏洞继承同一日历）。**这是日历/证据辅助，不是 CRA 合格证书。** 这是库存/准备辅助，**不是** CRA 合格评定、CE 标志或 BSI 认证。BSI TR-03183-2 的解读是 CycloneDX 1.6+ **或** SPDX 3.0.1+；二者现均可导出，故“任一格式”的说法是诚实的。未观察到的 SPDX 3 图/模型卡字段不会编造。正式页面：<https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act>；ML-BOM 指南：<https://cyclonedx.org/guides/OWASP_CycloneDX-Authoritative-Guide-to-AI-ML-BOM-en.pdf>。
