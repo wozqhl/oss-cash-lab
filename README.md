@@ -21,7 +21,7 @@ See [docs/thesis.md](./docs/thesis.md), [ROADMAP.md](./ROADMAP.md), and [docs/pi
 | C | bets/c-agent-ci | Py | Deterministic agent CI + queue + CORS + rate-limit + X-Request-Id + OpenAPI + Prometheus `/metrics` + serve `--watch` + HTML run report | **1** |
 | D | bets/d-ai-bom | Py | AI-BOM + policy/evidence + SPDX + CycloneDX 1.7/SPDX 2.3 export + CRA license gate + evidence-pack window clock + `.aibomignore` + local BOM HTTP serve + CORS + rate-limit + X-Request-Id + OpenAPI + `/ready` + Prometheus `/metrics` + `--watch` + `GET /v1/config` | 2 |
 | E | bets/e-otel-ai-cost | TS | AI cost plane + redact/route packs + local report server + finance CSV + Markdown cost report + tenant budget + optional UTC-day period + `GET /v1/config` + `GET /v1/spans` + `GET /v1/tenants` + `GET /v1/tenants.csv` + CORS + rate-limit + X-Request-Id + OpenAPI + `/ready` + Prometheus `/metrics` | 3 |
-| F | bets/f-cn-work-agent | Py | Multi-IM webhook agent + approvals + native IM cards + `GET /v1/platforms` + `GET /v1/config` + audit CSV + Markdown + HTML list + TTL + rate-limit + CORS + X-Request-Id + OpenAPI + `/ready` + Prometheus `/metrics` + decision webhook + Dify/n8n sample forward + serve `--watch` | 3 |
+| F | bets/f-cn-work-agent | Py | Multi-IM webhook agent + approvals + native IM cards + official-doc verify/card fixtures + `GET /v1/platforms` + `GET /v1/config` + audit CSV + Markdown + HTML list + TTL + rate-limit + CORS + X-Request-Id + OpenAPI + `/ready` + Prometheus `/metrics` + decision webhook + Dify/n8n sample forward + serve `--watch` | 3 |
 
 ## Architecture
 

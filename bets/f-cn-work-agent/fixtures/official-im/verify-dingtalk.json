@@ -1,0 +1,15 @@
+{
+  "mock": true,
+  "not_production": true,
+  "platform": "dingtalk",
+  "doc": "Official DingTalk robot inbound: headers timestamp + sign, sign = Base64(HmacSHA256(secret, timestamp + '\\n' + secret)). Query timestamp/sign is the outbound send-URL shape. Hex + X-DingTalk-* remain mock-compat. 1h replay window not enforced.",
+  "algorithm": "base64(hmac_sha256(secret, timestamp + '\\n' + secret))",
+  "legacy_hex_algorithm": "hex(hmac_sha256(secret, timestamp + '\\n' + secret))",
+  "secret": "fixture-dt-secret",
+  "token": "fixture-dt-token",
+  "timestamp": "1710000100",
+  "headers_official": ["timestamp", "sign"],
+  "headers_legacy": ["X-DingTalk-Timestamp", "X-DingTalk-Sign"],
+  "query_official": ["timestamp", "sign"],
+  "raw_body": "{\"text\":{\"content\":\"ping\"},\"token\":\"fixture-dt-token\"}"
+}

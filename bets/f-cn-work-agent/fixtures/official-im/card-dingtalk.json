@@ -1,0 +1,15 @@
+{
+  "mock": true,
+  "not_production": true,
+  "platform": "dingtalk",
+  "doc": "DingTalk actionCard robot POST body. Mock send-card shape — not a live oapi.dingtalk.com/robot/send call.",
+  "const": {"msgtype": "actionCard"},
+  "required_paths": [
+    "msgtype",
+    "actionCard.title",
+    "actionCard.text",
+    "actionCard.btns"
+  ],
+  "btn_required": ["title", "actionURL"],
+  "forbidden_substrings": ["sk-", "fixture-dt-secret", "callbackSecret"]
+}

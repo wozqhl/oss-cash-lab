@@ -1,0 +1,14 @@
+{
+  "mock": true,
+  "not_production": true,
+  "platform": "feishu",
+  "doc": "Feishu interactive card POST body (msg_type=interactive). Mock send-card shape for GET /v1/approvals/{id}/card — not a live im/v1/messages call.",
+  "const": {"msg_type": "interactive"},
+  "required_paths": [
+    "msg_type",
+    "card.header.title.tag",
+    "card.header.title.content",
+    "card.elements"
+  ],
+  "forbidden_substrings": ["sk-", "fixture-feishu-encrypt", "callbackSecret"]
+}

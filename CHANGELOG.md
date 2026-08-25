@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenSSF Scorecard GitHub Actions workflow (`.github/workflows/scorecard.yml`) so public-repo supply-chain results can appear in code scanning.
 - C DeepEval-shaped JSON adapter (`from-deepeval`; fixture-only, existing JUnit/TAP/Markdown + `--fail-under`; not full DeepEval compatibility).
 - F Dify / n8n sample approval forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant|app,title}` after approved/rejected; 1 retry; example wiring, not a Dify plugin). Smoke prints `forward-ok`.
+- F official-doc IM verify + send-card fixtures (`bets/f-cn-work-agent/fixtures/official-im/`; HMAC / timestamp / encrypt header names as vendors document). Existing verifier accepts DingTalk official Base64 + `timestamp`/`sign`. Mock only, no vendor network. Smoke `im-verify-ok`.
 - D evidence-pack window clock: `pack.json` `clock` (listed in the zip) emits daysUntil / daysOverdue vs 2026-09-11 and 2027-12-11 from observed `--gate-vulns` hits. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。Smoke `cra-clock-ok`.
 
 ## [0.1.0] - 2026-08-13

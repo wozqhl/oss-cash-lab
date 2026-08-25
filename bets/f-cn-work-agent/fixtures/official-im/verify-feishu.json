@@ -1,0 +1,28 @@
+{
+  "mock": true,
+  "not_production": true,
+  "platform": "feishu",
+  "doc": "Official Feishu event signature: sha256(timestamp + nonce + encrypt_key + raw_body) vs X-Lark-Signature. Token may be in JSON or omitted when body is encrypt-shaped. AES decrypt of encrypt is not implemented.",
+  "algorithm": "sha256_hex(timestamp + nonce + encrypt_key + raw_body)",
+  "encrypt_key": "fixture-feishu-encrypt",
+  "verify_token": "fixture-feishu-token",
+  "timestamp": "1710000000",
+  "nonce": "fixture-nonce-feishu",
+  "headers_official": [
+    "X-Lark-Request-Timestamp",
+    "X-Lark-Request-Nonce",
+    "X-Lark-Signature"
+  ],
+  "encrypt_body_field": "encrypt",
+  "cases": [
+    {
+      "name": "plaintext_token",
+      "raw_body": "{\"token\":\"fixture-feishu-token\",\"text\":\"ping\"}"
+    },
+    {
+      "name": "encrypt_shaped",
+      "note": "Official encrypt-shaped POST is {\"encrypt\":\"<ciphertext>\"}. Mock does not AES-decrypt; signature is still over raw body.",
+      "raw_body": "{\"encrypt\":\"fixture-ciphertext-not-aes\"}"
+    }
+  ]
+}

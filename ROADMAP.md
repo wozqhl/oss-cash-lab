@@ -244,6 +244,7 @@
 - [x] F `GET /v1/approvals?status=` (`pending`/`approved`/`rejected`/`expired`; CSV/MD/HTML share helper; unknown/empty → 200 empty; omit unfiltered; OpenAPI enum; smoke + local-mvp + stack-demo)
 - [x] F Dify / n8n sample approval forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant|app,title}` on approved/rejected; 1 retry; no secrets; example wiring, not a plugin; smoke `forward-ok`)
 - [x] F Dify / n8n sample approval forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant|app,title}` on approved/rejected; 1 retry; no secrets; example wiring, not a plugin; smoke `forward-ok`)
+- [x] F official-doc IM verify + send-card fixtures (`fixtures/official-im/`; HMAC/timestamp/encrypt headers as vendors document; DingTalk official Base64 + `timestamp`/`sign`; still mock; smoke `im-verify-ok`)
 
 
 **Exit:** E cost demo; F one ask/reply on intranet; portfolio kill/double/hold review.

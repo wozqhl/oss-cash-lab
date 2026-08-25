@@ -35,7 +35,7 @@ CN office IM is the default enterprise agent entry. Ship on-prem webhook → int
 
 | OSS | Paid |
 |-----|------|
-| Multi-IM webhook shapes + rule router (local mock) | Real vendor SDKs, SSO, SLA |
+| Multi-IM webhook shapes + official-doc verify/card fixtures (local mock; not production connect) | Real vendor SDKs, AES decrypt, live send-card APIs, SSO, SLA |
 | Local tool hooks + simple approval JSONL (`data/approvals.jsonl`) + **audit CSV** (`GET /v1/approvals.csv`) + **Markdown list** (`GET /v1/approvals.md`) + **HTML list** (`GET /v1/approvals.html`) + **native IM cards** (`GET /v1/approvals/{id}/card`) | Vendor approval sync, multi-approver, compliance packs, real Feishu/DingTalk/WeCom send APIs |
 | In-memory webhook rate limit (IP + platform; env/config) | Redis/distributed limits, WAF, abuse analytics |
 | Approval TTL auto-reject (`APPROVAL_TTL_SECONDS`) | Multi-approver SLA, reminder fans, compliance holds |
@@ -61,6 +61,7 @@ CN office IM is the default enterprise agent entry. Ship on-prem webhook → int
 - [x] README with intranet runbook (`docs/intranet-demo.md`)
 - [x] Simple approval flow (intent → `data/approvals.jsonl` → GET/decide HTTP)
 - [x] Native IM approval cards (Feishu interactive / DingTalk actionCard / WeCom textcard; `GET /v1/approvals/{id}/card?platform=`; mock-only, no tokens)
+- [x] Official-doc verify + send-card fixtures (`fixtures/official-im/`; HMAC / timestamp / encrypt header names; DingTalk official Base64; still mock; smoke `im-verify-ok`)
 - [x] Approval audit CSV (`export --format csv`; `GET /v1/approvals.csv` / `GET /v1/approvals?format=csv`; columns `id,platform,status,createdAt,decidedAt,reason`; empty → header only)
 - [x] Approval Markdown list (`export --format md`; `GET /v1/approvals.md` / `GET /v1/approvals?format=md`; `text/markdown`; GFM table, same columns as CSV; `|` escaped; empty → heading + header row only; paste into Feishu/WeCom docs)
 - [x] Approval HTML list (`export --format html`; `GET /v1/approvals.html` / `GET /v1/approvals?format=html`; `text/html`; self-contained no CDN; columns id/platform/status/title/created/decided/reason; pending vs decided/expired styled; empty → heading + “no approvals”; names escaped)
@@ -84,11 +85,13 @@ CN office IM is the default enterprise agent entry. Ship on-prem webhook → int
 
 | Route | Auth env | Notes |
 |-------|----------|-------|
-| `POST /webhook/feishu` | `FEISHU_VERIFY_TOKEN`, `FEISHU_ENCRYPT_KEY` | URL verification `challenge`; Lark-style signature headers |
-| `POST /webhook/dingtalk` | `DINGTALK_TOKEN`, `DINGTALK_SECRET` | Callback JSON `text.content`; `X-DingTalk-Timestamp` + `X-DingTalk-Sign` |
-| `GET/POST /webhook/wecom` | `WECOM_TOKEN` | GET `echostr` URL verify; POST message; `msg_signature` = sha1(sort(token,ts,nonce,encrypt)) |
+| `POST /webhook/feishu` | `FEISHU_VERIFY_TOKEN`, `FEISHU_ENCRYPT_KEY` | Official `X-Lark-*` timestamp/nonce/signature (`sha256(ts+nonce+encrypt_key+body)`); URL `challenge`; encrypt-shaped `{encrypt}` skips plaintext token (AES decrypt **not** implemented) |
+| `POST /webhook/dingtalk` | `DINGTALK_TOKEN`, `DINGTALK_SECRET` | Official `timestamp`+`sign` (Base64 HMAC) or query; hex + `X-DingTalk-*` still accepted; mock only |
+| `GET/POST /webhook/wecom` | `WECOM_TOKEN` | Official query `msg_signature`/`timestamp`/`nonce`/`echostr`; POST `Encrypt` field; AES/`EncodingAESKey` **not** implemented |
 
 Shared intents: `ping` / `help` / `digest <text>` / `approve request`|`审批` / echo. Inbound normalized to a common event; outbound ack shape differs per platform.
+
+Official-doc header / card shapes are pinned as **local fixtures** under [`fixtures/official-im/`](./fixtures/official-im/) (HMAC / timestamp / encrypt field names as each vendor documents). Smoke prints `im-verify-ok`. **Still mock servers — not a production Feishu / DingTalk / WeCom connect.** AES decrypt and vendor send APIs are not implemented.
 
 `GET /health` lists `platforms` / `enabled` / `rate_limit_per_minute` / `approval_ttl_seconds` / `approvals_max` (id strings only). **`GET /v1/platforms`** is the product inventory: `{ok, count, platforms:[{id, enabled, hasCallbackSecret}]}` for feishu / dingtalk / wecom plus extras already in config `platforms`. **Never** returns `callbackSecret`, tokens, or encrypt keys. CORS + `X-Request-Id`. Not rate-limited (same as other GETs besides `/webhook/*`). Optional CLI `platforms`. **`GET /v1/config`** is a public redacted runtime snapshot for intranet-pilot debugging (no admin token): `{ok, approvalTtlSec, rateLimit:{perMinute}, cors:{origins}, approvalsMax, webhooks:{hasUrl,hasSecret}, platforms}`. **Never** webhook URL (query tokens), webhook secret, `callbackSecret`, `FEISHU_*` tokens, or `Authorization`. Optional CLI `config`. **`GET /ready`** is **200** `{ok:true, service}` plus the same snapshot fields when healthy; **503** `{ok:false, reason:"shutting_down"}` on SIGTERM/SIGINT (liveness `/health` stays 200 with `shuttingDown: true`). Compose/stack-demo healthchecks stay on `/health`. Every response (including 4xx / OPTIONS / 429) echoes **`X-Request-Id`** (incoming header or generated UUID). Optional **`serve --watch`** polls `--config` mtime (~300ms) and reloads CORS origins, TTL, webhook url/secret, rate limits, and approvals-max from file (see precedence below).
 

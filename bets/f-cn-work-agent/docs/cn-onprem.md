@@ -45,7 +45,7 @@ bash scripts/demo-wecom-approval.sh
 # 或：bash scripts/demo-feishu-approval.sh --platform all
 ```
 
-验签算法是仓库内 mock（`scripts/sign_feishu.py` / `sign_dingtalk.py` / `sign_wecom.py`），与各厂商生产 Encrypt Key / 事件加密体不同。上线前对照官方回调文档替换 `verify.py`。差异见 [intranet-demo.md](./intranet-demo.md) 的 DRAFT 表。
+验签算法对照官方文档头名（飞书 `X-Lark-*`、钉钉 `timestamp`/`sign` Base64、企微 `msg_signature`）钉在 [`fixtures/official-im/`](../fixtures/official-im/)，**仍是本地 mock，不连厂商公网**。AES 解密 / 真发卡片未实现。演示脚本仍用 `scripts/sign_*.py`。差异见 [intranet-demo.md](./intranet-demo.md) 的 DRAFT 表。
 
 ## 私有化
 

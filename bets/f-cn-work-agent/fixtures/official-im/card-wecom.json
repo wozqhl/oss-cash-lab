@@ -1,0 +1,15 @@
+{
+  "mock": true,
+  "not_production": true,
+  "platform": "wecom",
+  "doc": "WeCom application textcard POST body. Mock send-card shape — not a live message/send call.",
+  "const": {"msgtype": "textcard"},
+  "required_paths": [
+    "msgtype",
+    "textcard.title",
+    "textcard.description",
+    "textcard.url",
+    "textcard.btntxt"
+  ],
+  "forbidden_substrings": ["sk-", "fixture-wc-token", "callbackSecret"]
+}

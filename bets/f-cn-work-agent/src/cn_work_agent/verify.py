@@ -1,12 +1,13 @@
 """Multi-IM webhook verification helpers (Feishu / DingTalk / WeCom mocks)."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import os
 import time
 from typing import Any, Mapping
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote, unquote_plus
 
 from cn_work_agent.webhook import (
     sign_webhook_body as sign_callback_body,
@@ -154,9 +155,49 @@ def compute_signature(timestamp: str, nonce: str, encrypt_key: str, body: bytes)
 
 
 def compute_dingtalk_sign(timestamp: str, secret: str) -> str:
-    """Simplified DingTalk robot-style sign: hex(hmac_sha256(secret, ts + '\\n' + secret))."""
+    """Mock-compat hex HMAC. Official DingTalk robot sign is Base64 — see compute_dingtalk_sign_b64."""
     string_to_sign = f"{timestamp}\n{secret}".encode("utf-8")
     return hmac.new(secret.encode("utf-8"), string_to_sign, hashlib.sha256).hexdigest()
+
+
+def compute_dingtalk_sign_b64(timestamp: str, secret: str) -> str:
+    """Official DingTalk robot inbound sign: Base64(HmacSHA256(secret, ts + '\\n' + secret)).
+
+    Same string-to-sign as the hex helper. Outbound send URLs also URL-encode this value.
+    Mock only — does not call DingTalk. Replay window (1h) is not enforced here.
+    """
+    string_to_sign = f"{timestamp}\n{secret}".encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), string_to_sign, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def _sig_eq(got: str, expected: str) -> bool:
+    a = str(got).encode("utf-8")
+    b = str(expected).encode("utf-8")
+    if len(a) != len(b):
+        return False
+    return hmac.compare_digest(a, b)
+
+
+def dingtalk_sign_matches(timestamp: str, secret: str, got: str) -> bool:
+    """True if got matches hex (legacy mock) or official Base64 (raw or URL-decoded)."""
+    raw = str(got or "").strip()
+    if not raw:
+        return False
+    hex_expected = compute_dingtalk_sign(timestamp, secret)
+    b64_expected = compute_dingtalk_sign_b64(timestamp, secret)
+    candidates = [raw]
+    for decoder in (unquote, unquote_plus):
+        try:
+            decoded = decoder(raw)
+        except Exception:
+            continue
+        if decoded not in candidates:
+            candidates.append(decoded)
+    for cand in candidates:
+        if _sig_eq(cand, hex_expected) or _sig_eq(cand, b64_expected):
+            return True
+    return False
 
 
 def compute_wecom_signature(token: str, timestamp: str, nonce: str, encrypt: str) -> str:
@@ -185,7 +226,11 @@ def verify_feishu(
         if got is None:
             h = _lower_headers(headers)
             got = h.get("x-lark-token") or h.get("x-feishu-token")
-        if got != token:
+        # Official encrypt-shaped POST is {"encrypt": "..."}; Verification Token
+        # lives inside ciphertext. Mock does not AES-decrypt — signature is the check.
+        if got is None and key and payload.get("encrypt"):
+            pass
+        elif got != token:
             raise VerifyError("bad_verify_token")
 
     if key:
@@ -207,10 +252,15 @@ def verify_dingtalk(
     *,
     token: str | None = None,
     secret: str | None = None,
+    query: Mapping[str, str] | None = None,
 ) -> None:
-    """DingTalk-like: DINGTALK_TOKEN in payload/header; optional timestamp+sign.
+    """DingTalk token + timestamp/sign. Same helper as before — not a second verifier.
 
-    Sign headers: X-DingTalk-Timestamp + X-DingTalk-Sign (or query timestamp/sign).
+    Official robot inbound (docs): headers ``timestamp`` + ``sign``,
+    ``sign`` = Base64(HmacSHA256(secret, timestamp + '\\n' + secret)).
+    Also accepts query ``timestamp`` / ``sign`` (outbound send-URL shape).
+    Legacy mock: ``X-DingTalk-Timestamp`` + ``X-DingTalk-Sign`` and hex HMAC.
+    Still a local mock — no DingTalk network, no 1h replay window.
     """
     tok = token if token is not None else env_dingtalk_token()
     sec = secret if secret is not None else env_dingtalk_secret()
@@ -228,12 +278,17 @@ def verify_dingtalk(
 
     if sec:
         h = _lower_headers(headers)
-        ts = h.get("x-dingtalk-timestamp") or ""
-        sig = h.get("x-dingtalk-sign") or ""
+        q = dict(query or {})
+        ts = (
+            h.get("x-dingtalk-timestamp")
+            or h.get("timestamp")
+            or q.get("timestamp")
+            or ""
+        )
+        sig = h.get("x-dingtalk-sign") or h.get("sign") or q.get("sign") or ""
         if not ts or not sig:
             raise VerifyError("missing_signature")
-        expected = compute_dingtalk_sign(ts, sec)
-        if not hmac.compare_digest(str(sig), expected):
+        if not dingtalk_sign_matches(str(ts), sec, str(sig)):
             raise VerifyError("bad_signature")
 
 
@@ -302,7 +357,7 @@ def verify_platform(
         verify_feishu(headers, body, payload)
         return
     if platform == "dingtalk":
-        verify_dingtalk(headers, body, payload)
+        verify_dingtalk(headers, body, payload, query=query)
         return
     if platform == "wecom":
         verify_wecom(headers, body, payload, query=query)

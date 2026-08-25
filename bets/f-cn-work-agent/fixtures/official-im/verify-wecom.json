@@ -1,0 +1,25 @@
+{
+  "mock": true,
+  "not_production": true,
+  "platform": "wecom",
+  "doc": "Official WeCom URL verify: msg_signature = sha1(sort(token, timestamp, nonce, echostr)). POST signs over Encrypt (or echostr). EncodingAESKey AES decrypt is NOT implemented — encrypt/echostr here are plaintext stand-ins.",
+  "algorithm": "sha1_hex(sort(token, timestamp, nonce, encrypt))",
+  "token": "fixture-wc-token",
+  "timestamp": "1710000200",
+  "nonce": "fixture-wc-nonce",
+  "query_official": ["msg_signature", "timestamp", "nonce", "echostr"],
+  "encrypt_field": "Encrypt",
+  "encoding_aes_key_implemented": false,
+  "cases": [
+    {
+      "name": "url_verify",
+      "encrypt": "fixture-echostr-not-aes",
+      "via": "echostr"
+    },
+    {
+      "name": "post_encrypt",
+      "encrypt": "fixture-Encrypt-not-aes",
+      "via": "Encrypt"
+    }
+  ]
+}

@@ -254,6 +254,7 @@ def _smoke() -> int:
         resolve_approvals_max,
     )
     from cn_work_agent.cards import CARD_PLATFORMS, build_im_card
+    from cn_work_agent.official_shapes import smoke_official_shapes
     from cn_work_agent.metrics import (
         METRIC_DECIDED,
         METRIC_PENDING,
@@ -674,6 +675,13 @@ def _smoke() -> int:
         return 1
     except ValueError:
         pass
+
+    # Official-doc verify + send-card fixtures (mock only; existing verify_*).
+    official_ok, official_err = smoke_official_shapes()
+    if not official_ok:
+        print("smoke failed official-im fixtures", official_err)
+        return 1
+    print("im-verify-ok")
 
     # Sliding-window rate limiter (in-memory; HTTP proven in local-mvp)
     from cn_work_agent.rate_limit import SlidingWindowRateLimiter, resolve_rate_limits
@@ -2300,7 +2308,7 @@ def _smoke() -> int:
 
     print(
         f"cn-work-agent {__version__} smoke OK — "
-        f"multi-IM ({','.join(PLATFORMS)}) webhook route + verify + approvals + TTL + csv + md + html + im-cards + platforms + config + rate-limit + cors + requestId + openapi + metrics + decision-webhook + hmac + retry + inbound-callback + watch + shutdown + accessLog + approvalsMax + forward + forward-hmac"
+        f"multi-IM ({','.join(PLATFORMS)}) webhook route + verify + approvals + TTL + csv + md + html + im-cards + platforms + config + rate-limit + cors + requestId + openapi + metrics + decision-webhook + hmac + retry + inbound-callback + watch + shutdown + accessLog + approvalsMax + forward + forward-hmac + official-im"
     )
     return 0
 

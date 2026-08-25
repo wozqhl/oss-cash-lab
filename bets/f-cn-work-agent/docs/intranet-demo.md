@@ -169,8 +169,8 @@ curl -s -X POST http://127.0.0.1:8790/approvals/appr_xxx/decide \
 | 平台 | 本地 mock | 生产常见差异 **DRAFT** |
 |------|-----------|------------------------|
 | 飞书 | `sha256(ts+nonce+encrypt_key+body)`；body 内明文 `token` | 官方 Encrypt Key 签名串/事件加密体（AES）可能不同；需 App Secret、事件订阅加密推送解密 |
-| 钉钉 | `hex(hmac_sha256(secret, ts+'\\n'+secret))` + JSON `token` | 官方加签常为 `Base64(HmacSHA256)`，且与机器人 webhook / 回调字段名不完全一致 |
+| 钉钉 | 官方 `timestamp`/`sign`（Base64 HMAC）+ 兼容 hex / `X-DingTalk-*`；JSON `token` | 1 小时重放窗、机器人出站 URL-encode、卡片回调 `x-ddpaas-signature` **未**做 |
 | 企微 | `sha1(sort(token,ts,nonce,encrypt))`；`encrypt` 取 body 或 echostr | 生产多为 AES 加密 XML/JSON 消息体 + EncodingAESKey；本 mock 不做加解密 |
 | 审批卡片回调 | MVP `X-Callback-Signature: sha256=HMAC(secret, rawBody)` + 可选 `X-Callback-Timestamp`（300s） | 生产飞书 `X-Lark-Signature` / 钉钉 / 企微卡片回调头不同；适配器应拷到本头。GET 卡片 URL 无法签名，生产用 POST |
 
-上线前请对照各厂商最新回调文档替换 `verify.py` 与 connector，本手册仅保证内网 mock 路径可演示。
+官方头名 / 卡片 required-path 见 [`fixtures/official-im/`](../fixtures/official-im/)（mock，**不是**生产连接）。上线前请对照各厂商最新回调文档替换 `verify.py` 与 connector，本手册仅保证内网 mock 路径可演示。
