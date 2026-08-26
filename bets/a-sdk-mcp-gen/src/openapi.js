@@ -493,6 +493,32 @@ function emitJsMcpIdentityFns() {
   lines.push("  return false;");
   lines.push("}");
   lines.push("");
+  lines.push("function headerValue(headers, name) {");
+  lines.push("  const want = name.toLowerCase();");
+  lines.push("  for (const k of Object.keys(headers || {})) if (k.toLowerCase() === want) return String(headers[k] || \"\");");
+  lines.push("  return \"\";");
+  lines.push("}");
+  lines.push("");
+  lines.push("function truncateBody(text) {");
+  lines.push("  const s = text == null ? \"\" : String(text);");
+  lines.push("  return s.length > 2048 ? s.slice(0, 2048) : s;");
+  lines.push("}");
+  lines.push("");
+  lines.push("function isTimeoutErr(err) {");
+  lines.push("  const name = err && err.name ? String(err.name) : \"\";");
+  lines.push("  const msg = err && err.message ? String(err.message) : String(err || \"\");");
+  lines.push("  return name === \"AbortError\" || name === \"TimeoutError\" || /timeout|aborted/i.test(msg);");
+  lines.push("}");
+  lines.push("");
+  lines.push("function mcpUpstreamError(result) {");
+  lines.push("  const out = {");
+  lines.push("    status: result && result.status != null ? Number(result.status) : 0,");
+  lines.push("    requestId: result && result.requestId != null ? String(result.requestId) : \"\",");
+  lines.push("  };");
+  lines.push("  if (result && result.error) out.code = String(result.error);");
+  lines.push("  return out;");
+  lines.push("}");
+  lines.push("");
   lines.push("function applyIdentityHeaders(headers, method, opIdem) {");
   lines.push('  if (!hasHeader(headers, "accept")) headers["accept"] = "application/json";');
   lines.push('  if (!hasHeader(headers, "user-agent") && DEFAULT_USER_AGENT) headers["user-agent"] = DEFAULT_USER_AGENT;');
@@ -545,6 +571,7 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push(" * Identity: Accept application/json unless already set; default User-Agent " + userAgent + " unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.");
   lines.push(" * Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).");
   lines.push(" * Timeout: per-attempt 10s (AbortController). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.");
+  lines.push(" * Upstream HTTP failure after retries: tools/call result.error includes status + requestId (the sent X-Request-Id). Auth headers are not copied into the payload.");
   if (auth.any) {
     lines.push(" * Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.");
   }
@@ -653,6 +680,7 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push("    const headers = { ...headersBase };");
   lines.push('    if (isBodyMethod) headers["content-type"] = "application/json";');
   lines.push("    applyIdentityHeaders(headers, method, opIdem);");
+  lines.push('    const requestId = headerValue(headers, "x-request-id");');
   lines.push("    const ac = new AbortController();");
   lines.push("    const timer = setTimeout(() => ac.abort(), timeoutMs);");
   lines.push("    try {");
@@ -668,19 +696,26 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push("        await sleep(retryDelayMs(res, attempt));");
   lines.push("        continue;");
   lines.push("      }");
-  lines.push("      return { ok: res.ok, status: res.status, body: parsed };");
+  lines.push("      const payload = { ok: res.ok, status: res.status, body: parsed, requestId };");
+  lines.push("      if (!res.ok) {");
+  lines.push('        payload.error = "http_error";');
+  lines.push("        payload.body = truncateBody(text);");
+  lines.push("      }");
+  lines.push("      return payload;");
   lines.push("    } catch (err) {");
   lines.push("      lastErr = err;");
   lines.push("      if (attempt < maxAttempts - 1) {");
   lines.push("        await sleep(100 * Math.pow(2, attempt));");
   lines.push("        continue;");
   lines.push("      }");
-  lines.push('      return { ok: false, error: "fetch_failed", message: String(err && err.message ? err.message : err) };');
+  lines.push("      const kind = isTimeoutErr(err) ? \"timeout\" : \"network\";");
+  lines.push("      return { ok: false, error: kind, message: String(err && err.message ? err.message : err), requestId };");
   lines.push("    } finally {");
   lines.push("      clearTimeout(timer);");
   lines.push("    }");
   lines.push("  }");
-  lines.push('  return { ok: false, error: "fetch_failed", message: String(lastErr && lastErr.message ? lastErr.message : lastErr || "network") };');
+  lines.push("  const kind = isTimeoutErr(lastErr) ? \"timeout\" : \"network\";");
+  lines.push("  return { ok: false, error: kind, message: String(lastErr && lastErr.message ? lastErr.message : lastErr || \"network\"), requestId: \"\" };");
   lines.push("}");
   lines.push("");
   lines.push("function rpcResult(id, result) {");
@@ -720,7 +755,9 @@ export function generateMcpServer(ops, title = "API", { baseUrl = "", packageNam
   lines.push("    }");
   lines.push("    const result = await invokeHttp(tool, args);");
   lines.push("    const statusOk = result.ok !== false;");
-  lines.push("    return rpcResult(id ?? null, { ok: statusOk, tool: name, result });");
+  lines.push("    const payload = { ok: statusOk, tool: name, result };");
+  lines.push("    if (!statusOk) payload.error = mcpUpstreamError(result);");
+  lines.push("    return rpcResult(id ?? null, payload);");
   lines.push("  }");
   lines.push('  if (method === "ping") {');
   lines.push("    return rpcResult(id ?? null, {});");
@@ -833,6 +870,7 @@ export function generateMcpServerPy(ops, title = "API", { baseUrl = "", packageN
 # Identity: Accept application/json unless already set; default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 # Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
 # Timeout: per-attempt 10s (urllib timeout). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.
+# Upstream HTTP failure after retries: tools/call result.error includes status + requestId. Auth headers are not copied into the payload.
 # Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 # Stdlib only (urllib). Compatible with B gateway stdio upstream.
 
@@ -941,6 +979,36 @@ def _apply_identity(headers, method, op_idem=""):
         headers["Idempotency-Key"] = op_idem
 
 
+def _header_request_id(headers):
+    if not headers:
+        return ""
+    try:
+        items = headers.items() if hasattr(headers, "items") else []
+        for k, v in items:
+            if str(k).lower() == "x-request-id":
+                return str(v or "")
+    except Exception:
+        return ""
+    return ""
+
+
+def _truncate_body(text):
+    s = "" if text is None else str(text)
+    if len(s) > 2048:
+        return s[:2048]
+    return s
+
+
+def _is_timeout_err(err):
+    if isinstance(err, TimeoutError):
+        return True
+    reason = getattr(err, "reason", None)
+    if isinstance(reason, TimeoutError):
+        return True
+    msg = str(reason if reason is not None else err).lower()
+    return "timed out" in msg or "timeout" in msg or "aborted" in msg
+
+
 def _retry_delay_s(headers, attempt):
     raw = None
     if headers is not None:
@@ -1044,7 +1112,11 @@ def invoke_http(tool, args):
                     parsed = text
             else:
                 parsed = None
-            last_result = {"ok": ok, "status": status, "body": parsed}
+            req_id = _header_request_id(headers)
+            last_result = {"ok": ok, "status": status, "body": parsed, "requestId": req_id}
+            if not ok:
+                last_result["error"] = "http_error"
+                last_result["body"] = _truncate_body(text)
             if (int(status) == 429 or int(status) >= 500) and attempt < 2:
                 time.sleep(_retry_delay_s(retry_headers, attempt))
                 continue
@@ -1054,10 +1126,12 @@ def invoke_http(tool, args):
             if attempt < 2:
                 time.sleep(0.1 * (2 ** attempt))
                 continue
-            return {"ok": False, "error": "fetch_failed", "message": str(err)}
+            kind = "timeout" if _is_timeout_err(err) else "network"
+            return {"ok": False, "error": kind, "message": str(err), "requestId": _header_request_id(headers)}
     if last_result is not None:
         return last_result
-    return {"ok": False, "error": "fetch_failed", "message": str(last_err or "network")}
+    kind = "timeout" if _is_timeout_err(last_err) else "network"
+    return {"ok": False, "error": kind, "message": str(last_err or "network"), "requestId": ""}
 
 
 def rpc_result(rpc_id, result):
@@ -1109,7 +1183,15 @@ def handle_rpc(msg):
             return rpc_result(rpc_id, {"ok": False, "tool": name, "result": result})
         result = invoke_http(tool, args)
         status_ok = result.get("ok") is not False
-        return rpc_result(rpc_id, {"ok": status_ok, "tool": name, "result": result})
+        payload = {"ok": status_ok, "tool": name, "result": result}
+        if not status_ok:
+            payload["error"] = {
+                "status": int(result.get("status") or 0),
+                "requestId": str(result.get("requestId") or ""),
+            }
+            if result.get("error"):
+                payload["error"]["code"] = str(result.get("error"))
+        return rpc_result(rpc_id, payload)
     if method_s == "ping":
         return rpc_result(rpc_id, {})
     return rpc_error(rpc_id, -32601, "unknown_method:" + method_s)
@@ -1221,6 +1303,7 @@ export function generateMcpServerGo(ops, title = "API", { baseUrl = "", packageN
 // Identity: Accept application/json unless already set; default User-Agent ${userAgent} unless already set; X-Request-Id per HTTP attempt; Idempotency-Key on POST/PUT/PATCH/DELETE (reused across retries). Pin via MCP_REQUEST_ID / SDK_REQUEST_ID and MCP_IDEMPOTENCY_KEY / SDK_IDEMPOTENCY_KEY.
 // Retry: 429 / 5xx / network (max 2 retries, ~100ms exponential backoff, honor Retry-After <30s).
 // Timeout: per-attempt 10s (context.WithTimeout). Override via MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.
+// Upstream HTTP failure after retries: tools/call result.error includes status + requestId. Auth headers are not copied into the payload.
 // Auth: env MCP_BEARER_TOKEN / SDK_BEARER_TOKEN and MCP_API_KEY / SDK_API_KEY (values never logged). oauth2 / openIdConnect skipped.
 // Stdlib only (net/http). Compatible with B gateway stdio upstream.
 // Run: go run mcp_server.go   (Go 1.21+; no extra modules)
@@ -1232,8 +1315,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1409,6 +1494,28 @@ func applyPath(pathTpl string, args map[string]any) (string, map[string]struct{}
 	return b.String(), used
 }
 
+func truncateBody(s string) string {
+	if len(s) <= 2048 {
+		return s
+	}
+	return s[:2048]
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timed out") || strings.Contains(msg, "aborted")
+}
+
 func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 	root := baseURL()
 	if root == "" {
@@ -1496,7 +1603,11 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 				time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
 				continue
 			}
-			return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
+			kind := "network"
+			if isTimeoutErr(err) {
+				kind = "timeout"
+			}
+			return map[string]any{"ok": false, "error": kind, "message": err.Error(), "requestId": req.Header.Get("X-Request-Id")}
 		}
 		data, err := io.ReadAll(res.Body)
 		res.Body.Close()
@@ -1507,7 +1618,11 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 				time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
 				continue
 			}
-			return map[string]any{"ok": false, "error": "fetch_failed", "message": err.Error()}
+			kind := "network"
+			if isTimeoutErr(err) {
+				kind = "timeout"
+			}
+			return map[string]any{"ok": false, "error": kind, "message": err.Error(), "requestId": req.Header.Get("X-Request-Id")}
 		}
 		var parsed any
 		if len(data) == 0 {
@@ -1516,7 +1631,17 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 			parsed = string(data)
 		}
 		ok := res.StatusCode >= 200 && res.StatusCode < 300
-		last = map[string]any{"ok": ok, "status": res.StatusCode, "body": parsed}
+		rid := req.Header.Get("X-Request-Id")
+		bodyOut := parsed
+		if !ok {
+			if s, okS := parsed.(string); okS {
+				bodyOut = truncateBody(s)
+			}
+		}
+		last = map[string]any{"ok": ok, "status": res.StatusCode, "body": bodyOut, "requestId": rid}
+		if !ok {
+			last["error"] = "http_error"
+		}
 		if !ok && (res.StatusCode == 429 || res.StatusCode >= 500) && attempt < 2 {
 			time.Sleep(retryDelay(res, attempt))
 			continue
@@ -1527,10 +1652,14 @@ func invokeHTTP(tool mcpTool, args map[string]any) map[string]any {
 		return last
 	}
 	msg := "network"
+	kind := "network"
 	if lastErr != nil {
 		msg = lastErr.Error()
+		if isTimeoutErr(lastErr) {
+			kind = "timeout"
+		}
 	}
-	return map[string]any{"ok": false, "error": "fetch_failed", "message": msg}
+	return map[string]any{"ok": false, "error": kind, "message": msg, "requestId": ""}
 }
 
 func rpcResult(rpcID any, result any) map[string]any {
@@ -1620,7 +1749,23 @@ func handleRPC(msg map[string]any) any {
 		if v, ok := result["ok"].(bool); ok && !v {
 			statusOk = false
 		}
-		return rpcResult(rpcID, map[string]any{"ok": statusOk, "tool": name, "result": result})
+		out := map[string]any{"ok": statusOk, "tool": name, "result": result}
+		if !statusOk {
+			st := 0
+			switch v := result["status"].(type) {
+			case int:
+				st = v
+			case float64:
+				st = int(v)
+			}
+			rid, _ := result["requestId"].(string)
+			errObj := map[string]any{"status": st, "requestId": rid}
+			if c, ok := result["error"].(string); ok && c != "" {
+				errObj["code"] = c
+			}
+			out["error"] = errObj
+		}
+		return rpcResult(rpcID, out)
 	}
 	if method == "ping" {
 		return rpcResult(rpcID, map[string]any{})
@@ -1938,6 +2083,374 @@ function emitTsIterate(lines, op, info, iterName) {
   lines.push(`  }`);
 }
 
+function emitTsApiErrors(lines) {
+  lines.push(`// Typed errors after retries are exhausted. Response body truncated to 2048 chars. requestId is the X-Request-Id that was sent (not a response header).`);
+  lines.push(`const BODY_TRUNCATE = 2048;`);
+  lines.push(`function truncateBody(text: string): string {`);
+  lines.push(`  const s = text == null ? "" : String(text);`);
+  lines.push(`  return s.length > BODY_TRUNCATE ? s.slice(0, BODY_TRUNCATE) : s;`);
+  lines.push(`}`);
+  lines.push(`function headerValue(headers: { [k: string]: string }, name: string): string {`);
+  lines.push(`  const want = name.toLowerCase();`);
+  lines.push(`  for (const k of Object.keys(headers || {})) if (k.toLowerCase() === want) return String(headers[k] || "");`);
+  lines.push(`  return "";`);
+  lines.push(`}`);
+  lines.push(`function parseRetryAfterSeconds(raw: string | null | undefined): number | null {`);
+  lines.push(`  if (raw == null || !String(raw).trim()) return null;`);
+  lines.push(`  const n = Number(raw);`);
+  lines.push(`  if (Number.isFinite(n) && n >= 0) return n;`);
+  lines.push(`  const when = Date.parse(String(raw));`);
+  lines.push(`  if (!Number.isNaN(when)) {`);
+  lines.push(`    const delta = (when - Date.now()) / 1000;`);
+  lines.push(`    return delta < 0 ? 0 : delta;`);
+  lines.push(`  }`);
+  lines.push(`  return null;`);
+  lines.push(`}`);
+  lines.push(`function isTimeoutErr(err: unknown): boolean {`);
+  lines.push(`  const e = err as { name?: string; message?: string } | null;`);
+  lines.push(`  const name = e && e.name ? String(e.name) : "";`);
+  lines.push(`  const msg = e && e.message ? String(e.message) : String(err || "");`);
+  lines.push(`  return name === "AbortError" || name === "TimeoutError" || /timeout|aborted/i.test(msg);`);
+  lines.push(`}`);
+  lines.push(`export class ApiError extends Error {`);
+  lines.push(`  readonly status: number;`);
+  lines.push(`  readonly body: string;`);
+  lines.push(`  readonly requestId: string;`);
+  lines.push(`  constructor(message: string, opts: { status?: number; body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super(message);`);
+  lines.push(`    this.name = "ApiError";`);
+  lines.push(`    this.status = opts.status != null ? Number(opts.status) : 0;`);
+  lines.push(`    this.body = truncateBody(opts.body != null ? String(opts.body) : "");`);
+  lines.push(`    this.requestId = opts.requestId != null ? String(opts.requestId) : "";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class BadRequestError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("HTTP 400", { status: 400, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "BadRequestError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class UnauthorizedError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("HTTP 401", { status: 401, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "UnauthorizedError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class ForbiddenError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("HTTP 403", { status: 403, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "ForbiddenError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class NotFoundError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("HTTP 404", { status: 404, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "NotFoundError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class ConflictError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("HTTP 409", { status: 409, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "ConflictError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class UnprocessableEntityError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("HTTP 422", { status: 422, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "UnprocessableEntityError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class RateLimitError extends ApiError {`);
+  lines.push(`  readonly retryAfterSeconds: number | null;`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string; retryAfterSeconds?: number | null } = {}) {`);
+  lines.push(`    super("HTTP 429", { status: 429, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "RateLimitError";`);
+  lines.push(`    this.retryAfterSeconds = opts.retryAfterSeconds != null && Number.isFinite(Number(opts.retryAfterSeconds)) ? Number(opts.retryAfterSeconds) : null;`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class ServerError extends ApiError {`);
+  lines.push(`  constructor(opts: { status?: number; body?: string; requestId?: string } = {}) {`);
+  lines.push(`    const status = opts.status != null && Number(opts.status) >= 500 ? Number(opts.status) : 500;`);
+  lines.push(`    super("HTTP " + status, { status, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "ServerError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class TimeoutError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("timeout", { status: 0, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "TimeoutError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`export class NetworkError extends ApiError {`);
+  lines.push(`  constructor(opts: { body?: string; requestId?: string } = {}) {`);
+  lines.push(`    super("network", { status: 0, body: opts.body, requestId: opts.requestId });`);
+  lines.push(`    this.name = "NetworkError";`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push(`function errorFromResponse(status: number, body: string, requestId: string, retryAfterRaw?: string | null): ApiError {`);
+  lines.push(`  if (status === 400) return new BadRequestError({ body, requestId });`);
+  lines.push(`  if (status === 401) return new UnauthorizedError({ body, requestId });`);
+  lines.push(`  if (status === 403) return new ForbiddenError({ body, requestId });`);
+  lines.push(`  if (status === 404) return new NotFoundError({ body, requestId });`);
+  lines.push(`  if (status === 409) return new ConflictError({ body, requestId });`);
+  lines.push(`  if (status === 422) return new UnprocessableEntityError({ body, requestId });`);
+  lines.push(`  if (status === 429) return new RateLimitError({ body, requestId, retryAfterSeconds: parseRetryAfterSeconds(retryAfterRaw) });`);
+  lines.push(`  if (status >= 500) return new ServerError({ status, body, requestId });`);
+  lines.push(`  return new ApiError("HTTP " + status, { status, body, requestId });`);
+  lines.push(`}`);
+}
+
+function emitPyApiErrors(lines) {
+  lines.push(`_BODY_TRUNCATE = 2048`);
+  lines.push(``);
+  lines.push(`def _truncate_body(text: Any) -> str:`);
+  lines.push(`    s = "" if text is None else str(text)`);
+  lines.push(`    if len(s) > _BODY_TRUNCATE:`);
+  lines.push(`        return s[:_BODY_TRUNCATE]`);
+  lines.push(`    return s`);
+  lines.push(``);
+  lines.push(`def _header_request_id(headers: Any) -> str:`);
+  lines.push(`    if not headers:`);
+  lines.push(`        return ""`);
+  lines.push(`    try:`);
+  lines.push(`        items = headers.items() if hasattr(headers, "items") else []`);
+  lines.push(`        for k, v in items:`);
+  lines.push(`            if str(k).lower() == "x-request-id":`);
+  lines.push(`                return str(v or "")`);
+  lines.push(`    except Exception:`);
+  lines.push(`        return ""`);
+  lines.push(`    return ""`);
+  lines.push(``);
+  lines.push(`def _retry_after_seconds(headers: Any) -> Any:`);
+  lines.push(`    if headers is None:`);
+  lines.push(`        return None`);
+  lines.push(`    raw = None`);
+  lines.push(`    try:`);
+  lines.push(`        raw = headers.get("Retry-After")`);
+  lines.push(`    except Exception:`);
+  lines.push(`        raw = None`);
+  lines.push(`    if not raw:`);
+  lines.push(`        return None`);
+  lines.push(`    try:`);
+  lines.push(`        return int(float(str(raw).strip()))`);
+  lines.push(`    except (TypeError, ValueError):`);
+  lines.push(`        try:`);
+  lines.push(`            when = parsedate_to_datetime(str(raw))`);
+  lines.push(`            n = int(when.timestamp() - time.time())`);
+  lines.push(`            return 0 if n < 0 else n`);
+  lines.push(`        except (TypeError, ValueError, OverflowError, OSError):`);
+  lines.push(`            return None`);
+  lines.push(``);
+  lines.push(`class ApiError(Exception):`);
+  lines.push(`    def __init__(self, message: str, status: int = 0, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__(message)`);
+  lines.push(`        self.status = int(status or 0)`);
+  lines.push(`        self.body = _truncate_body(body)`);
+  lines.push(`        self.request_id = str(request_id or "")`);
+  lines.push(``);
+  lines.push(`class BadRequestError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("HTTP 400", status=400, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class UnauthorizedError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("HTTP 401", status=401, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class ForbiddenError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("HTTP 403", status=403, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class NotFoundError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("HTTP 404", status=404, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class ConflictError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("HTTP 409", status=409, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class UnprocessableEntityError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("HTTP 422", status=422, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class RateLimitError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "", retry_after_seconds: Any = None) -> None:`);
+  lines.push(`        super().__init__("HTTP 429", status=429, body=body, request_id=request_id)`);
+  lines.push(`        if retry_after_seconds is None:`);
+  lines.push(`            self.retry_after_seconds = None`);
+  lines.push(`        else:`);
+  lines.push(`            try:`);
+  lines.push(`                self.retry_after_seconds = int(retry_after_seconds)`);
+  lines.push(`            except (TypeError, ValueError):`);
+  lines.push(`                self.retry_after_seconds = None`);
+  lines.push(``);
+  lines.push(`class ServerError(ApiError):`);
+  lines.push(`    def __init__(self, status: int = 500, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__(f"HTTP {int(status)}", status=int(status), body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class ApiTimeoutError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("timeout", status=0, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`class NetworkError(ApiError):`);
+  lines.push(`    def __init__(self, body: str = "", request_id: str = "") -> None:`);
+  lines.push(`        super().__init__("network", status=0, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`def _error_from_status(status: int, body: str, request_id: str, headers: Any = None) -> ApiError:`);
+  lines.push(`    if status == 400:`);
+  lines.push(`        return BadRequestError(body=body, request_id=request_id)`);
+  lines.push(`    if status == 401:`);
+  lines.push(`        return UnauthorizedError(body=body, request_id=request_id)`);
+  lines.push(`    if status == 403:`);
+  lines.push(`        return ForbiddenError(body=body, request_id=request_id)`);
+  lines.push(`    if status == 404:`);
+  lines.push(`        return NotFoundError(body=body, request_id=request_id)`);
+  lines.push(`    if status == 409:`);
+  lines.push(`        return ConflictError(body=body, request_id=request_id)`);
+  lines.push(`    if status == 422:`);
+  lines.push(`        return UnprocessableEntityError(body=body, request_id=request_id)`);
+  lines.push(`    if status == 429:`);
+  lines.push(`        return RateLimitError(body=body, request_id=request_id, retry_after_seconds=_retry_after_seconds(headers))`);
+  lines.push(`    if status >= 500:`);
+  lines.push(`        return ServerError(status=status, body=body, request_id=request_id)`);
+  lines.push(`    return ApiError(f"HTTP {status}", status=status, body=body, request_id=request_id)`);
+  lines.push(``);
+  lines.push(`def _is_timeout_err(err: Any) -> bool:`);
+  lines.push(`    if isinstance(err, TimeoutError):`);
+  lines.push(`        return True`);
+  lines.push(`    reason = getattr(err, "reason", None)`);
+  lines.push(`    if isinstance(reason, TimeoutError):`);
+  lines.push(`        return True`);
+  lines.push(`    msg = str(reason if reason is not None else err).lower()`);
+  lines.push(`    return "timed out" in msg or "timeout" in msg`);
+  lines.push(``);
+}
+
+function emitGoApiErrors(lines) {
+  lines.push(`const bodyTruncate = 2048`);
+  lines.push(``);
+  lines.push(`func truncateBody(s string) string {`);
+  lines.push(`	if len(s) <= bodyTruncate {`);
+  lines.push(`		return s`);
+  lines.push(`	}`);
+  lines.push(`	return s[:bodyTruncate]`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func parseRetryAfterSeconds(h http.Header) *int {`);
+  lines.push(`	if h == nil {`);
+  lines.push(`		return nil`);
+  lines.push(`	}`);
+  lines.push(`	raw := strings.TrimSpace(h.Get("Retry-After"))`);
+  lines.push(`	if raw == "" {`);
+  lines.push(`		return nil`);
+  lines.push(`	}`);
+  lines.push(`	if sec, err := strconv.Atoi(raw); err == nil && sec >= 0 {`);
+  lines.push(`		return &sec`);
+  lines.push(`	}`);
+  lines.push(`	if when, err := http.ParseTime(raw); err == nil {`);
+  lines.push(`		n := int(time.Until(when).Seconds())`);
+  lines.push(`		if n < 0 {`);
+  lines.push(`			n = 0`);
+  lines.push(`		}`);
+  lines.push(`		return &n`);
+  lines.push(`	}`);
+  lines.push(`	return nil`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func isTimeoutErr(err error) bool {`);
+  lines.push(`	if err == nil {`);
+  lines.push(`		return false`);
+  lines.push(`	}`);
+  lines.push(`	if errors.Is(err, context.DeadlineExceeded) {`);
+  lines.push(`		return true`);
+  lines.push(`	}`);
+  lines.push(`	var nerr net.Error`);
+  lines.push(`	if errors.As(err, &nerr) && nerr.Timeout() {`);
+  lines.push(`		return true`);
+  lines.push(`	}`);
+  lines.push(`	msg := strings.ToLower(err.Error())`);
+  lines.push(`	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timed out")`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`// ApiError is the typed HTTP failure after retries are exhausted.`);
+  lines.push(`type ApiError struct {`);
+  lines.push(`	Status            int`);
+  lines.push(`	Body              string`);
+  lines.push(`	RequestID         string`);
+  lines.push(`	RetryAfterSeconds *int`);
+  lines.push(`	Kind              string`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func (e *ApiError) Error() string {`);
+  lines.push(`	if e == nil {`);
+  lines.push(`		return "api error"`);
+  lines.push(`	}`);
+  lines.push(`	if e.Kind == "timeout" {`);
+  lines.push(`		return fmt.Sprintf("timeout request_id=%s", e.RequestID)`);
+  lines.push(`	}`);
+  lines.push(`	if e.Kind == "network" {`);
+  lines.push(`		return fmt.Sprintf("network request_id=%s", e.RequestID)`);
+  lines.push(`	}`);
+  lines.push(`	return fmt.Sprintf("HTTP %d request_id=%s", e.Status, e.RequestID)`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`type BadRequestError struct{ *ApiError }`);
+  lines.push(`func (e *BadRequestError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type UnauthorizedError struct{ *ApiError }`);
+  lines.push(`func (e *UnauthorizedError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type ForbiddenError struct{ *ApiError }`);
+  lines.push(`func (e *ForbiddenError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type NotFoundError struct{ *ApiError }`);
+  lines.push(`func (e *NotFoundError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type ConflictError struct{ *ApiError }`);
+  lines.push(`func (e *ConflictError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type UnprocessableEntityError struct{ *ApiError }`);
+  lines.push(`func (e *UnprocessableEntityError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type RateLimitError struct{ *ApiError }`);
+  lines.push(`func (e *RateLimitError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type ServerError struct{ *ApiError }`);
+  lines.push(`func (e *ServerError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type TimeoutError struct{ *ApiError }`);
+  lines.push(`func (e *TimeoutError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(`type NetworkError struct{ *ApiError }`);
+  lines.push(`func (e *NetworkError) Unwrap() error { if e == nil { return nil }; return e.ApiError }`);
+  lines.push(``);
+  lines.push(`func wrapTransportErr(err error, requestID string) error {`);
+  lines.push(`	ae := &ApiError{RequestID: requestID, Body: err.Error()}`);
+  lines.push(`	if isTimeoutErr(err) {`);
+  lines.push(`		ae.Kind = "timeout"`);
+  lines.push(`		return &TimeoutError{ae}`);
+  lines.push(`	}`);
+  lines.push(`	ae.Kind = "network"`);
+  lines.push(`	return &NetworkError{ae}`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`func errorFromStatus(status int, body, requestID string, retryAfter *int) error {`);
+  lines.push(`	ae := &ApiError{Status: status, Body: truncateBody(body), RequestID: requestID, RetryAfterSeconds: retryAfter}`);
+  lines.push(`	switch status {`);
+  lines.push(`	case 400:`);
+  lines.push(`		return &BadRequestError{ae}`);
+  lines.push(`	case 401:`);
+  lines.push(`		return &UnauthorizedError{ae}`);
+  lines.push(`	case 403:`);
+  lines.push(`		return &ForbiddenError{ae}`);
+  lines.push(`	case 404:`);
+  lines.push(`		return &NotFoundError{ae}`);
+  lines.push(`	case 409:`);
+  lines.push(`		return &ConflictError{ae}`);
+  lines.push(`	case 422:`);
+  lines.push(`		return &UnprocessableEntityError{ae}`);
+  lines.push(`	case 429:`);
+  lines.push(`		return &RateLimitError{ae}`);
+  lines.push(`	default:`);
+  lines.push(`		if status >= 500 {`);
+  lines.push(`			return &ServerError{ae}`);
+  lines.push(`		}`);
+  lines.push(`		return ae`);
+  lines.push(`	}`);
+  lines.push(`}`);
+  lines.push(``);
+}
+
 export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const pageable = pageableOps(ops);
@@ -1952,6 +2465,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   if (auth.headerKeys.length || auth.queryKeys.length) optFields.push("apiKey?: string");
   lines.push(`export interface ClientOptions { ${optFields.join("; ")} }`);
   lines.push(`// Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
+  lines.push(`// Typed errors after retries are exhausted: ApiError + 400/401/403/404/409/422/429/5xx + TimeoutError/NetworkError. Body truncated to 2048 chars. requestId is the sent X-Request-Id. RateLimitError.retryAfterSeconds when Retry-After was present.`);
   lines.push(`// Per-attempt request timeout (default 10s): AbortController. Override via ClientOptions.timeoutMs or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`// Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`// Accept: application/json unless the caller already set Accept.`);
@@ -2023,6 +2537,7 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`  }`);
   lines.push(`  return 100 * Math.pow(2, attempt);`);
   lines.push(`}`);
+  emitTsApiErrors(lines);
   lines.push(`export function createClient(opts: ClientOptions = {}) {`);
   lines.push(`  const baseUrl = (opts.baseUrl || "").replace(/\\/$/, "");`);
   lines.push(`  const f = opts.fetchImpl || fetch;`);
@@ -2088,7 +2603,12 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push(`        res = await f(baseUrl + path, init);`);
   }
   lines.push(`      } catch (err) {`);
-  lines.push(`        if (attempt >= maxAttempts - 1) throw err;`);
+  lines.push(`        if (attempt >= maxAttempts - 1) {`);
+  lines.push(`          const rid = headerValue(headers, "x-request-id");`);
+  lines.push(`          const msg = err && (err as { message?: string }).message ? String((err as { message?: string }).message) : String(err);`);
+  lines.push(`          if (isTimeoutErr(err)) throw new TimeoutError({ requestId: rid, body: msg });`);
+  lines.push(`          throw new NetworkError({ requestId: rid, body: msg });`);
+  lines.push(`        }`);
   lines.push(`        await sleep(100 * Math.pow(2, attempt));`);
   lines.push(`        continue;`);
   lines.push(`      } finally {`);
@@ -2102,9 +2622,11 @@ export function generateTsClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`        await sleep(retryDelayMs(res, attempt));`);
   lines.push(`        continue;`);
   lines.push(`      }`);
-  lines.push(`      throw new Error(method + " " + path + " -> " + res.status);`);
+  lines.push(`      const errBody = await res.text();`);
+  lines.push(`      const rid = headerValue(headers, "x-request-id");`);
+  lines.push(`      throw errorFromResponse(res.status, errBody, rid, res.headers.get("retry-after"));`);
   lines.push(`    }`);
-  lines.push(`    throw new Error(method + " " + path + " -> network");`);
+  lines.push(`    throw new NetworkError({ body: method + " " + path + " -> network" });`);
   lines.push(`  }`);
   if (pageable.length) emitTsPageRuntime(lines);
   for (const op of ops) {
@@ -2258,6 +2780,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`__package_name__ = ${JSON.stringify(pkg.ident)}`);
   lines.push(``);
   lines.push(`# Retry transient HTTP failures (429 / 5xx / network throw): max 2 retries, ~100ms exponential backoff, honor Retry-After <30s.`);
+  lines.push(`# Typed errors after retries are exhausted: ApiError + 400/401/403/404/409/422/429/5xx + ApiTimeoutError/NetworkError. Body truncated to 2048 chars. request_id is the sent X-Request-Id. RateLimitError.retry_after_seconds when Retry-After was present.`);
   lines.push(`# Per-attempt request timeout (default 10s): urllib timeout. Override via Client(timeout=...) or env SDK_TIMEOUT_MS / SDK_TIMEOUT_SEC.`);
   lines.push(`# Default User-Agent ${JSON.stringify(defaultUserAgent(opts))} unless the caller already set User-Agent.`);
   lines.push(`# Accept: application/json unless the caller already set Accept.`);
@@ -2342,6 +2865,7 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
     lines.push(``);
   }
   if (pageable.length) emitPyPageRuntime(lines);
+  emitPyApiErrors(lines);
   lines.push(`class Client:`);
   lines.push(`    """Sync HTTP client stub generated from OpenAPI."""`);
   lines.push(``);
@@ -2428,24 +2952,33 @@ export function generatePyClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`            except urllib.error.HTTPError as e:`);
   lines.push(`                last_err = e`);
   lines.push(`                code = e.code`);
-  lines.push(`                hdrs = e.headers`);
+  lines.push(`                resp_headers = e.headers`);
+  lines.push(`                body = ""`);
+  lines.push(`                try:`);
+  lines.push(`                    raw = e.read() if e.fp else b""`);
+  lines.push(`                    body = raw.decode("utf-8", "replace") if raw else ""`);
+  lines.push(`                except Exception:`);
+  lines.push(`                    body = ""`);
   lines.push(`                try:`);
   lines.push(`                    e.close()`);
   lines.push(`                except Exception:`);
   lines.push(`                    pass`);
   lines.push(`                if (code == 429 or code >= 500) and attempt < 2:`);
-  lines.push(`                    time.sleep(_retry_delay_s(hdrs, attempt))`);
+  lines.push(`                    time.sleep(_retry_delay_s(resp_headers, attempt))`);
   lines.push(`                    continue`);
-  lines.push(`                raise RuntimeError(f"{method} {path} -> {code}") from e`);
+  lines.push(`                raise _error_from_status(code, body, _header_request_id(hdrs), resp_headers) from e`);
   lines.push(`            except (urllib.error.URLError, TimeoutError, OSError) as e:`);
   lines.push(`                last_err = e`);
   lines.push(`                if attempt < 2:`);
   lines.push(`                    time.sleep(0.1 * (2 ** attempt))`);
   lines.push(`                    continue`);
-  lines.push(`                raise`);
+  lines.push(`                rid = _header_request_id(hdrs)`);
+  lines.push(`                if _is_timeout_err(e):`);
+  lines.push(`                    raise ApiTimeoutError(body=str(e), request_id=rid) from e`);
+  lines.push(`                raise NetworkError(body=str(e), request_id=rid) from e`);
   lines.push(`        if last_err is not None:`);
   lines.push(`            raise last_err`);
-  lines.push(`        raise RuntimeError(f"{method} {path} -> network")`);
+  lines.push(`        raise NetworkError(body=f"{method} {path} -> network")`);
   lines.push(``);
   for (const op of ops) {
     const fn = op.operationId;
@@ -2655,8 +3188,10 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t"context"`);
   lines.push(`\t"crypto/rand"`);
   lines.push(`\t"encoding/json"`);
+  lines.push(`\t"errors"`);
   lines.push(`\t"fmt"`);
   lines.push(`\t"io"`);
+  lines.push(`\t"net"`);
   lines.push(`\t"net/http"`);
   lines.push(`\t"net/url"`);
   lines.push(`\t"os"`);
@@ -2770,6 +3305,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`}`);
   lines.push(``);
   lines.push(`// retryDelay honors Retry-After when sane (<30s); else ~100ms exponential backoff.`);
+  lines.push(`// Typed errors after retries are exhausted: ApiError + 400/401/403/404/409/422/429/5xx + TimeoutError/NetworkError. Body truncated to 2048 chars. RequestID is the sent X-Request-Id. RateLimitError.RetryAfterSeconds when Retry-After was present.`);
   lines.push(`func retryDelay(res *http.Response, attempt int) time.Duration {`);
   lines.push(`\tif res != nil {`);
   lines.push(`\t\tif raw := res.Header.Get("Retry-After"); raw != "" {`);
@@ -2787,6 +3323,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\treturn time.Duration(100*(1<<attempt)) * time.Millisecond`);
   lines.push(`}`);
   lines.push(``);
+  emitGoApiErrors(lines);
   lines.push(auth.any ? `func (c *Client) request(method, path string, body any, auth *reqAuth) (any, error) {` : `func (c *Client) request(method, path string, body any) (any, error) {`);
   lines.push(`\thc := c.HTTPClient`);
   lines.push(`\tif hc == nil {`);
@@ -2872,7 +3409,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\t\t\ttime.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)`);
   lines.push(`\t\t\t\tcontinue`);
   lines.push(`\t\t\t}`);
-  lines.push(`\t\t\treturn nil, err`);
+  lines.push(`\t\t\treturn nil, wrapTransportErr(err, req.Header.Get("X-Request-Id"))`);
   lines.push(`\t\t}`);
   lines.push(`\t\tdata, err := io.ReadAll(res.Body)`);
   lines.push(`\t\tres.Body.Close()`);
@@ -2883,14 +3420,15 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\t\t\t\ttime.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)`);
   lines.push(`\t\t\t\tcontinue`);
   lines.push(`\t\t\t}`);
-  lines.push(`\t\t\treturn nil, err`);
+  lines.push(`\t\t\treturn nil, wrapTransportErr(err, req.Header.Get("X-Request-Id"))`);
   lines.push(`\t\t}`);
   lines.push(`\t\tif res.StatusCode < 200 || res.StatusCode >= 300 {`);
   lines.push(`\t\t\tif (res.StatusCode == 429 || res.StatusCode >= 500) && attempt < 2 {`);
   lines.push(`\t\t\t\ttime.Sleep(retryDelay(res, attempt))`);
   lines.push(`\t\t\t\tcontinue`);
   lines.push(`\t\t\t}`);
-  lines.push(`\t\t\treturn nil, fmt.Errorf("%s %s -> %d", method, path, res.StatusCode)`);
+  lines.push(`\t\t\tbodyText := string(data)`);
+  lines.push(`\t\t\treturn nil, errorFromStatus(res.StatusCode, bodyText, req.Header.Get("X-Request-Id"), parseRetryAfterSeconds(res.Header))`);
   lines.push(`\t\t}`);
   lines.push(`\t\tif len(data) == 0 {`);
   lines.push(`\t\t\treturn nil, nil`);
@@ -2904,7 +3442,7 @@ export function generateGoClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`\tif lastErr != nil {`);
   lines.push(`\t\treturn nil, lastErr`);
   lines.push(`\t}`);
-  lines.push(`\treturn nil, fmt.Errorf("%s %s -> network", method, path)`);
+  lines.push(`\treturn nil, wrapTransportErr(fmt.Errorf("%s %s -> network", method, path), "")`);
   lines.push(`}`);
   lines.push(``);
   lines.push(`func expandPath(pathTpl string, args map[string]any) (string, map[string]any) {`);
@@ -6852,12 +7390,12 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
   const mcp = opts.mcp !== false;
   const mcpConfig = opts.mcpConfig;
   const files = [];
-  if (langSet.has("ts")) { files.push(`- \`client.ts\` — TypeScript client stub`); files.push(`- \`package.json\` — package name \`${pkg.ident}\``); }
+  if (langSet.has("ts")) { files.push(`- \`client.ts\` — TypeScript client stub (typed ApiError after retries)`); files.push(`- \`package.json\` — package name \`${pkg.ident}\``); }
   if (langSet.has("python") || langSet.has("py")) {
-    files.push(`- \`client.py\` — Python sync client stub (stdlib urllib)`);
+    files.push(`- \`client.py\` — Python sync client stub (stdlib urllib; typed ApiError after retries)`);
   }
   if (langSet.has("go")) {
-    files.push(`- \`client.go\` — Go HTTP client stub (stdlib net/http, package ${pkg.ident})`);
+    files.push(`- \`client.go\` — Go HTTP client stub (stdlib net/http, package ${pkg.ident}; typed ApiError after retries)`);
   }
   if (langSet.has("java")) {
     files.push(`- \`Client.java\` — Java HTTP client stub (stdlib HttpURLConnection, package ${pkg.ident}; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);

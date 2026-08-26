@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Generated TS / Python / Go clients throw typed `ApiError` after retries are exhausted (subclasses/variants for 400/401/403/404/409/422/429 and 5xx, plus timeout/network). Carries HTTP status, truncated response body, and the sent `X-Request-Id`. `RateLimitError` exposes retry-after seconds when the header was present. Generated stdio MCP servers map upstream failure to a tools/call error payload with status + requestId (auth headers are not copied). Smoke prints `typed-errors-ok`. Java / Kotlin / C# / Rust / PHP / Swift / Ruby clients unchanged this slice.
 - Dry-run `registry-pack --in <generated-dir>` wraps generated `mcp-server.mjs` as a local MCP Registry `server.json` + wrapper package + tarball layout (not this CLI). Prints `registry-pack-ok`. Never POSTs. Human still publishes.
 - Generated TS / Python / Go / Java (plus other langs) clients send `Accept: application/json` unless already set. Smoke prints accept-ok.
 - Generated stdio MCP servers send `Accept: application/json` on tools/call upstream HTTP unless already set. Smoke prints mcp-accept-ok.

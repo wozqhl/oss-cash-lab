@@ -67,6 +67,7 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] Generated stdio MCP servers send the same identity headers on tools/call upstream HTTP (`User-Agent` sdk-mcp-gen/0.1.0 unless set, `X-Request-Id` per attempt, `Idempotency-Key` on POST/PUT/PATCH/DELETE). Smoke prints mcp-id-ok.
 - [x] Generated stdio MCP servers retry 429 / 5xx / network on tools/call upstream HTTP (max 2 retries, ~100ms backoff, honor Retry-After <30s; Idempotency-Key reused). Smoke prints mcp-retry-ok.
 - [x] Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call upstream HTTP (AbortController / urllib timeout / context.WithTimeout; override MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*). Smoke prints mcp-timeout-ok.
+- [x] Generated TS / Python / Go clients throw typed `ApiError` after retries (400/401/403/404/409/422/429/5xx + timeout/network; 429 retry-after seconds when present; sent `X-Request-Id`; truncated body). Stdio MCP maps upstream failure to status + requestId (no auth headers). Smoke prints typed-errors-ok.
 - [x] `registry-pack --in <generated-dir>` writes a local MCP Registry server.json + wrapper package + tarball layout for the generated mcp-server.mjs (not this CLI). Prints `registry-pack-ok`. Never POSTs. Human still publishes.
 - [x] Demo script in README (`scripts/demo.sh`)
 

@@ -2269,6 +2269,213 @@ async function smokeMcpTimeout(petstoreSpec, tmp) {
   }
 }
 
+function listenStatusStub(status, body, extraHeaders) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push({
+      method: String(req.method || ""),
+      url: String(req.url || ""),
+      requestId: String(req.headers["x-request-id"] || ""),
+      authorization: String(req.headers.authorization || ""),
+    });
+    const headers = { "content-type": "application/json", ...(extraHeaders || {}) };
+    res.writeHead(status, headers);
+    res.end(body);
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolve({
+        server,
+        seen,
+        url: `http://127.0.0.1:${addr.port}`,
+        reset() {
+          seen.length = 0;
+        },
+      });
+    });
+    server.on("error", reject);
+  });
+}
+
+async function smokeTypedErrors(petstoreSpec, tmp) {
+  const dir = path.join(tmp, "typed-errors");
+  generateToDir(petstoreSpec, dir, ["ts", "python", "go"]);
+  const ts = fs.readFileSync(path.join(dir, "client.ts"), "utf8");
+  const py = fs.readFileSync(path.join(dir, "client.py"), "utf8");
+  const go = fs.readFileSync(path.join(dir, "client.go"), "utf8");
+  for (const [label, blob] of [
+    ["ts", ts],
+    ["py", py],
+    ["go", go],
+  ]) {
+    if (!blob.includes("ApiError") || !blob.includes("NotFoundError") || !blob.includes("RateLimitError") || !blob.includes("ServerError") || !blob.includes("BadRequestError") || !blob.includes("UnauthorizedError") || !blob.includes("ForbiddenError") || !blob.includes("ConflictError") || !blob.includes("UnprocessableEntityError")) {
+      console.error("smoke typed errors", label, "missing ApiError hierarchy");
+      process.exit(1);
+    }
+  }
+  if (!ts.includes("retryAfterSeconds") || !py.includes("retry_after_seconds") || !go.includes("RetryAfterSeconds")) {
+    console.error("smoke typed errors missing retry-after field");
+    process.exit(1);
+  }
+  if (!ts.includes("class TimeoutError") || !py.includes("class ApiTimeoutError") || !go.includes("type TimeoutError")) {
+    console.error("smoke typed errors missing timeout variant");
+    process.exit(1);
+  }
+  if (!ts.includes("class NetworkError") || !py.includes("class NetworkError") || !go.includes("type NetworkError")) {
+    console.error("smoke typed errors missing network variant");
+    process.exit(1);
+  }
+  for (const [label, name] of [
+    ["js", MCP_SERVER_FILE],
+    ["py", MCP_SERVER_PY_FILE],
+    ["go", MCP_SERVER_GO_FILE],
+  ]) {
+    const blob = fs.readFileSync(path.join(dir, name), "utf8");
+    if (!blob.includes("requestId") || (!blob.includes("http_error") && !blob.includes("mcpUpstreamError"))) {
+      console.error("smoke typed errors mcp", label, "missing requestId / upstream error mapping");
+      process.exit(1);
+    }
+    if (/error:\s*\{[^}]*authorization/i.test(blob) || /payload\["error"\].*Authorization/.test(blob)) {
+      console.error("smoke typed errors mcp", label, "error payload must not copy Authorization");
+      process.exit(1);
+    }
+  }
+
+  const stub404 = await listenStatusStub(404, '{"err":"nope"}');
+  try {
+    const py404 = path.join(dir, "_typed_404.py");
+    fs.writeFileSync(py404, [
+      "import os, sys",
+      "from client import Client, NotFoundError",
+      "c = Client(os.environ['ERR_BASE'], request_id='smoke-rid')",
+      "try:",
+      "    c.getPet({'petId': 'missing'})",
+      "    raise SystemExit('expected NotFoundError')",
+      "except NotFoundError as e:",
+      "    if int(e.status) != 404 or str(e.request_id) != 'smoke-rid' or 'nope' not in str(e.body):",
+      "        raise SystemExit('bad NotFoundError fields ' + repr((e.status, e.request_id, e.body)))",
+      "    print('typed-404-ok')",
+      "",
+    ].join("\n"));
+    const run404 = await spawnArgvAsync("python3", [py404], {
+      cwd: dir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ERR_BASE: stub404.url },
+    }, 8000);
+    if (run404.error || run404.status !== 0 || !String(run404.stdout || "").includes("typed-404-ok")) {
+      console.error("smoke typed errors python 404 failed", run404.status, run404.stdout, run404.stderr, run404.error);
+      process.exit(1);
+    }
+    if (!stub404.seen.length || String(stub404.seen[0].requestId) !== "smoke-rid") {
+      console.error("smoke typed errors 404 missing sent X-Request-Id", stub404.seen);
+      process.exit(1);
+    }
+  } finally {
+    await new Promise((r) => stub404.server.close(() => r()));
+  }
+
+  const stub429 = await listenStatusStub(429, "slow down", { "retry-after": "0" });
+  try {
+    const py429 = path.join(dir, "_typed_429.py");
+    fs.writeFileSync(py429, [
+      "import os, sys",
+      "from client import Client, RateLimitError",
+      "c = Client(os.environ['ERR_BASE'], request_id='rid-429')",
+      "try:",
+      "    c.listPets({})",
+      "    raise SystemExit('expected RateLimitError')",
+      "except RateLimitError as e:",
+      "    if int(e.status) != 429 or str(e.request_id) != 'rid-429' or e.retry_after_seconds != 0:",
+      "        raise SystemExit('bad RateLimitError fields ' + repr((e.status, e.request_id, e.retry_after_seconds, e.body)))",
+      "    print('typed-429-ok')",
+      "",
+    ].join("\n"));
+    const run429 = await spawnArgvAsync("python3", [py429], {
+      cwd: dir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ERR_BASE: stub429.url },
+    }, 8000);
+    if (run429.error || run429.status !== 0 || !String(run429.stdout || "").includes("typed-429-ok")) {
+      console.error("smoke typed errors python 429 failed", run429.status, run429.stdout, run429.stderr, run429.error);
+      process.exit(1);
+    }
+    if (stub429.seen.length < 3) {
+      console.error("smoke typed errors 429 was not retried first", stub429.seen);
+      process.exit(1);
+    }
+  } finally {
+    await new Promise((r) => stub429.server.close(() => r()));
+  }
+
+  const hang = await listenMcpHangStub();
+  try {
+    const pyTo = path.join(dir, "_typed_timeout.py");
+    fs.writeFileSync(pyTo, [
+      "import os, sys",
+      "from client import Client, ApiTimeoutError",
+      "c = Client(os.environ['ERR_BASE'], request_id='rid-to', timeout=0.2)",
+      "try:",
+      "    c.listPets({})",
+      "    raise SystemExit('expected ApiTimeoutError')",
+      "except ApiTimeoutError as e:",
+      "    if str(e.request_id) != 'rid-to':",
+      "        raise SystemExit('bad timeout request_id ' + repr(e.request_id))",
+      "    print('typed-timeout-ok')",
+      "",
+    ].join("\n"));
+    const runTo = await spawnArgvAsync("python3", [pyTo], {
+      cwd: dir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", ERR_BASE: hang.url },
+    }, 8000);
+    if (runTo.error || runTo.status !== 0 || !String(runTo.stdout || "").includes("typed-timeout-ok")) {
+      console.error("smoke typed errors python timeout failed", runTo.status, runTo.stdout, runTo.stderr, runTo.error);
+      process.exit(1);
+    }
+  } finally {
+    await new Promise((r) => hang.server.close(() => r()));
+  }
+
+  const stubMcp = await listenStatusStub(404, '{"missing":true}');
+  const token = "super-secret-token-typed";
+  try {
+    const rpc = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "getPet", arguments: { petId: "x" } } }) + "\n";
+    const jsRun = await spawnArgvAsync(process.execPath, [path.join(dir, MCP_SERVER_FILE)], {
+      input: rpc,
+      env: { ...process.env, MCP_BASE_URL: stubMcp.url, MCP_BEARER_TOKEN: token, MCP_REQUEST_ID: "mcp-rid", SDK_REQUEST_ID: "", MCP_IDEMPOTENCY_KEY: "", SDK_IDEMPOTENCY_KEY: "" },
+    }, 8000);
+    if (jsRun.error || jsRun.status !== 0) {
+      console.error("smoke typed errors mcp js 404 failed", jsRun.status, jsRun.stdout, jsRun.stderr, jsRun.error);
+      process.exit(1);
+    }
+    const raw = String(jsRun.stdout || "");
+    if (raw.includes(token) || String(jsRun.stderr || "").includes(token)) {
+      console.error("smoke typed errors mcp leaked bearer token");
+      process.exit(1);
+    }
+    const line = raw.split(/\n/).filter((l) => l.trim().startsWith("{")).pop();
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch (err) {
+      console.error("smoke typed errors mcp bad json", raw, err);
+      process.exit(1);
+    }
+    const payloadErr = msg && msg.result && msg.result.error;
+    const inner = msg && msg.result && msg.result.result;
+    if (!payloadErr || Number(payloadErr.status) !== 404 || String(payloadErr.requestId) !== "mcp-rid") {
+      console.error("smoke typed errors mcp missing status+requestId", msg);
+      process.exit(1);
+    }
+    if (inner && inner.authorization) {
+      console.error("smoke typed errors mcp result leaked authorization", inner);
+      process.exit(1);
+    }
+  } finally {
+    await new Promise((r) => stubMcp.server.close(() => r()));
+  }
+
+  console.log("typed-errors-ok");
+}
+
 async function smokeGeneratedClientAuth(petstoreSpec, petClients, tmp) {
 
   const petOps = listOperations(petstoreSpec);
@@ -3836,6 +4043,7 @@ if (cmd === "--version" || cmd === "-V") {
     await smokeMcpIdentity(petstoreSpec, tmp);
     await smokeMcpRetry(petstoreSpec, tmp);
     await smokeMcpTimeout(petstoreSpec, tmp);
+    await smokeTypedErrors(petstoreSpec, tmp);
     await smokeUrlAuthHeaders(cliPath, mini31Path, tmp);
     await smokeUrlWatch(cliPath, mini31Path, tmp);
     smokeZip(cliPath, mini31Path, tmp);
@@ -3845,7 +4053,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok, registry-pack-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok, typed-errors-ok, registry-pack-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {
