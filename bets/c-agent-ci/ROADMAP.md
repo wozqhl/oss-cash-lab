@@ -10,6 +10,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Checked-in good/bad fixtures (no network promptfoo in smoke)
 - [x] Existing DeepEval/Inspect-shaped JUnit/TAP/Markdown emit kept
 - [x] Optional DeepEval JSON adapter (`from-deepeval`; fixture-only, not full compatibility)
+- [x] GitHub Action job summary (GFM pass/fail table from fixture eval; `$GITHUB_STEP_SUMMARY`; no live keys)
 
 ## Still open
 

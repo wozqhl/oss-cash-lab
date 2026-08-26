@@ -59,15 +59,19 @@ fi
 test -f out/junit-gate-mixed.xml
 grep -q 'failures="1"' out/junit-gate-mixed.xml
 
-echo "==> promptfoo adapter good fixture (expect PASS / exit 0 + junit + tap)"
-python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo-good.xml --tap out/promptfoo-good.tap --fail-under 80
+echo "==> promptfoo adapter good fixture (expect PASS / exit 0 + junit + tap + md)"
+python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo-good.xml --tap out/promptfoo-good.tap --md out/promptfoo-good.md --fail-under 80
 test -f out/junit-promptfoo-good.xml
 test -f out/promptfoo-good.tap
+test -f out/promptfoo-good.md
 grep -q 'failures="0"' out/junit-promptfoo-good.xml
 grep -q '<testsuite' out/junit-promptfoo-good.xml
 grep -q 'france-capital' out/junit-promptfoo-good.xml
 grep -q 'TAP version 13' out/promptfoo-good.tap
 grep -q 'ok ' out/promptfoo-good.tap
+grep -q '| case | status | time |' out/promptfoo-good.md
+grep -q 'france-capital' out/promptfoo-good.md
+grep -q '| pass |' out/promptfoo-good.md
 
 echo "==> promptfoo adapter bad fixture (expect FAIL / exit 1 + junit)"
 set +e
@@ -93,6 +97,32 @@ grep -q 'france-capital' out/junit-deepeval-good.xml
 grep -q 'TAP version 13' out/deepeval-good.tap
 grep -q 'ok ' out/deepeval-good.tap
 echo "deepeval-ok"
+
+echo "==> GitHub Action job summary (GITHUB_STEP_SUMMARY from fixture; no live keys)"
+SUM="$ROOT/out/step-summary.md"
+rm -f "$SUM"
+GITHUB_STEP_SUMMARY="$SUM" python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --fail-under 80
+test -f "$SUM"
+grep -q '| case | status | time |' "$SUM"
+grep -q 'france-capital' "$SUM"
+grep -q '| pass |' "$SUM"
+SUM_BAD="$ROOT/out/step-summary-bad.md"
+rm -f "$SUM_BAD"
+set +e
+GITHUB_STEP_SUMMARY="$SUM_BAD" python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.json --fail-under 80
+sum_code=$?
+set -e
+if [ "$sum_code" -eq 0 ]; then
+  echo "from-promptfoo unexpectedly passed on bad fixture (job summary)"
+  exit 1
+fi
+test -f "$SUM_BAD"
+grep -q 'math-2plus2' "$SUM_BAD"
+grep -q '| fail |' "$SUM_BAD"
+grep -q -- '--md' action.yml
+grep -q 'INPUT_MD' action.yml
+grep -q 'GITHUB_STEP_SUMMARY' action.yml
+echo "gha-summary-ok"
 
 echo "==> deepeval adapter bad fixture (expect FAIL / exit 1 + junit)"
 set +e

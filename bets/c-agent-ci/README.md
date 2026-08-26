@@ -41,9 +41,11 @@ PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --format gha
 # GitHub Actions log annotations:
 # PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --format gha
 PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --fail-under 80
-PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo.xml --fail-under 80
+PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo.xml --md out/promptfoo.md --fail-under 80
 PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.json --junit out/junit-promptfoo-bad.xml --fail-under 80  # exit 1
 PYTHONPATH=src python3 -m agent_ci from-deepeval --in fixtures/deepeval/good.json --junit out/junit-deepeval.xml --fail-under 80
+# GitHub Actions job summary (auto when $GITHUB_STEP_SUMMARY is set; fixture JSON, no live keys):
+# PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --md out/promptfoo.md
 PYTHONPATH=src python3 -m agent_ci run --suite fixtures/demo --diff-baseline out/baseline.json
 PYTHONPATH=src python3 -m agent_ci diff --from out/run-a.json --to out/run-b.json
 PYTHONPATH=src python3 -m agent_ci diff --from out/run-a.json --to out/run-b.json --format md
@@ -146,14 +148,14 @@ PYTHONPATH=src python3 -m agent_ci report-check --suite fixtures/demo --out out/
 
 ## Promptfoo adapter (not a replacement)
 
-`from-promptfoo` reads Promptfoo `eval --output` JSON and reuses the existing JUnit / TAP13 reporters + `--fail-under` gate.
+`from-promptfoo` reads Promptfoo `eval --output` JSON and reuses the existing JUnit / TAP13 / Markdown reporters + `--fail-under` gate.
 
 Real output shape (Promptfoo `OutputFile` / EvaluateSummary v3): `results.results[].success` + `gradingResult.{pass,score,reason}`. Also accepts the docs/table variant `results.outputs[]` (`pass`) and a bare list of rows.
 
 ```bash
 # Checked-in fixtures (no network, no promptfoo install):
-PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo.xml --tap out/promptfoo.tap --fail-under 80
-# → exit 0, JUnit failures="0"
+PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/good.json --junit out/junit-promptfoo.xml --tap out/promptfoo.tap --md out/promptfoo.md --fail-under 80
+# → exit 0, JUnit failures="0", GFM | case | status | time | table
 PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.json --junit out/junit-promptfoo-bad.xml --fail-under 80
 # → exit 1 (1 pass / 1 fail, score 50)
 
@@ -162,7 +164,7 @@ PYTHONPATH=src python3 -m agent_ci from-promptfoo --in fixtures/promptfoo/bad.js
 # PYTHONPATH=src python3 -m agent_ci from-promptfoo --in promptfoo-output.json --junit junit.xml --fail-under 80
 ```
 
-Composite Action: [`action.yml`](./action.yml) — `uses: wozqhl/oss-cash-lab/bets/c-agent-ci@main`. Inputs: `results` (JSON path), optional `command` (run promptfoo / a fixture producer), `fail-under`, `junit`, optional `tap`. Copy-paste workflow: [`examples/github-actions/agent-ci-promptfoo.yml`](../../examples/github-actions/agent-ci-promptfoo.yml) (smoke uses the good fixture; live `npx promptfoo eval` is commented).
+Composite Action: [`action.yml`](./action.yml) — `uses: wozqhl/oss-cash-lab/bets/c-agent-ci@main`. Inputs: `results` (JSON path), optional `command` (run promptfoo / a fixture producer), `fail-under`, `junit`, optional `tap`, `md` (default `report.md`; GFM pass/fail table). When GitHub sets `$GITHUB_STEP_SUMMARY`, the Action writes that table to the job summary (no live keys). Copy-paste workflow: [`examples/github-actions/agent-ci-promptfoo.yml`](../../examples/github-actions/agent-ci-promptfoo.yml) (smoke uses the good fixture; live `npx promptfoo eval` is commented).
 
 This is a **wrapper**, not a Promptfoo or DeepEval replacement. Promptfoo already ships its own GHA and JUnit export; we convert its JSON so a platform team has one agent-ci reporter next to cassette suites.
 
@@ -182,6 +184,8 @@ Composite Action `results` input can point at that JSON with `adapter: deepeval`
 ## GitHub Actions (JUnit + job summary + annotations + run-vs-run diff)
 
 Copy-paste: portfolio [`examples/github-actions/agent-ci-junit.yml`](../../examples/github-actions/agent-ci-junit.yml) → consumer `.github/workflows/`. Green path: `python3 -m agent_ci run --suite fixtures/demo --junit junit.xml` then `actions/upload-artifact@v4`. Optional run-vs-run Markdown job summary (commented in the YAML): `python3 -m agent_ci diff --from run-a.json --to run-b.json --format md >> "$GITHUB_STEP_SUMMARY"` (two identical demo dumps → “no changes”; download a previous artifact as `--from`). Optional composite: [`examples/github-actions/agent-ci-junit/action.yml`](../../examples/github-actions/agent-ci-junit/action.yml). Promptfoo wrap: [`examples/github-actions/agent-ci-promptfoo.yml`](../../examples/github-actions/agent-ci-promptfoo.yml) + bet [`action.yml`](./action.yml). See [`examples/github-actions/README.md`](../../examples/github-actions/README.md). Not a required workflow on this repo.
+
+Composite Action job summary (fixture eval, no live keys): `uses: ./bets/c-agent-ci` with `results:` pointing at Promptfoo / DeepEval-shaped JSON writes a GFM `| case | status | time |` table to `$GITHUB_STEP_SUMMARY` (and `report.md`). Scores come from the fixture (`passed/total*100`); nothing is invented.
 
 Optional Markdown job summary (`GITHUB_STEP_SUMMARY`):
 

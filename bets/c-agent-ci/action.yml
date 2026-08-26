@@ -1,5 +1,5 @@
 name: agent-ci
-description: Wrap Promptfoo or DeepEval-shaped JSON (or a fixture) and emit JUnit/TAP via agent-ci reporters
+description: Wrap Promptfoo or DeepEval-shaped JSON (or a fixture) and emit JUnit/TAP/Markdown (job summary) via agent-ci reporters
 inputs:
   results:
     description: Path to Promptfoo eval --output JSON, DeepEval-shaped JSON (adapter=deepeval), or a checked-in fixture
@@ -25,8 +25,12 @@ inputs:
     description: Optional TAP13 output path (empty = skip)
     required: false
     default: ""
+  md:
+    description: Markdown report path (GFM pass/fail table). Also appended to $GITHUB_STEP_SUMMARY when that env is set (GitHub Actions job summary; no live keys).
+    required: false
+    default: report.md
   suite-name:
-    description: testsuite / TAP label (default promptfoo; set deepeval when adapter=deepeval)
+    description: testsuite / TAP / Markdown label (default promptfoo; set deepeval when adapter=deepeval)
     required: false
     default: promptfoo
   pythonpath:
@@ -37,6 +41,9 @@ outputs:
   junit-path:
     description: Path to the JUnit XML file
     value: ${{ inputs.junit }}
+  md-path:
+    description: Path to the Markdown report (job summary table)
+    value: ${{ inputs.md }}
 runs:
   using: composite
   steps:
@@ -49,6 +56,7 @@ runs:
         INPUT_FAIL_UNDER: ${{ inputs.fail-under }}
         INPUT_JUNIT: ${{ inputs.junit }}
         INPUT_TAP: ${{ inputs.tap }}
+        INPUT_MD: ${{ inputs.md }}
         INPUT_SUITE_NAME: ${{ inputs.suite-name }}
         INPUT_PYTHONPATH: ${{ inputs.pythonpath }}
         ACTION_PATH: ${{ github.action_path }}
@@ -81,6 +89,9 @@ runs:
         fi
         if [[ -n "${INPUT_TAP}" ]]; then
           args+=(--tap "${INPUT_TAP}")
+        fi
+        if [[ -n "${INPUT_MD}" ]]; then
+          args+=(--md "${INPUT_MD}")
         fi
         if [[ -n "${INPUT_FAIL_UNDER}" ]]; then
           args+=(--fail-under "${INPUT_FAIL_UNDER}")
