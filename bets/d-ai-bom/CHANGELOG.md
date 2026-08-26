@@ -4,6 +4,11 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### OpenVEX 0.2.0 (observed fixture matches)
+
+- `scan --advisories FILE --vex out.json` and `evidence-pack` `vex.json` emit OpenVEX 0.2.0 from observed local-fixture matches (products the scanner actually saw). Status is derived: `affected` on a real match; `not_affected` only with a justification the fixture recorded (otherwise `under_investigation` when versionRange excludes the observed version); `fixed` only when the fixture records `fixedVersion`. Timestamp, author, stable `@id`. Not a CRA conformity claim. 中文: 可利用性声明辅助，不是符合性主张。 Smoke: `vex-ok`.
+
+
 ### CRA window clock (calendar helper)
 
 - `evidence-pack` writes `pack.json` (listed in the zip + MANIFEST) with a `clock` section: `daysUntil` / `daysOverdue` vs **2026-09-11** (Article 14-style reporting) and **2027-12-11** (SBOM calendar). Observed `--gate-vulns` / `convert-advisories` hits inherit those same dates. Optional `--as-of YYYY-MM-DD` freezes the calendar. **EN:** calendar/evidence helper, not a CRA compliance certificate. **中文:** 日历/证据辅助，不是 CRA 合格证书。No invented CVE scores or conformity claims. Smoke: `cra-clock-ok`.

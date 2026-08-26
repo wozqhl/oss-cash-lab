@@ -1,10 +1,12 @@
 """Local CRA Article 14 evidence pack: inventory + match, not a declaration.
 
-Writes CycloneDX 1.7 JSON + SPDX 3.0.1 JSON + MANIFEST.md + pack.json from an
-existing scan and the existing exporters / license + advisory gates. pack.json
-includes a calendar window clock (days-until / days-overdue vs 2026-09-11 and
-2027-12-11). Does not invent CVEs, scores, or conformity badges. The clock is a
-calendar/evidence helper, not a CRA compliance certificate.
+Writes CycloneDX 1.7 JSON + SPDX 3.0.1 JSON + OpenVEX 0.2.0 JSON + MANIFEST.md
++ pack.json from an existing scan and the existing exporters / license +
+advisory gates. pack.json includes a calendar window clock (days-until /
+days-overdue vs 2026-09-11 and 2027-12-11). OpenVEX statements are derived from
+observed local-fixture matches only. Does not invent CVEs, scores, or conformity
+badges. The clock is a calendar/evidence helper, not a CRA compliance
+certificate. VEX is an exploitability statement helper, not a conformity claim.
 """
 from __future__ import annotations
 
@@ -18,11 +20,19 @@ from typing import Any
 from ai_bom.advisories import attach_advisory_hits, load_advisories, match_advisories_result
 from ai_bom.export import dumps_export
 from ai_bom.scanner import load_policy, scan_path
+from ai_bom.vex import (
+    VEX_DISCLAIMER_EN,
+    VEX_DISCLAIMER_ZH,
+    VEX_FILENAME,
+    build_openvex_document,
+    dumps_openvex,
+)
 
 CDX_FILENAME = "bom.cdx.json"
 SPDX3_FILENAME = "bom.spdx3.json"
 MANIFEST_FILENAME = "MANIFEST.md"
 PACK_FILENAME = "pack.json"
+# VEX_FILENAME imported from ai_bom.vex (openvex 0.2.0).
 
 # Published CRA calendar dates (orientation only — not a legal determination).
 ARTICLE14_DATE = date(2026, 9, 11)
@@ -191,8 +201,8 @@ def build_pack_document(
     return {
         "schema": "ai-bom-evidence-pack/v1",
         "kind": "inventory-match-evidence",
-        "disclaimerEn": DISCLAIMER + " " + CLOCK_DISCLAIMER_EN,
-        "disclaimerZh": DISCLAIMER_ZH + CLOCK_DISCLAIMER_ZH,
+        "disclaimerEn": DISCLAIMER + " " + CLOCK_DISCLAIMER_EN + " " + VEX_DISCLAIMER_EN,
+        "disclaimerZh": DISCLAIMER_ZH + CLOCK_DISCLAIMER_ZH + VEX_DISCLAIMER_ZH,
         "generated": timestamp,
         "scanRoot": scan_dir,
         "files": list(files),
@@ -255,6 +265,9 @@ def render_manifest(
         "",
         CLOCK_DISCLAIMER_EN,
         CLOCK_DISCLAIMER_ZH,
+        "",
+        VEX_DISCLAIMER_EN,
+        VEX_DISCLAIMER_ZH,
         "",
         "Gate exit 1 means a local fixture hit (forbidden license id, or an "
         "advisory identity/range in the file you passed). It is not an NVD/CVE "
@@ -352,13 +365,14 @@ def write_evidence_pack(
     timestamp: str | None = None,
     as_of: str | date | datetime | None = None,
 ) -> EvidencePackResult:
-    """Scan DIR and write CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST.md + pack.json.
+    """Scan DIR and write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + pack.json.
 
     Gate codes are recorded in the manifest / pack.json. The clock section is a
     calendar helper (days-until / days-overdue vs 2026-09-11 and 2027-12-11),
-    not a CRA certificate. This function does not raise on a license/advisory
-    hit — those are the recorded exit codes, not a pack failure. IO / parse
-    errors propagate to the caller.
+    not a CRA certificate. vex.json is OpenVEX 0.2.0 from observed local-fixture
+    matches (not a conformity claim). This function does not raise on a
+    license/advisory hit — those are the recorded exit codes, not a pack
+    failure. IO / parse errors propagate to the caller.
     """
     if not scan_dir.exists():
         raise FileNotFoundError(f"path not found: {scan_dir}")
@@ -376,6 +390,7 @@ def write_evidence_pack(
     vuln: int | None = None
     adv_label: str | None = None
     hits: list[dict[str, Any]] = []
+    advisories: list[dict[str, Any]] = []
     if advisories_path is not None:
         advisories = load_advisories(advisories_path)
         matched = match_advisories_result(bom.get("components") or [], advisories)
@@ -393,7 +408,13 @@ def write_evidence_pack(
 
     cdx_text = dumps_export(bom, "cyclonedx")
     spdx3_text = dumps_export(bom, "spdx3")
-    files = [CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME, PACK_FILENAME]
+    vex_doc = build_openvex_document(
+        bom.get("components") or [],
+        advisories if advisories_path is not None else [],
+        timestamp=ts,
+    )
+    vex_text = dumps_openvex(vex_doc)
+    files = [CDX_FILENAME, SPDX3_FILENAME, VEX_FILENAME, MANIFEST_FILENAME, PACK_FILENAME]
     pack = build_pack_document(
         timestamp=ts,
         scan_dir=str(scan_dir),
@@ -433,10 +454,12 @@ def write_evidence_pack(
     try:
         cdx_p = write_root / CDX_FILENAME
         spdx3_p = write_root / SPDX3_FILENAME
+        vex_p = write_root / VEX_FILENAME
         man_p = write_root / MANIFEST_FILENAME
         pack_p = write_root / PACK_FILENAME
         cdx_p.write_text(cdx_text, encoding="utf-8")
         spdx3_p.write_text(spdx3_text, encoding="utf-8")
+        vex_p.write_text(vex_text, encoding="utf-8")
         man_p.write_text(manifest, encoding="utf-8")
         pack_p.write_text(pack_text, encoding="utf-8")
 
@@ -445,6 +468,7 @@ def write_evidence_pack(
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.write(cdx_p, CDX_FILENAME)
                 zf.write(spdx3_p, SPDX3_FILENAME)
+                zf.write(vex_p, VEX_FILENAME)
                 zf.write(man_p, MANIFEST_FILENAME)
                 zf.write(pack_p, PACK_FILENAME)
     finally:

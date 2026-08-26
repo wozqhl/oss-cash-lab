@@ -213,6 +213,28 @@ def _normalize_advisory(item: Any, idx: int) -> tuple[dict[str, Any] | None, str
     version_range = _norm(raw_comp.get("versionRange"))
     if not name and not purl:
         return None, f"skipping advisory {aid}: component needs name or purl"
+    aliases_raw = item.get("aliases")
+    aliases: list[str] = []
+    if isinstance(aliases_raw, list):
+        seen: set[str] = set()
+        for a in aliases_raw:
+            s = _norm(a)
+            if s and s not in seen:
+                seen.add(s)
+                aliases.append(s)
+    fixed = _norm(
+        item.get("fixedVersion")
+        or item.get("fixed_version")
+        or raw_comp.get("fixedVersion")
+        or raw_comp.get("fixed_version")
+    )
+    # component.fixed is a version string only; booleans are not a recorded version.
+    if not fixed:
+        raw_fixed = raw_comp.get("fixed")
+        if raw_fixed is not None and not isinstance(raw_fixed, bool):
+            cand = _norm(raw_fixed)
+            if cand.lower() not in {"true", "false", "yes", "no"}:
+                fixed = cand
     return {
         "id": aid,
         "name": name,
@@ -221,6 +243,17 @@ def _normalize_advisory(item: Any, idx: int) -> tuple[dict[str, Any] | None, str
         "versionRange": version_range,
         "severity": _norm(item.get("severity")) or "medium",
         "summary": _norm(item.get("summary")),
+        "justification": _norm(item.get("justification")),
+        "impact_statement": _norm(
+            item.get("impact_statement") or item.get("impactStatement")
+        ),
+        "action_statement": _norm(
+            item.get("action_statement")
+            or item.get("actionStatement")
+            or item.get("action")
+        ),
+        "fixedVersion": fixed,
+        "aliases": aliases,
     }, None
 
 

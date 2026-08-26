@@ -32,6 +32,7 @@ BSI **TR-03183-2** (German interpretation of CRA SBOM practice) treats **Cyclone
 - **SARIF 2.1.0** / Markdown / GHA annotations / HTML: review formats, not SBOMs.
 - **License-policy gate**: `policies/default.json` `forbiddenLicenseIds` (GPL-3.0 / AGPL-3.0 / SSPL-1.0 + variants). `--gate-licenses` exits **1** on a match; `--strict` also fails on pickle / disclosure gaps.
 - **Advisory-match gate** (Article 14 inventory+match): `scan --advisories examples/advisories/sample.json --gate-vulns` exits **1** on a local-list hit. Offline OSV/GHSA dumps go through `convert-advisories --from-osv` into the same schema. Not a CVE database.
+- **OpenVEX 0.2.0** (`scan --advisories FILE --vex out.json`; packed as `vex.json` in `evidence-pack`): exploitability statements from observed local-fixture matches only. Status is derived (`affected`; `not_affected` only with a justification the fixture recorded; otherwise `under_investigation`; `fixed` only when the fixture records `fixedVersion`). VEX is an exploitability statement helper for Article 14-style reporting, **not** a CRA conformity claim.
 
 CycloneDX has supported **ML-BOM** since **1.5**. Spec **1.7** was published **21 October 2025**. The OWASP **Authoritative Guide to ML-BOM** (10 June 2026):
 <https://cyclonedx.org/guides/OWASP_CycloneDX-Authoritative-Guide-to-AI-ML-BOM-en.pdf>
@@ -75,6 +76,11 @@ python3 -m ai_bom evidence-pack --dir examples/sample-app --out /tmp/cra-pack
 | `observedVulns[]` | Each `--gate-vulns` / converted-advisory hit inherits those same two windows |
 
 This is a **calendar/evidence helper**. It is **not** a CRA compliance certificate, conformity claim, CE mark, or notified-body assessment. A fixture `ADV-FIXTURE-*` hit showing `daysUntil=16` on `--as-of 2026-08-26` only means the calendar offset was computed — not that a report is due, not that a CVE exists, and not that the product is in scope.
+
+
+## OpenVEX (exploitability helper, not a claim)
+
+`scan --advisories <file> --vex out.json` (and `evidence-pack` `vex.json`) emits an **OpenVEX 0.2.0** document whose statements are generated **only** from components the scanner actually saw against the local advisory fixture. Status is derived, never invented: a real fixture match is `affected`; a match whose recorded `versionRange` excludes the observed version is `not_affected` **only if** the fixture recorded a spec justification (otherwise `under_investigation`); `fixed` is emitted only when the fixture literally records a `fixedVersion` equal to the observed version. This is an exploitability statement helper for Article 14-style reporting. It is **not** a CRA conformity claim, CE mark, or notified-body assessment. **中文:** OpenVEX 是第 14 条风格报告的可利用性声明辅助，**不是**符合性主张。
 
 ## 中文（摘要）
 

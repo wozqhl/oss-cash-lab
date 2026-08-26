@@ -26,6 +26,7 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 | SPDX license fields on package components (`package.json` / `pyproject` / `requirements.txt`) | License inventory DB / enrichment |
 | Policy `forbiddenLicenseIds` (GPL/AGPL/SSPL) + `--strict` / `--gate-licenses` | Managed license allow/deny packs |
 | Local advisory fixture match (`--advisories` + `--gate-vulns`; `ADV-FIXTURE-*`; offline) + `convert-advisories --from-osv` | Hosted OSV/GHSA feed / NVD completeness |
+| OpenVEX 0.2.0 from observed fixture matches (`--vex` / evidence-pack `vex.json`; not a CRA claim) | Hosted VEX signing / publisher workflow |
 | `.aibomignore` / `--ignore` path filters | Managed path policies / inventory scopes |
 | `.aibom-exceptions.json` / `--exceptions` license waivers (reason + optional expiry) | Managed exception workflow / approval trail |
 | Local `serve` HTTP (`/health` `/ready` `/bom.json` `/v1/bom?format=json\|cyclonedx\|cyclonedx-xml\|spdx\|spdx-xml\|spdx3\|sarif\|md\|gha\|html` `/v1/bom.xml` `/v1/bom.spdx.xml` `/v1/bom.sarif` `/v1/bom.md` `/v1/bom.gha.txt` `/v1/bom.html` **`/v1/policy`** **`/v1/config`** **`/v1/components`** **`/v1/exceptions`** `/evidence.md` `/` `/openapi.json` `/metrics`; optional `--cors-origins` / `AI_BOM_CORS_ORIGINS`; HTTP rate-limit `--rate-limit` / `RATE_LIMIT_PER_MINUTE`; `X-Request-Id` echo; optional `--watch` dir mtime poll rescan) | **Hosted inventory** / fleet dashboard |
@@ -54,8 +55,10 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 - [x] `--gate-licenses` CI license-policy gate (exit 1 on `forbiddenLicenseIds` only) + `examples/cra-fixtures/license-pass` / `license-fail`
 - [x] `--advisories` / `--gate-vulns` offline advisory-match gate (Article 14 inventory+match) + `convert-advisories --from-osv` + `examples/advisories/sample.json` / `clean.json` / `osv-sample.json`
 - [x] CRA orientation [`docs/cra.md`](./docs/cra.md) (Article 14 11 Sep 2026 reporting vs Dec 2027 SBOM; no certification claim)
-- [x] Local evidence pack (`evidence-pack --dir DIR --out OUTDIR`) — CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST + `pack.json` (license/advisory gate codes + window clock); not a CRA declaration
+- [x] Local evidence pack (`evidence-pack --dir DIR --out OUTDIR`) — CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 `vex.json` + MANIFEST + `pack.json` (license/advisory gate codes + window clock); not a CRA declaration
 - [x] CRA window clock (`pack.json` `clock` / `--as-of`) — days-until / days-overdue vs 2026-09-11 and 2027-12-11 from observed `--gate-vulns` hits; calendar/evidence helper, **not** a CRA compliance certificate / 日历/证据辅助，**不是** CRA 合格证书
+- [x] OpenVEX 0.2.0 (`scan --advisories FILE --vex out.json`; `evidence-pack` `vex.json`) from observed local-fixture matches. Status derived, never invented. Exploitability statement helper, **not** a CRA conformity claim / 可利用性声明辅助，**不是**符合性主张
+
 - [x] SPDX 2.3 XML export (`scan --format spdx-xml`; `GET /v1/bom?format=spdx-xml` / `GET /v1/bom.spdx.xml`; same packages/`licenseConcluded` as JSON; `spdx` stays JSON)
 - [x] Markdown BOM summary (`scan --format md`; `GET /v1/bom?format=md` / `GET /v1/bom.md`; `text/markdown`; human/Slack; not an SBOM spec)
 - [x] GitHub Actions workflow-command annotations (`scan --format gha`; `GET /v1/bom?format=gha` / `GET /v1/bom.gha.txt`; `text/plain`; `::error` / waived `::notice`; clean empty)
@@ -113,6 +116,8 @@ PYTHONPATH=src python3 -m ai_bom scan examples/cra-fixtures/license-fail --polic
 # Article 14 inventory+match (local fixture; not NVD — planted hit → 1, clean file → 0):
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/sample.json --gate-vulns; echo exit=$?
 PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/clean.json --gate-vulns; echo exit=$?
+PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/advisories/sample.json --vex out/vex.json
+
 # Offline OSV/GHSA → same fixture schema (no fetch):
 PYTHONPATH=src python3 -m ai_bom convert-advisories --from-osv examples/advisories/osv-sample.json --out out/from-osv.json
 # Article 14 evidence pack (inventory+match + calendar clock; not a CRA certificate):

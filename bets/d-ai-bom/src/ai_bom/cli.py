@@ -38,6 +38,12 @@ from ai_bom.evidence_pack import (
     resolve_optional_path,
     write_evidence_pack,
 )
+from ai_bom.vex import (
+    OPENVEX_CONTEXT,
+    VEX_FILENAME,
+    build_openvex_document,
+    dumps_openvex,
+)
 from ai_bom.scanner import (
     COMPONENTS_LIST_CAP,
     ENV_EXCEPTIONS,
@@ -252,6 +258,10 @@ def _run_evidence_pack(args) -> int:
     )
     return 0
 
+
+def _smoke_vex() -> str | None:
+    from ai_bom.vex_recorded import smoke_vex_cli
+    return smoke_vex_cli(main, load_advisories)
 
 def _smoke_evidence_pack() -> str | None:
     """Write pack for sample-app + CRA fixtures; assert three artifacts. None = ok."""
@@ -720,6 +730,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Write SARIF 2.1.0 JSON (policy hits) for GitHub code scanning",
     )
     p_scan.add_argument(
+        "--vex",
+        default=None,
+        help=(
+            "Write OpenVEX 0.2.0 JSON from observed --advisories matches "
+            "(requires --advisories). Status is derived: affected / "
+            "not_affected (only with a recorded justification) / "
+            "under_investigation / fixed only when the fixture records "
+            "fixedVersion. Not a CRA conformity claim."
+        ),
+    )
+    p_scan.add_argument(
         "--ignore",
         default=None,
         help="Comma-separated ignore patterns (gitignore-like; merges with root .aibomignore)",
@@ -903,7 +924,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_pack = sub.add_parser(
         "evidence-pack",
-        help="Write CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST.md + pack.json clock (Article 14 inventory+match; calendar helper, not a CRA certificate)",
+        help="Write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + pack.json clock (Article 14 inventory+match; calendar helper, not a CRA certificate; VEX is not a conformity claim)",
     )
     p_pack.add_argument(
         "--dir",
@@ -913,7 +934,7 @@ def main(argv: list[str] | None = None) -> int:
     p_pack.add_argument(
         "--out",
         default=None,
-        help="Write pack directory (bom.cdx.json, bom.spdx3.json, MANIFEST.md, pack.json)",
+        help="Write pack directory (bom.cdx.json, bom.spdx3.json, vex.json, MANIFEST.md, pack.json)",
     )
     p_pack.add_argument(
         "--zip",
@@ -1487,6 +1508,11 @@ def main(argv: list[str] | None = None) -> int:
             print("smoke failed cra-clock", clock_err)
             return 1
         print("cra-clock-ok")
+        vex_err = _smoke_vex()
+        if vex_err:
+            print("smoke failed vex", vex_err)
+            return 1
+        print("vex-ok")
 
         sarif_doc = to_sarif(bom, tool_version=__version__)
         empty_sarif = to_sarif(
@@ -3372,7 +3398,7 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock+vex")
         return 0
     if args.cmd == "convert-advisories":
         return _run_convert_advisories(args)
@@ -3453,6 +3479,11 @@ def main(argv: list[str] | None = None) -> int:
         if gate_vulns and not advisories_path:
             print("gate-vulns requires --advisories <file> (offline fixture; no NVD fetch)")
             return 2
+        vex_out_early = getattr(args, "vex", None)
+        if vex_out_early and not advisories_path:
+            print("vex requires --advisories <file> (offline fixture; no NVD fetch)")
+            return 2
+        advisories: list = []
         if advisories_path:
             try:
                 advisories = load_advisories(Path(advisories_path))
@@ -3495,6 +3526,17 @@ def main(argv: list[str] | None = None) -> int:
             sp.write_text(dumps_sarif(sarif), encoding="utf-8")
             n = len((sarif.get("runs") or [{}])[0].get("results") or [])
             print(f"wrote {sp} sarifResults={n}")
+
+        vex_out = getattr(args, "vex", None)
+        if vex_out:
+            if not advisories_path:
+                print("vex requires --advisories <file> (offline fixture; no NVD fetch)")
+                return 2
+            vp = Path(vex_out)
+            vp.parent.mkdir(parents=True, exist_ok=True)
+            vex_doc = build_openvex_document(bom.get("components") or [], advisories)
+            vp.write_text(dumps_openvex(vex_doc), encoding="utf-8")
+            print(f"wrote {vp} vexStatements={len(vex_doc.get('statements') or [])}")
 
         webhook_url = resolve_webhook_url(getattr(args, "webhook_url", None))
         webhook_secret = resolve_webhook_secret(getattr(args, "webhook_secret", None))

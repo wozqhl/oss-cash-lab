@@ -604,17 +604,18 @@ rm -rf "$OBS_TMP" "$NEG_TMP"
 echo "mlbom-obs-ok"
 echo "spdx3-ai-ok"
 
-echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + MANIFEST + pack.json clock; not a CRA certificate)"
+echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST + pack.json clock; not a CRA certificate)"
 PACK_TMP="$(mktemp -d)"
 python3 -m ai_bom evidence-pack --dir examples/sample-app --out "$PACK_TMP/sample"   --policy policies/default.json --advisories examples/advisories/sample.json --as-of 2026-08-26 --zip "$PACK_TMP/sample.zip"
 test -f "$PACK_TMP/sample/bom.cdx.json"
 test -f "$PACK_TMP/sample/bom.spdx3.json"
 test -f "$PACK_TMP/sample/MANIFEST.md"
 test -f "$PACK_TMP/sample/pack.json"
+test -f "$PACK_TMP/sample/vex.json"
 python3 -m ai_bom evidence-pack --dir examples/cra-fixtures/license-pass --out "$PACK_TMP/pass"   --policy policies/default.json --advisories examples/advisories/clean.json
 python3 -m ai_bom evidence-pack --dir examples/cra-fixtures/license-fail --out "$PACK_TMP/fail"   --policy policies/default.json --advisories examples/advisories/clean.json
-test -f "$PACK_TMP/pass/bom.cdx.json" && test -f "$PACK_TMP/pass/bom.spdx3.json" && test -f "$PACK_TMP/pass/MANIFEST.md" && test -f "$PACK_TMP/pass/pack.json"
-test -f "$PACK_TMP/fail/bom.cdx.json" && test -f "$PACK_TMP/fail/bom.spdx3.json" && test -f "$PACK_TMP/fail/MANIFEST.md" && test -f "$PACK_TMP/fail/pack.json"
+test -f "$PACK_TMP/pass/bom.cdx.json" && test -f "$PACK_TMP/pass/bom.spdx3.json" && test -f "$PACK_TMP/pass/vex.json" && test -f "$PACK_TMP/pass/MANIFEST.md" && test -f "$PACK_TMP/pass/pack.json"
+test -f "$PACK_TMP/fail/bom.cdx.json" && test -f "$PACK_TMP/fail/bom.spdx3.json" && test -f "$PACK_TMP/fail/vex.json" && test -f "$PACK_TMP/fail/MANIFEST.md" && test -f "$PACK_TMP/fail/pack.json"
 PACK_TMP="$PACK_TMP" python3 - <<"PYPACK"
 import json, os, zipfile
 from pathlib import Path
@@ -625,6 +626,13 @@ man = (root / "sample" / "MANIFEST.md").read_text()
 pack = json.loads((root / "sample" / "pack.json").read_text())
 assert cdx.get("bomFormat") == "CycloneDX" and cdx.get("specVersion") == "1.7", cdx.get("specVersion")
 assert (spdx3.get("creationInfo") or {}).get("specVersion") == "3.0.1", spdx3.get("creationInfo")
+vex = json.loads((root / "sample" / "vex.json").read_text())
+assert vex.get("@context") == "https://openvex.dev/ns/v0.2.0", vex.get("@context")
+assert vex.get("author") and vex.get("timestamp") and vex.get("@id")
+assert isinstance(vex.get("statements"), list) and vex["statements"]
+assert "vex.json" in (pack.get("files") or [])
+assert "exploitability statement helper" in man.lower()
+
 assert "not a CRA declaration" in man
 assert "compliant" not in man.lower()
 assert "certified" not in man.lower()
@@ -657,7 +665,7 @@ blob = json.dumps(pack, ensure_ascii=False).lower()
 assert "compliant" not in blob and "certified" not in blob
 with zipfile.ZipFile(root / "sample.zip") as zf:
     names = set(zf.namelist())
-assert {"bom.cdx.json", "bom.spdx3.json", "MANIFEST.md", "pack.json"} <= names, names
+assert {"bom.cdx.json", "bom.spdx3.json", "vex.json", "MANIFEST.md", "pack.json"} <= names, names
 print("evidence-pack artifacts ok")
 print("cra-clock fields ok")
 PYPACK
@@ -665,6 +673,7 @@ rm -rf "$PACK_TMP"
 echo "evidence-pack-ok"
 echo "evidence-zip-ok"
 echo "cra-clock-ok"
+echo "vex-ok"
 
 echo "==> temp package.json GPL-3.0 -> strict fails + evidence/sarif license hits"
 LIC_TMP="$(mktemp -d)"
@@ -2037,4 +2046,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock+vex)"
