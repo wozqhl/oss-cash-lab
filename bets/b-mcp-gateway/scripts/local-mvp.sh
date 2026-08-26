@@ -316,6 +316,25 @@ if (!coHeaders["Retry-After"]) {
   console.error("openapi CircuitOpen missing Retry-After header", coHeaders);
   process.exit(1);
 }
+if (!spec.components?.responses?.RateLimited) {
+  console.error("openapi missing components.responses.RateLimited");
+  process.exit(1);
+}
+const rlHeaders = spec.components.responses.RateLimited.headers || {};
+if (!rlHeaders["Retry-After"]) {
+  console.error("openapi RateLimited missing Retry-After header", rlHeaders);
+  process.exit(1);
+}
+const call429 = spec.paths?.["/tools/call"]?.post?.responses?.["429"];
+const call429Ref = typeof call429?.$ref === "string" ? call429.$ref : JSON.stringify(call429 || {});
+if (!/RateLimited/.test(call429Ref)) {
+  console.error("openapi /tools/call 429 should $ref RateLimited", call429);
+  process.exit(1);
+}
+if (!/429/.test(desc) || !/rate_limited/.test(desc)) {
+  console.error("openapi info.description missing 429 rate_limited Retry-After note");
+  process.exit(1);
+}
 if (!spec.components?.headers?.RetryAfter) {
   console.error("openapi missing components.headers.RetryAfter");
   process.exit(1);

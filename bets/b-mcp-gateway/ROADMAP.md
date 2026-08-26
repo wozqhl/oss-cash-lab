@@ -12,6 +12,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] docs/vs-gateways.md vs Microsoft / agentgateway / ContextForge / AgentCore
 - [x] README name-collision callout (not microsoft/mcp-gateway)
 - [x] Conservative stdlib PII/secret redaction inside tool-call payloads (audit/webhooks default; upstream opt-in). Regex, not Presidio.
+- [x] 429 Retry-After on rate_limited (seconds until oldest hit leaves the 60s window, min 1; same header as circuit_open; OpenAPI RateLimited)
 
 ## Still open
 

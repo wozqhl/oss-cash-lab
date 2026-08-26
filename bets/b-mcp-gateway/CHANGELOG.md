@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- 429 `Retry-After` on rate-limited `POST /tools/call` (and Streamable HTTP `tools/call`). Remaining seconds until the oldest hit leaves the 60s window, min 1. Same header as 503 `circuit_open`. OpenAPI `RateLimited`. GET `/audit` already filtered by tenant/tool/since/until — no second audit filter.
 - Conservative stdlib payload redactor (`src/redact.js`): emails, Bearer tokens, `sk-`/`ghp_`-like prefixes, long hex/base64-ish secrets. Policy `redact: { enabled, fields, upstream }`. Default: audit JSONL + webhook payloads redacted; upstream `tools/call` body not mutated unless `redact.upstream=true`. Regex only — not Microsoft Presidio.
 - docs/vs-gateways.md comparison matrix vs microsoft/mcp-gateway, agentgateway, IBM ContextForge, AWS AgentCore.
 - README callout: not microsoft/mcp-gateway. Suggested public name oss-mcp-gateway.

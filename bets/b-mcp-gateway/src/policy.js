@@ -341,6 +341,17 @@ export class RateLimiter {
     this.hits.push(now);
     return true;
   }
+  /**
+   * Seconds until the oldest hit leaves the 60s window (min 1).
+   * Used as HTTP Retry-After on 429 rate_limited.
+   */
+  retryAfterSeconds(now = Date.now()) {
+    const windowStart = now - 60_000;
+    this.hits = this.hits.filter((t) => t >= windowStart);
+    if (!this.hits.length) return 1;
+    const remainMs = this.hits[0] + 60_000 - now;
+    return Math.max(1, Math.ceil(remainMs / 1000));
+  }
 }
 
 /** Per-tenant (or global) rate limiters keyed by tenant id. */

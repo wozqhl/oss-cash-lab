@@ -225,6 +225,20 @@ if (cmd === "--version" || cmd === "-V") {
     console.error("smoke failed", { d1, d2, d3, ok1, ok2, ok3 });
     process.exit(1);
   }
+  const rlRa = new RateLimiter(2);
+  const t0 = 1_700_000_000_000;
+  if (!rlRa.check(t0) || !rlRa.check(t0 + 100) || rlRa.check(t0 + 200)) {
+    console.error("smoke failed rate-limit retryAfter fixture");
+    process.exit(1);
+  }
+  if (typeof rlRa.retryAfterSeconds !== "function" || rlRa.retryAfterSeconds(t0 + 200) !== 60) {
+    console.error("smoke failed rate-limit retryAfterSeconds at cap", rlRa.retryAfterSeconds(t0 + 200));
+    process.exit(1);
+  }
+  if (rlRa.retryAfterSeconds(t0 + 59_400) !== 1) {
+    console.error("smoke failed rate-limit retryAfterSeconds remaining", rlRa.retryAfterSeconds(t0 + 59_400));
+    process.exit(1);
+  }
   const ipOk =
     matchAllowlistEntry("10.1.2.3", "10.0.0.0/8") &&
     ipAllowed("127.0.0.1", ["127.0.0.1", "::1"]) &&
@@ -2605,7 +2619,59 @@ if (cmd === "--version" || cmd === "-V") {
     try { fs.unlinkSync(redactTmp); } catch { /* ignore */ }
   }
 
-  console.log("mcp-gateway " + VERSION + " smoke OK — policy+ratelimit+ipAllowlist+cors+upstreamTimeout+circuitBreaker+ready+requestId+gzipExport+webhook+hmac+timestamp+retry+watch+shutdown+accessLog+adminAuditCsv+adminAuditMd+adminAuditHtml+tokenRotate+streamableHttp+sessionTtl+sessionTerminate+adminSessions+adminSessionDelete+adminConfig+adminGetTenant+adminWebhooks+auditRing+payloadRedact");
+  const rlTmp = path.join("/tmp", "b-rl-retry-after-smoke.jsonl");
+  try { fs.unlinkSync(rlTmp); } catch { /* ignore */ }
+  const gwRl = createServer({
+    policy: {
+      allow: ["echo"],
+      deny: [],
+      tenants: [{ id: "acme", apiKey: "ten_rl_dev", rateLimitPerMinute: 1 }],
+      tools: [{ name: "echo", description: "echo" }],
+    },
+    auditPath: rlTmp,
+  });
+  await new Promise((resolve, reject) => {
+    gwRl.server.once("error", reject);
+    gwRl.server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const rlPort = gwRl.server.address().port;
+    const rlBase = "http://127.0.0.1:" + rlPort;
+    const rlAuth = { "content-type": "application/json", authorization: "Bearer ten_rl_dev" };
+    const first = await fetch(rlBase + "/tools/call", {
+      method: "POST",
+      headers: rlAuth,
+      body: JSON.stringify({ name: "echo", arguments: { note: "rl-1" } }),
+    });
+    const firstBody = await first.json();
+    if (first.status !== 200 || firstBody.ok !== true) {
+      console.error("smoke failed rate-limit first tools/call 200", first.status, firstBody);
+      process.exit(1);
+    }
+    const limited = await fetch(rlBase + "/tools/call", {
+      method: "POST",
+      headers: rlAuth,
+      body: JSON.stringify({ name: "echo", arguments: { note: "rl-2" } }),
+    });
+    const limitedBody = await limited.json();
+    const retryAfter = limited.headers.get("retry-after");
+    const retryN = Number(retryAfter);
+    if (
+      limited.status !== 429 ||
+      limitedBody.error !== "rate_limited" ||
+      !/^[0-9]+$/.test(String(retryAfter || "")) ||
+      !Number.isInteger(retryN) ||
+      retryN < 1
+    ) {
+      console.error("smoke failed 429 Retry-After", limited.status, limitedBody, retryAfter);
+      process.exit(1);
+    }
+  } finally {
+    try { await gwRl.close(); } catch { /* ignore */ }
+    try { fs.unlinkSync(rlTmp); } catch { /* ignore */ }
+  }
+
+  console.log("mcp-gateway " + VERSION + " smoke OK — policy+ratelimit+ipAllowlist+cors+upstreamTimeout+circuitBreaker+ready+requestId+gzipExport+webhook+hmac+timestamp+retry+watch+shutdown+accessLog+adminAuditCsv+adminAuditMd+adminAuditHtml+tokenRotate+streamableHttp+sessionTtl+sessionTerminate+adminSessions+adminSessionDelete+adminConfig+adminGetTenant+adminWebhooks+auditRing+payloadRedact+rateLimitRetryAfter");
 } else if (cmd === "demo") {
   for (const tool of ["listPets", "deletePet", "createPet"]) {
     const decision = evaluatePolicy(demoPolicy, tool);

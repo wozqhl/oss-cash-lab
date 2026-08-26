@@ -507,10 +507,11 @@ export function createServer(options = {}) {
         requestId,
       });
       recordAudit(event);
+      const retryAfter = limiter.retryAfterSeconds();
       return {
         status: 429,
         body: { error: "rate_limited", tool: name, tenantId },
-        extraHeaders: {},
+        extraHeaders: { "Retry-After": String(retryAfter) },
       };
     }
 
