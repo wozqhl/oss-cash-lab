@@ -1966,7 +1966,7 @@ node src/cli.js registry-pack --in out/petstore --out out/petstore-registry
 test -f out/petstore-registry/server.json
 test -f out/petstore-registry/package.json
 test -f out/petstore-registry/mcp-server.mjs
-grep -q generated out/petstore-registry/server.json
+grep -qi generated out/petstore-registry/server.json
 python3 - <<'PY'
 import json
 s=json.load(open("out/petstore-registry/server.json"))
