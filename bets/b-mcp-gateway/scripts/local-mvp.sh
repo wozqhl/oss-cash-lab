@@ -1444,14 +1444,20 @@ console.log("cli_gzip_file_ok count=" + p.count);
 ' "$ROOT/out/audit.json.gz" "$RID"
 echo "audit_export_gzip_ok"
 
-# PII-safe export: echo a secret-like arg, redact must strip it; unredacted may keep it
+# PII-safe export: echo a live-looking key. policy.redact.enabled defaults true, so
+# disk JSONL must not store plaintext sk_live_ args — existing [REDACTED] token must appear.
+# Wholesale ?redact=1 still wipes arguments; ?redact=0 keeps structure but not the secret.
 SECRET='sk_live_mvp_secret_9f3a2c'
 SECRET_ECHO="$(curl -sf -X POST "http://127.0.0.1:$PORT/tools/call" \
   -H 'content-type: application/json' -H "Authorization: Bearer $ACME_KEY" \
   -d "{\"name\":\"echo\",\"arguments\":{\"message\":\"$SECRET\",\"token\":\"$SECRET\"}}")"
 echo "secret_echo=$SECRET_ECHO"
 echo "$SECRET_ECHO" | grep -q '"ok":true'
-grep -q "$SECRET" "$AUDIT"
+if grep -q "$SECRET" "$AUDIT"; then
+  echo "audit JSONL still contains secret"
+  exit 1
+fi
+grep -q '\[REDACTED\]' "$AUDIT"
 
 EXPORT_REDACT_HTTP="$(curl -sf "http://127.0.0.1:$PORT/audit/export?tenant=acme&format=json&redact=1" \
   -H "Authorization: Bearer $ACME_KEY" -o "$ROOT/data/export.redact.json" -w '%{http_code}')"
@@ -1470,7 +1476,11 @@ EXPORT_PLAIN_HTTP="$(curl -sf "http://127.0.0.1:$PORT/audit/export?tenant=acme&f
 echo "export_plain_http_status=$EXPORT_PLAIN_HTTP"
 test "$EXPORT_PLAIN_HTTP" = "200"
 grep -q '"redacted":false' "$ROOT/data/export.plain.json"
-grep -q "$SECRET" "$ROOT/data/export.plain.json"
+if grep -q "$SECRET" "$ROOT/data/export.plain.json"; then
+  echo "unredacted HTTP export still contains secret"
+  exit 1
+fi
+grep -q '\[REDACTED\]' "$ROOT/data/export.plain.json"
 
 # since= filter (far-future => empty pack)
 FUTURE="2099-01-01T00:00:00.000Z"
@@ -1725,7 +1735,11 @@ CLI_PLAIN="$(node src/cli.js export-audit --config "$POLICY" --audit "$AUDIT" \
   --out "$ROOT/out/audit.plain.json" --format json --tenant acme --no-redact)"
 echo "cli_plain=$CLI_PLAIN"
 echo "$CLI_PLAIN" | grep -q '"redacted":false'
-grep -q "$SECRET" "$ROOT/out/audit.plain.json"
+if grep -q "$SECRET" "$ROOT/out/audit.plain.json"; then
+  echo "CLI --no-redact export still contains secret"
+  exit 1
+fi
+grep -q '\[REDACTED\]' "$ROOT/out/audit.plain.json"
 
 # GET /audit respects same redact rules as export
 AUDIT_REDACT_Q="$(curl -sf "http://127.0.0.1:$PORT/audit?tenant=acme&limit=20&redact=1" \
@@ -1744,7 +1758,11 @@ AUDIT_PLAIN_Q="$(curl -sf "http://127.0.0.1:$PORT/audit?tenant=acme&limit=20&red
   -H "Authorization: Bearer $ACME_KEY")"
 echo "audit_plain_query=$AUDIT_PLAIN_Q"
 echo "$AUDIT_PLAIN_Q" | grep -q '"redacted":false'
-echo "$AUDIT_PLAIN_Q" | grep -q "$SECRET"
+if echo "$AUDIT_PLAIN_Q" | grep -q "$SECRET"; then
+  echo "GET /audit?redact=0 still contains secret"
+  exit 1
+fi
+echo "$AUDIT_PLAIN_Q" | grep -q '\[REDACTED\]'
 
 # until= filter (far-past => empty pack); CLI --until likewise
 PAST="2000-01-01T00:00:00.000Z"
