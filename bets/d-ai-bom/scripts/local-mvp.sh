@@ -697,6 +697,9 @@ TEXT_OUT="$(python3 -m ai_bom clock --as-of 2026-09-01 --format text)"
 echo "$TEXT_OUT" | grep -F "日历/证据辅助，不是 CRA 合格证书"
 echo "$TEXT_OUT" | grep -F "calendar helper, not a CRA compliance certificate"
 python3 -m ai_bom clock --as-of 2026-09-20 --format json >/dev/null
+DEFAULT_TEXT="$(python3 -m ai_bom clock --format text)"
+echo "$DEFAULT_TEXT" | grep -F "日历/证据辅助，不是 CRA 合格证书"
+echo "$DEFAULT_TEXT" | grep -F "calendar helper, not a CRA compliance certificate"
 echo "clock-cli-ok"
 echo "vex-ok"
 

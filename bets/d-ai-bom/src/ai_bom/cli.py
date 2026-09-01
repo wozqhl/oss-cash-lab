@@ -645,6 +645,18 @@ def _smoke_clock_cli() -> str | None:
     rc_bad, _ = _capture_main(["clock", "--as-of", "not-a-date"])
     if rc_bad != 2:
         return f"bad as-of exit {rc_bad}"
+
+    # Default as-of is today UTC; do not freeze today's date.
+    rc_def, def_out = _capture_main(["clock", "--format", "text"])
+    if rc_def != 0:
+        return f"clock default as-of text exit {rc_def}"
+    if "日历/证据辅助，不是 CRA 合格证书" not in def_out:
+        return "clock default text missing ZH disclaimer"
+    if "calendar helper, not a CRA compliance certificate" not in def_out:
+        return "clock default text missing EN disclaimer"
+    low_def = def_out.lower()
+    if "compliant" in low_def or "certified" in low_def:
+        return "clock default text invented conformity language"
     return None
 
 

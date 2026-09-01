@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - F Dify / n8n sample approval forward (`APPROVAL_FORWARD_URL` / `--forward-url`; `{event,approval_id,status,tenant|app,title}` after approved/rejected; 1 retry; example wiring, not a Dify plugin). Smoke prints `forward-ok`.
 - F official-doc IM verify + send-card fixtures (`bets/f-cn-work-agent/fixtures/official-im/`; HMAC / timestamp / encrypt header names as vendors document). Existing verifier accepts DingTalk official Base64 + `timestamp`/`sign`. Mock only, no vendor network. Smoke `im-verify-ok`.
 - D `ai-bom clock` CLI prints daysUntil/daysOverdue vs 2026-09-11 and 2027-12-11 without packing a zip. Calendar helper, not a CRA certificate. Smoke `clock-cli-ok`.
+- D README 30-second clock: from the bet directory, `python3 -m pip install -e .` then `ai-bom clock --format text` (default as-of today UTC). Calendar helper, not a CRA certificate. Smoke `clock-cli-ok`.
 - D evidence-pack window clock: `pack.json` `clock` (listed in the zip) emits daysUntil / daysOverdue vs 2026-09-11 and 2027-12-11 from observed `--gate-vulns` hits. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。Smoke `cra-clock-ok`.
 
 ## [0.1.0] - 2026-08-13
