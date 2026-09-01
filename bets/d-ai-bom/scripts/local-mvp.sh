@@ -673,6 +673,31 @@ rm -rf "$PACK_TMP"
 echo "evidence-pack-ok"
 echo "evidence-zip-ok"
 echo "cra-clock-ok"
+
+echo "==> clock CLI (calendar windows without a zip; not a CRA certificate)"
+CLOCK_TMP="$(mktemp)"
+python3 -m ai_bom clock --as-of 2026-09-01 --format json > "$CLOCK_TMP"
+CLOCK_TMP="$CLOCK_TMP" python3 - <<"PYCLOCK"
+import json, os
+from pathlib import Path
+clock = json.loads(Path(os.environ["CLOCK_TMP"]).read_text())
+assert clock.get("schema") == "ai-bom-cra-clock/v1"
+windows = clock.get("windows") or {}
+assert "article14Reporting" in windows and "sbom" in windows
+a14 = windows["article14Reporting"]
+assert a14.get("date") == "2026-09-11"
+assert isinstance(a14.get("daysUntil"), int) and a14["daysUntil"] > 0
+assert clock.get("observedVulnCount") == 0
+blob = json.dumps(clock, ensure_ascii=False).lower()
+assert "compliant" not in blob and "certified" not in blob
+print("clock json ok", a14.get("daysUntil"))
+PYCLOCK
+rm -f "$CLOCK_TMP"
+TEXT_OUT="$(python3 -m ai_bom clock --as-of 2026-09-01 --format text)"
+echo "$TEXT_OUT" | grep -F "日历/证据辅助，不是 CRA 合格证书"
+echo "$TEXT_OUT" | grep -F "calendar helper, not a CRA compliance certificate"
+python3 -m ai_bom clock --as-of 2026-09-20 --format json >/dev/null
+echo "clock-cli-ok"
 echo "vex-ok"
 
 echo "==> temp package.json GPL-3.0 -> strict fails + evidence/sarif license hits"
@@ -2046,4 +2071,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock+vex)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock+clock-cli+vex)"

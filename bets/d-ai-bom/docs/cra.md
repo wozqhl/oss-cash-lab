@@ -75,6 +75,13 @@ python3 -m ai_bom evidence-pack --dir examples/sample-app --out /tmp/cra-pack
 | `windows.sbom` | daysUntil / daysOverdue vs **2027-12-11** |
 | `observedVulns[]` | Each `--gate-vulns` / converted-advisory hit inherits those same two windows |
 
+Print the same windows **without** packing a zip:
+
+```bash
+python3 -m ai_bom clock --as-of 2026-09-01
+python3 -m ai_bom clock --as-of 2026-09-01 --format text
+```
+
 This is a **calendar/evidence helper**. It is **not** a CRA compliance certificate, conformity claim, CE mark, or notified-body assessment. A fixture `ADV-FIXTURE-*` hit showing `daysUntil=16` on `--as-of 2026-08-26` only means the calendar offset was computed — not that a report is due, not that a CVE exists, and not that the product is in scope.
 
 

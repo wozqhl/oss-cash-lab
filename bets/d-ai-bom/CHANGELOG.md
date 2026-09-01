@@ -4,6 +4,10 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### CRA clock CLI
+
+- `clock --as-of YYYY-MM-DD` prints the same `ai-bom-cra-clock/v1` windows as `evidence-pack` without writing a zip. Optional `--advisories FILE --dir DIR` runs the existing offline fixture match. `--format json` (default) or `text`. Exit 0 even when a window is overdue (not a conformity gate). Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `clock-cli-ok`.
+
 ### OpenVEX 0.2.0 (observed fixture matches)
 
 - `scan --advisories FILE --vex out.json` and `evidence-pack` `vex.json` emit OpenVEX 0.2.0 from observed local-fixture matches (products the scanner actually saw). Status is derived: `affected` on a real match; `not_affected` only with a justification the fixture recorded (otherwise `under_investigation` when versionRange excludes the observed version); `fixed` only when the fixture records `fixedVersion`. Timestamp, author, stable `@id`. Not a CRA conformity claim. 中文: 可利用性声明辅助，不是符合性主张。 Smoke: `vex-ok`.

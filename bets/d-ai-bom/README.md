@@ -8,6 +8,20 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 
 把模型/提示词/MCP 依赖做成可扫描的 AI-BOM。
 
+## 30-second clock / 日历窗口
+
+Article 14-style reporting window: **2026-09-11**. Print days-until / days-overdue **without** packing a zip:
+
+```bash
+PYTHONPATH=src python3 -m ai_bom clock --as-of 2026-09-01
+PYTHONPATH=src python3 -m ai_bom clock --as-of 2026-09-01 --format text
+# optional: same offline fixture match as evidence-pack
+PYTHONPATH=src python3 -m ai_bom clock --as-of 2026-08-26 \
+  --dir examples/sample-app --advisories examples/advisories/sample.json
+```
+
+This is a **calendar helper**, not a CRA certificate / 日历/证据辅助，**不是** CRA 合格证书. It does not claim Art.14 compliance.
+
 ## Who pays / 谁付钱
 
 - Security compliance / procurement
@@ -27,6 +41,7 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 | Policy `forbiddenLicenseIds` (GPL/AGPL/SSPL) + `--strict` / `--gate-licenses` | Managed license allow/deny packs |
 | Local advisory fixture match (`--advisories` + `--gate-vulns`; `ADV-FIXTURE-*`; offline) + `convert-advisories --from-osv` | Hosted OSV/GHSA feed / NVD completeness |
 | OpenVEX 0.2.0 from observed fixture matches (`--vex` / evidence-pack `vex.json`; not a CRA claim) | Hosted VEX signing / publisher workflow |
+| `clock` CLI (daysUntil/daysOverdue vs 2026-09-11 / 2027-12-11; calendar helper, not a CRA certificate) | Signed auditor packs, continuous inventory |
 | `.aibomignore` / `--ignore` path filters | Managed path policies / inventory scopes |
 | `.aibom-exceptions.json` / `--exceptions` license waivers (reason + optional expiry) | Managed exception workflow / approval trail |
 | Local `serve` HTTP (`/health` `/ready` `/bom.json` `/v1/bom?format=json\|cyclonedx\|cyclonedx-xml\|spdx\|spdx-xml\|spdx3\|sarif\|md\|gha\|html` `/v1/bom.xml` `/v1/bom.spdx.xml` `/v1/bom.sarif` `/v1/bom.md` `/v1/bom.gha.txt` `/v1/bom.html` **`/v1/policy`** **`/v1/config`** **`/v1/components`** **`/v1/exceptions`** `/evidence.md` `/` `/openapi.json` `/metrics`; optional `--cors-origins` / `AI_BOM_CORS_ORIGINS`; HTTP rate-limit `--rate-limit` / `RATE_LIMIT_PER_MINUTE`; `X-Request-Id` echo; optional `--watch` dir mtime poll rescan) | **Hosted inventory** / fleet dashboard |
@@ -40,7 +55,7 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 
 | Code | Meaning |
 |------|---------|
-| 0 | Scan OK (no `--strict` violations) |
+| 0 | Scan OK (no `--strict` violations); `clock` prints windows (overdue is still 0, not a gate) |
 | 1 | `--strict`: forbidden hits, disclosure gaps, and/or forbidden licenses; `--gate-licenses`: forbidden licenses only; `--gate-vulns`: local advisory fixture hits |
 | 2 | Usage / IO / policy parse error |
 
@@ -57,6 +72,7 @@ Software SBOM must extend to models, prompts, and MCP tool dependencies for comp
 - [x] CRA orientation [`docs/cra.md`](./docs/cra.md) (Article 14 11 Sep 2026 reporting vs Dec 2027 SBOM; no certification claim)
 - [x] Local evidence pack (`evidence-pack --dir DIR --out OUTDIR`) — CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 `vex.json` + MANIFEST + `pack.json` (license/advisory gate codes + window clock); not a CRA declaration
 - [x] CRA window clock (`pack.json` `clock` / `--as-of`) — days-until / days-overdue vs 2026-09-11 and 2027-12-11 from observed `--gate-vulns` hits; calendar/evidence helper, **not** a CRA compliance certificate / 日历/证据辅助，**不是** CRA 合格证书
+- [x] `clock` CLI (`ai-bom clock --as-of`; optional `--advisories` + `--dir`; `--format json|text`) — same windows without packing a zip; exit 0 even if overdue; calendar helper, **not** a CRA certificate / 日历/证据辅助，**不是** CRA 合格证书
 - [x] OpenVEX 0.2.0 (`scan --advisories FILE --vex out.json`; `evidence-pack` `vex.json`) from observed local-fixture matches. Status derived, never invented. Exploitability statement helper, **not** a CRA conformity claim / 可利用性声明辅助，**不是**符合性主张
 
 - [x] SPDX 2.3 XML export (`scan --format spdx-xml`; `GET /v1/bom?format=spdx-xml` / `GET /v1/bom.spdx.xml`; same packages/`licenseConcluded` as JSON; `spdx` stays JSON)
@@ -120,6 +136,9 @@ PYTHONPATH=src python3 -m ai_bom scan examples/sample-app --advisories examples/
 
 # Offline OSV/GHSA → same fixture schema (no fetch):
 PYTHONPATH=src python3 -m ai_bom convert-advisories --from-osv examples/advisories/osv-sample.json --out out/from-osv.json
+# Article 14 calendar clock (no zip; calendar helper, not a CRA certificate):
+PYTHONPATH=src python3 -m ai_bom clock --as-of 2026-09-01
+PYTHONPATH=src python3 -m ai_bom clock --as-of 2026-09-01 --format text
 # Article 14 evidence pack (inventory+match + calendar clock; not a CRA certificate):
 PYTHONPATH=src python3 -m ai_bom evidence-pack --dir examples/sample-app --out out/cra-pack
 # optional: --zip out/cra-pack.zip  --as-of 2026-08-26

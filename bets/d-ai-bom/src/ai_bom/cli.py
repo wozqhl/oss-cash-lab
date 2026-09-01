@@ -3,6 +3,7 @@
 Exit codes:
   0  success (no --strict / --gate-licenses / --gate-vulns violations)
      evidence-pack: pack written (gate codes recorded in MANIFEST.md)
+     clock: windows printed (overdue is still 0; not a conformity gate)
   1  --strict: forbidden pattern hits, disclosure gaps, and/or forbidden licenses
      --gate-licenses: forbidden licenses only (CI license-policy gate)
      --gate-vulns: local advisory fixture hits (offline; not NVD)
@@ -11,6 +12,8 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import tempfile
 from pathlib import Path
@@ -33,6 +36,7 @@ from ai_bom.evidence_pack import (
     SBOM_DATE,
     SPDX3_FILENAME,
     build_cra_clock,
+    parse_as_of,
     default_advisories_path,
     default_policy_path,
     resolve_optional_path,
@@ -259,6 +263,81 @@ def _run_evidence_pack(args) -> int:
     return 0
 
 
+CLOCK_TEXT_DISCLAIMER = (
+    "日历/证据辅助，不是 CRA 合格证书 / "
+    "calendar helper, not a CRA compliance certificate"
+)
+
+
+def _run_clock(args) -> int:
+    """Print CRA calendar windows. Exit 0 even when a window is overdue."""
+    try:
+        as_of_date = parse_as_of(getattr(args, "as_of", None))
+    except ValueError as e:
+        print(f"clock parse error: {e}")
+        return 2
+
+    hits: list = []
+    advisories_raw = getattr(args, "advisories", None)
+    scan_raw = getattr(args, "dir", None)
+    if advisories_raw:
+        if not scan_raw:
+            print("clock --advisories requires --dir DIR (same offline match as evidence-pack)")
+            return 2
+        scan_dir = Path(scan_raw)
+        adv_path = Path(advisories_raw)
+        if not scan_dir.exists():
+            print(f"path not found: {scan_dir}")
+            return 2
+        if not adv_path.is_file():
+            print(f"advisories not found: {adv_path}")
+            return 2
+        try:
+            bom = scan_path(scan_dir)
+            advisories = load_advisories(adv_path)
+            matched = match_advisories_result(bom.get("components") or [], advisories)
+            hits = list(matched.hits)
+        except OSError as e:
+            print(f"clock IO error: {e}")
+            return 2
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"clock parse error: {e}")
+            return 2
+
+    clock = build_cra_clock(as_of_date, hits)
+    fmt = str(getattr(args, "format", None) or "json").strip().lower()
+    if fmt == "text":
+        windows = clock.get("windows") or {}
+        a14 = windows.get("article14Reporting") or {}
+        sbom = windows.get("sbom") or {}
+        print(f"asOf: {clock.get('asOf')}")
+        print(
+            f"article14Reporting: {a14.get('date')} "
+            f"daysUntil={a14.get('daysUntil')} daysOverdue={a14.get('daysOverdue')} "
+            f"status={a14.get('status')}"
+        )
+        print(
+            f"sbom: {sbom.get('date')} "
+            f"daysUntil={sbom.get('daysUntil')} daysOverdue={sbom.get('daysOverdue')} "
+            f"status={sbom.get('status')}"
+        )
+        print(f"observedVulnCount: {clock.get('observedVulnCount', 0)}")
+        print(CLOCK_TEXT_DISCLAIMER)
+        return 0
+    if fmt != "json":
+        print("clock --format must be json or text")
+        return 2
+    print(json.dumps(clock, indent=2, ensure_ascii=False) + "\n", end="")
+    return 0
+
+
+def _capture_main(argv: list[str]) -> tuple[int, str]:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(argv)
+    return rc, buf.getvalue()
+
+
 def _smoke_vex() -> str | None:
     from ai_bom.vex_recorded import smoke_vex_cli
     return smoke_vex_cli(main, load_advisories)
@@ -462,6 +541,110 @@ def _smoke_cra_clock() -> str | None:
         zpack = json.loads(raw.decode("utf-8"))
         if not (zpack.get("clock") or {}).get("observedVulns"):
             return "zip pack.json clock missing observedVulns"
+    return None
+
+
+def _smoke_clock_cli() -> str | None:
+    """Cheap clock CLI: windows without a zip. None = ok."""
+    from datetime import date
+
+    rc, out = _capture_main(["clock", "--as-of", "2026-09-01", "--format", "json"])
+    if rc != 0:
+        return f"clock json exit {rc}"
+    try:
+        clock = json.loads(out)
+    except Exception as e:
+        return f"clock json parse {e}: {out[:240]}"
+    if clock.get("schema") != "ai-bom-cra-clock/v1":
+        return f"clock schema {clock.get('schema')}"
+    if clock.get("kind") != "calendar-helper":
+        return f"clock kind {clock.get('kind')}"
+    if clock.get("asOf") != "2026-09-01":
+        return f"clock asOf {clock.get('asOf')}"
+    windows = clock.get("windows") or {}
+    a14 = windows.get("article14Reporting") or {}
+    sbom = windows.get("sbom") or {}
+    if a14.get("date") != ARTICLE14_DATE.isoformat() or sbom.get("date") != SBOM_DATE.isoformat():
+        return f"clock windows {a14.get('date')} {sbom.get('date')}"
+    if not isinstance(a14.get("daysUntil"), int) or a14.get("daysUntil") <= 0:
+        return f"2026-09-01 article14 daysUntil {a14}"
+    if a14.get("daysUntil") != 10 or a14.get("daysOverdue") != 0:
+        return f"2026-09-01 article14 {a14}"
+    if clock.get("observedVulnCount") != 0:
+        return f"no-advisories observed {clock.get('observedVulnCount')}"
+    blob = json.dumps(clock, ensure_ascii=False).lower()
+    if "compliant" in blob or "certified" in blob:
+        return "clock json invented conformity language"
+    if '"status": "fixed"' in blob.replace(" ", ""):
+        return "clock json invented fixed status"
+
+    rc_t, text_out = _capture_main(["clock", "--as-of", "2026-09-01", "--format", "text"])
+    if rc_t != 0:
+        return f"clock text exit {rc_t}"
+    if "asOf" not in text_out or "daysUntil" not in text_out or "daysOverdue" not in text_out:
+        return f"clock text missing fields {text_out}"
+    if "observedVulnCount" not in text_out:
+        return f"clock text missing observedVulnCount {text_out}"
+    if "日历/证据辅助，不是 CRA 合格证书" not in text_out:
+        return "clock text missing ZH disclaimer"
+    if "calendar helper, not a CRA compliance certificate" not in text_out:
+        return "clock text missing EN disclaimer"
+    low = text_out.lower()
+    if "compliant" in low or "certified" in low:
+        return "clock text invented conformity language"
+
+    rc_o, overdue_out = _capture_main(["clock", "--as-of", "2026-09-20", "--format", "json"])
+    if rc_o != 0:
+        return f"overdue clock exit {rc_o} (must stay 0)"
+    try:
+        overdue = json.loads(overdue_out)
+    except Exception as e:
+        return f"overdue clock parse {e}"
+    late_a = (overdue.get("windows") or {}).get("article14Reporting") or {}
+    if late_a.get("status") != "overdue" or late_a.get("daysOverdue") != 9:
+        return f"overdue article14 {late_a}"
+
+    root = Path(__file__).resolve().parents[2]
+    sample_app = root / "examples" / "sample-app"
+    sample_adv = root / "examples" / "advisories" / "sample.json"
+    bom = scan_path(sample_app)
+    advisories = load_advisories(sample_adv)
+    matched = match_advisories_result(bom.get("components") or [], advisories)
+    expected = build_cra_clock(date(2026, 8, 26), list(matched.hits))
+    want_n = expected.get("observedVulnCount")
+    if not want_n:
+        return f"fixture expected hits {want_n}"
+    rc_h, out_h = _capture_main([
+        "clock",
+        "--as-of", "2026-08-26",
+        "--dir", str(sample_app),
+        "--advisories", str(sample_adv),
+        "--format", "json",
+    ])
+    if rc_h != 0:
+        return f"clock hits exit {rc_h}: {out_h[:240]}"
+    try:
+        got = json.loads(out_h)
+    except Exception as e:
+        return f"clock hits parse {e}: {out_h[:240]}"
+    if got.get("observedVulnCount") != want_n:
+        return f"observedVulnCount {got.get('observedVulnCount')} != {want_n}"
+    if got.get("asOf") != "2026-08-26":
+        return f"hits asOf {got.get('asOf')}"
+    ca = (got.get("windows") or {}).get("article14Reporting") or {}
+    if ca.get("daysUntil") != 16:
+        return f"hits article14 {ca}"
+
+    rc_b, _ = _capture_main([
+        "clock",
+        "--dir", str(sample_app),
+        "--advisories", str(sample_app / "no-such-advisories.json"),
+    ])
+    if rc_b != 2:
+        return f"missing advisories exit {rc_b}"
+    rc_bad, _ = _capture_main(["clock", "--as-of", "not-a-date"])
+    if rc_bad != 2:
+        return f"bad as-of exit {rc_bad}"
     return None
 
 
@@ -959,6 +1142,35 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         dest="as_of",
         help="UTC calendar date YYYY-MM-DD for the window clock (default: today UTC). Calendar helper only; not a certificate.",
+    )
+    p_clock = sub.add_parser(
+        "clock",
+        help="Print CRA calendar window days-until/days-overdue without packing a zip (calendar helper, not a CRA certificate)",
+    )
+    p_clock.add_argument(
+        "--as-of",
+        default=None,
+        dest="as_of",
+        help="UTC calendar date YYYY-MM-DD (default: today UTC). Same helper as evidence-pack.",
+    )
+    p_clock.add_argument(
+        "--advisories",
+        default=None,
+        help=(
+            "Local advisory JSON (offline fixture). Runs the same match as "
+            "evidence-pack and needs --dir. Omit for observedVulnCount=0."
+        ),
+    )
+    p_clock.add_argument(
+        "--dir",
+        default=None,
+        help="Scan root for optional --advisories match (required with --advisories)",
+    )
+    p_clock.add_argument(
+        "--format",
+        default="json",
+        choices=["json", "text"],
+        help="json (default clock dict) or text (short human summary)",
     )
     args = parser.parse_args(argv)
 
@@ -1508,6 +1720,11 @@ def main(argv: list[str] | None = None) -> int:
             print("smoke failed cra-clock", clock_err)
             return 1
         print("cra-clock-ok")
+        clock_cli_err = _smoke_clock_cli()
+        if clock_cli_err:
+            print("smoke failed clock-cli", clock_cli_err)
+            return 1
+        print("clock-cli-ok")
         vex_err = _smoke_vex()
         if vex_err:
             print("smoke failed vex", vex_err)
@@ -3398,12 +3615,14 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock+vex")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock+clockCli+vex")
         return 0
     if args.cmd == "convert-advisories":
         return _run_convert_advisories(args)
     if args.cmd == "evidence-pack":
         return _run_evidence_pack(args)
+    if args.cmd == "clock":
+        return _run_clock(args)
     if args.cmd == "policy":
         target = Path(args.path)
         if not target.exists():

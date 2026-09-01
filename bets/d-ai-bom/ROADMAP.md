@@ -11,6 +11,7 @@ Bet-local. Portfolio root `ROADMAP.md` is separate and is not updated here.
 - CRA orientation in `docs/cra.md` (not a conformity claim). BSI “either format” is honest: CycloneDX 1.7 **or** SPDX 3.0.1.
 - Local evidence pack: `evidence-pack --dir DIR --out OUTDIR` (CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 `vex.json` + MANIFEST + `pack.json` with gate codes). Article 14 orientation, not a conformity claim.
 - CRA window clock in `pack.json` `clock` (and MANIFEST / zip): days-until / days-overdue vs 2026-09-11 and 2027-12-11 from observed advisory hits. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。
+- [x] `clock` CLI (`--as-of`, optional `--advisories`/`--dir`, `--format json|text`): days-until / days-overdue without an evidence zip. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。
 - OpenVEX 0.2.0 from observed local-fixture matches (`scan --advisories FILE --vex out.json`; packed as `vex.json`). Status derived, never invented. Exploitability statement helper, not a CRA conformity claim. 可利用性声明辅助，不是符合性主张。
 
 - Richer ML-BOM only when observed: sha256 of model files + on-disk model-card name/description/license URL. SPDX 3.0.1 `software_File` + package `contains` file when a real hashed file was scanned. No invented datasets, metrics, files, or hashes.
