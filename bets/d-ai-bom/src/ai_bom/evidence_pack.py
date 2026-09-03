@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_bom.advisories import attach_advisory_hits, load_advisories, match_advisories_result
-from ai_bom.export import dumps_export
+from ai_bom.export import dumps_export, _gha_line
 from ai_bom.scanner import load_policy, scan_path
 from ai_bom.vex import (
     VEX_DISCLAIMER_EN,
@@ -184,6 +184,81 @@ def build_cra_clock(
         "observedVulnCount": len(observed),
         "observedVulns": observed,
     }
+
+
+
+def to_clock_gha(clock: dict[str, Any]) -> str:
+    """GitHub Actions workflow commands for a CRA calendar clock.
+
+    Always emits a bilingual disclaimer notice. Article 14 / SBOM windows use
+    ``::notice`` or ``::warning`` only — never ``::error`` (clock is not a gate;
+    callers still exit 0). observedVulnCount > 0 adds a notice that hits are
+    local-fixture counts, not real CVEs. Reuses ``ai_bom.export._gha_line``.
+    """
+    lines: list[str] = []
+    lines.append(
+        _gha_line(
+            "notice",
+            "disclaimer",
+            "日历/证据辅助，不是 CRA 合格证书 / calendar helper, not a CRA compliance certificate",
+        )
+    )
+    windows = clock.get("windows") or {}
+    a14 = windows.get("article14Reporting") or {}
+    status = str(a14.get("status") or "")
+    days_until = a14.get("daysUntil")
+    days_overdue = a14.get("daysOverdue")
+    try:
+        days_until_i = int(days_until) if days_until is not None else 0
+    except (TypeError, ValueError):
+        days_until_i = 0
+    try:
+        days_overdue_i = int(days_overdue) if days_overdue is not None else 0
+    except (TypeError, ValueError):
+        days_overdue_i = 0
+
+    if status == "until" and days_until_i > 7:
+        a14_kind = "notice"
+    else:
+        # until with daysUntil<=7, due, overdue — all warning (never error)
+        a14_kind = "warning"
+    a14_msg = (
+        f"date={a14.get('date') or ''} "
+        f"daysUntil={days_until_i} daysOverdue={days_overdue_i} "
+        f"status={status}"
+    )
+    lines.append(_gha_line(a14_kind, "article14", a14_msg))
+
+    sbom = windows.get("sbom") or {}
+    try:
+        sbom_until = int(sbom.get("daysUntil") if sbom.get("daysUntil") is not None else 0)
+    except (TypeError, ValueError):
+        sbom_until = 0
+    try:
+        sbom_overdue = int(sbom.get("daysOverdue") if sbom.get("daysOverdue") is not None else 0)
+    except (TypeError, ValueError):
+        sbom_overdue = 0
+    sbom_msg = (
+        f"date={sbom.get('date') or ''} "
+        f"daysUntil={sbom_until} daysOverdue={sbom_overdue} "
+        f"status={sbom.get('status') or ''}"
+    )
+    lines.append(_gha_line("notice", "sbom", sbom_msg))
+
+    obs = clock.get("observedVulnCount") or 0
+    try:
+        obs_n = int(obs)
+    except (TypeError, ValueError):
+        obs_n = 0
+    if obs_n > 0:
+        lines.append(
+            _gha_line(
+                "notice",
+                "observedVulns",
+                f"observedVulnCount={obs_n} (local fixture hit count, not real CVEs)",
+            )
+        )
+    return "\n".join(lines) + "\n"
 
 
 def build_pack_document(

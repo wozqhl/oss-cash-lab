@@ -3,7 +3,7 @@
 Exit codes:
   0  success (no --strict / --gate-licenses / --gate-vulns violations)
      evidence-pack: pack written (gate codes recorded in MANIFEST.md)
-     clock: windows printed (overdue is still 0; not a conformity gate)
+     clock: windows printed / gha annotations (overdue is still 0; not a conformity gate)
   1  --strict: forbidden pattern hits, disclosure gaps, and/or forbidden licenses
      --gate-licenses: forbidden licenses only (CI license-policy gate)
      --gate-vulns: local advisory fixture hits (offline; not NVD)
@@ -40,6 +40,7 @@ from ai_bom.evidence_pack import (
     default_advisories_path,
     default_policy_path,
     resolve_optional_path,
+    to_clock_gha,
     write_evidence_pack,
 )
 from ai_bom.vex import (
@@ -324,8 +325,11 @@ def _run_clock(args) -> int:
         print(f"observedVulnCount: {clock.get('observedVulnCount', 0)}")
         print(CLOCK_TEXT_DISCLAIMER)
         return 0
+    if fmt == "gha":
+        print(to_clock_gha(clock), end="")
+        return 0
     if fmt != "json":
-        print("clock --format must be json or text")
+        print("clock --format must be json, text, or gha")
         return 2
     print(json.dumps(clock, indent=2, ensure_ascii=False) + "\n", end="")
     return 0
@@ -657,6 +661,40 @@ def _smoke_clock_cli() -> str | None:
     low_def = def_out.lower()
     if "compliant" in low_def or "certified" in low_def:
         return "clock default text invented conformity language"
+
+    # --format gha: workflow commands / annotations; never exit-as-gate / ::error
+    rc_g, gha_out = _capture_main(["clock", "--as-of", "2026-09-01", "--format", "gha"])
+    if rc_g != 0:
+        return f"clock gha exit {rc_g}"
+    if "::notice" not in gha_out:
+        return f"clock gha missing ::notice {gha_out[:240]}"
+    if "日历/证据辅助，不是 CRA 合格证书" not in gha_out:
+        return "clock gha missing ZH disclaimer"
+    if "calendar helper, not a CRA compliance certificate" not in gha_out:
+        return "clock gha missing EN disclaimer"
+    if "daysUntil=10" not in gha_out:
+        return f"clock gha missing article14 daysUntil=10 {gha_out[:320]}"
+    if "::error" in gha_out:
+        return "clock gha must not emit ::error"
+    low_g = gha_out.lower()
+    if "compliant" in low_g or "certified" in low_g:
+        return "clock gha invented conformity language"
+
+    rc_near, near_out = _capture_main(["clock", "--as-of", "2026-09-08", "--format", "gha"])
+    if rc_near != 0:
+        return f"clock gha near-window exit {rc_near}"
+    if "::warning" not in near_out:
+        return f"clock gha near-window missing ::warning {near_out[:320]}"
+    if "::error" in near_out:
+        return "clock gha near-window must not emit ::error"
+
+    rc_ov, ov_out = _capture_main(["clock", "--as-of", "2026-09-20", "--format", "gha"])
+    if rc_ov != 0:
+        return f"overdue clock gha exit {rc_ov} (must stay 0)"
+    if "::warning" not in ov_out:
+        return f"overdue clock gha missing ::warning {ov_out[:320]}"
+    if "::error" in ov_out:
+        return "overdue clock gha must not emit ::error"
     return None
 
 
@@ -1181,8 +1219,8 @@ def main(argv: list[str] | None = None) -> int:
     p_clock.add_argument(
         "--format",
         default="json",
-        choices=["json", "text"],
-        help="json (default clock dict) or text (short human summary)",
+        choices=["json", "text", "gha"],
+        help="json (default clock dict), text (short human summary), or gha (GitHub Actions workflow commands / annotations; never a gate)",
     )
     args = parser.parse_args(argv)
 

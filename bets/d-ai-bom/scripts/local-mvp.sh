@@ -700,6 +700,19 @@ python3 -m ai_bom clock --as-of 2026-09-20 --format json >/dev/null
 DEFAULT_TEXT="$(python3 -m ai_bom clock --format text)"
 echo "$DEFAULT_TEXT" | grep -F "日历/证据辅助，不是 CRA 合格证书"
 echo "$DEFAULT_TEXT" | grep -F "calendar helper, not a CRA compliance certificate"
+GHA_OUT="$(python3 -m ai_bom clock --as-of 2026-09-01 --format gha)"
+echo "$GHA_OUT" | grep -F "::notice"
+echo "$GHA_OUT" | grep -F "日历/证据辅助，不是 CRA 合格证书"
+echo "$GHA_OUT" | grep -F "calendar helper, not a CRA compliance certificate"
+echo "$GHA_OUT" | grep -F "daysUntil=10"
+GHA_OUT="$GHA_OUT" python3 - <<'PYGHA'
+import os
+gha = os.environ["GHA_OUT"]
+assert "::error" not in gha, gha
+assert "compliant" not in gha.lower() and "certified" not in gha.lower()
+print("clock gha annotations ok")
+PYGHA
+python3 -m ai_bom clock --as-of 2026-09-20 --format gha >/dev/null
 echo "clock-cli-ok"
 echo "vex-ok"
 

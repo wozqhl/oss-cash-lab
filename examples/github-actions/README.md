@@ -1,6 +1,6 @@
-# GitHub Actions examples · A OpenAPI generate + drift + C JUnit + run-vs-run diff + D SARIF + E GHA annotations
+# GitHub Actions examples · A OpenAPI generate + drift + C JUnit + run-vs-run diff + D SARIF + D clock + E GHA annotations
 
-Copy-paste workflows so a consumer repo can drop **A (sdk-mcp-gen generate + OpenAPI drift)**, **C (agent-ci JUnit + optional run-vs-run Markdown diff)**, **D (ai-bom SARIF)**, and **E (otel-ai-cost budget `::error`)** into CI.
+Copy-paste workflows so a consumer repo can drop **A (sdk-mcp-gen generate + OpenAPI drift)**, **C (agent-ci JUnit + optional run-vs-run Markdown diff)**, **D (ai-bom SARIF + CRA clock annotations)**, and **E (otel-ai-cost budget `::error`)** into CI.
 
 These files live here on purpose. They are **not** required workflows on this portfolio (no live runner gate for OpenAPI drift / agent eval / run-vs-run diff / whole-monorepo BOM scan / cost budget). Keep [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) as the only push/PR gate. Do **not** enable GitHub code scanning on *this* repo from these examples.
 
@@ -25,6 +25,7 @@ If you run the same YAML against *this* tree, set `working-directory` and artifa
 | A drift | `bets/a-sdk-mcp-gen` | `sdk/` baseline + `sdk-new/` (exit 1 on removed/renamed tools) |
 | C JUnit | `bets/c-agent-ci` | `bets/c-agent-ci/junit.xml` |
 | D SARIF | `bets/d-ai-bom` | `bets/d-ai-bom/ai-bom.sarif` |
+| D clock | `bets/d-ai-bom` | stdout `::notice`/`::warning` (calendar helper, not a certificate) |
 | E GHA | `bets/e-otel-ai-cost` | stdout `::error` + `bets/e-otel-ai-cost/costs.md` |
 
 ## Exact CLI (smoke + workflows)
@@ -55,7 +56,7 @@ node src/cli.js generate examples/petstore.openapi.json --out sdk
 node src/cli.js generate examples/petstore.openapi.json --out sdk-new --check-baseline sdk
 ```
 
-C also accepts stdout XML: `run --format junit` (same suite). Optional Markdown job summary: `run --format md >> "$GITHUB_STEP_SUMMARY"` (HTTP `GET /v1/runs/{id}/report.md` on serve). Optional run-vs-run Markdown diff: `diff --from run-a.json --to run-b.json --format md >> "$GITHUB_STEP_SUMMARY"` (two completed-run JSON dumps, same shape as `GET /v1/runs/{id}`; identical demo dumps → “no changes”, exit 0; HTTP `GET /v1/runs/{id}/diff.md?against=`). Optional log annotations: `run --format gha` (prints `::error title=<suite>/<case>::…` workflow commands; HTTP `GET /v1/runs/{id}/annotations.txt`). D GitHub upload uses **`--sarif PATH`** (this workflow). Optional elsewhere: `scan --format sarif` (same SARIF 2.1.0 to stdout/`--out`) and HTTP `GET /v1/bom?format=sarif` (or `/v1/bom.sarif`) on `serve` / stack-demo — not a substitute for `upload-sarif`. Optional D log annotations: `scan --format gha` (prints `::error title=<component>::<license or rule>`; HTTP `GET /v1/bom?format=gha` / `/v1/bom.gha.txt`).
+C also accepts stdout XML: `run --format junit` (same suite). Optional Markdown job summary: `run --format md >> "$GITHUB_STEP_SUMMARY"` (HTTP `GET /v1/runs/{id}/report.md` on serve). Optional run-vs-run Markdown diff: `diff --from run-a.json --to run-b.json --format md >> "$GITHUB_STEP_SUMMARY"` (two completed-run JSON dumps, same shape as `GET /v1/runs/{id}`; identical demo dumps → “no changes”, exit 0; HTTP `GET /v1/runs/{id}/diff.md?against=`). Optional log annotations: `run --format gha` (prints `::error title=<suite>/<case>::…` workflow commands; HTTP `GET /v1/runs/{id}/annotations.txt`). D GitHub upload uses **`--sarif PATH`** (this workflow). Optional elsewhere: `scan --format sarif` (same SARIF 2.1.0 to stdout/`--out`) and HTTP `GET /v1/bom?format=sarif` (or `/v1/bom.sarif`) on `serve` / stack-demo — not a substitute for `upload-sarif`. Optional D CRA clock annotations: `clock --format gha` (calendar helper `::notice`/`::warning`, never `::error`, exit 0). Optional D scan log annotations: `scan --format gha` (prints `::error title=<component>::<license or rule>`; HTTP `GET /v1/bom?format=gha` / `/v1/bom.gha.txt`).
 
 E happy path (`--format gha`, no `--budget`) prints nothing and exits 0. Tight `--tenant-budget acme=0.0001` prints `::error title=tenant/acme::` and still exits 0. Tight `--budget policies/budget.json` prints `::error title=budget::` and **exits 1** (job fails; annotations still show in the log). Optional Markdown: `report --format md >> "$GITHUB_STEP_SUMMARY"` and `--out costs.md` for `upload-artifact`. HTTP: `GET /v1/costs.gha.txt` / `GET /v1/costs?format=gha`.
 
@@ -129,6 +130,17 @@ Thin composite: [`agent-ci-junit/action.yml`](./agent-ci-junit/action.yml) (run 
 Optional (not this workflow): `serve` HTTP `GET /v1/bom?format=sarif` returns the same SARIF 2.1.0 document for stack-demo without writing a file. Optional one-liner for log annotations: `python3 -m ai_bom scan examples/sample-app --policy policies/default.json --format gha`.
 
 Thin composite: [`ai-bom-sarif/action.yml`](./ai-bom-sarif/action.yml) (run CLI + `sarif-path` output).
+
+## D · CRA clock (calendar annotations)
+
+[`ai-bom-clock.yml`](./ai-bom-clock.yml)
+
+1. `python3 -m ai_bom clock --format gha` (stdout workflow commands: bilingual disclaimer `::notice`, article14 `::notice`/`::warning`, sbom `::notice`; never `::error`; always exit 0)
+2. Optional: `python3 -m ai_bom clock --format text >> "$GITHUB_STEP_SUMMARY"`
+
+**Calendar helper / 日历辅助 — not a CRA compliance certificate.** Prefer `workflow_dispatch` (schedule example is commented). Do not enable as a live job on this portfolio.
+
+Thin composite: [`ai-bom-clock/action.yml`](./ai-bom-clock/action.yml) (optional `as-of` input).
 
 ## E · GHA budget annotations
 

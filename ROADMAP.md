@@ -167,6 +167,7 @@
 - [x] D GET /v1/exceptions redacted waiver inventory (`{ok, count, exceptions:[{component, license, expiresAt, expired}]}`; count=full; cap 500 + `truncated`; empty 200; optional `?expired=`; no sidecar dump / secrets; OpenAPI `listExceptions`; smoke + local-mvp + stack-demo)
 - [x] D evidence-pack CRA window clock (`pack.json` `clock` + zip + `--as-of`; daysUntil/daysOverdue vs 2026-09-11 and 2027-12-11 from observed advisory hits; calendar/evidence helper, not a CRA certificate; 日历/证据辅助，不是 CRA 合格证书; smoke `cra-clock-ok`)
 - [x] D `clock` CLI (daysUntil/daysOverdue vs 2026-09-11 and 2027-12-11 without evidence-pack zip; console script `ai-bom clock`; default as-of today UTC; README 30s `pip install -e .` then `ai-bom clock --format text`; optional local `--advisories` match; calendar helper, not a CRA certificate; smoke `clock-cli-ok`)
+- [x] D `clock --format gha` (GitHub Actions `::notice`/`::warning` calendar annotations; never `::error`; exit 0; copy-paste `examples/github-actions/ai-bom-clock.yml`; calendar helper, not a CRA certificate; smoke `clock-cli-ok`)
 
 **Exit:** >=1 paid verbal intent on B or C; A/D smoke + demo.
 

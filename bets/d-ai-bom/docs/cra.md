@@ -81,7 +81,11 @@ Print the same windows **without** packing a zip (from `bets/d-ai-bom`; default 
 python3 -m pip install -e .
 ai-bom clock --format text
 # equivalent: python3 -m ai_bom clock --format text
+# CI annotations (workflow commands; never ::error / never a gate):
+# ai-bom clock --format gha
 ```
+
+Optional CI annotations (`clock --format gha`) print GitHub Actions `::notice` / `::warning` lines for the same windows — still a calendar helper, not a certificate.
 
 This is a **calendar/evidence helper**. It is **not** a CRA compliance certificate, conformity claim, CE mark, or notified-body assessment. A fixture `ADV-FIXTURE-*` hit showing `daysUntil=16` on `--as-of 2026-08-26` only means the calendar offset was computed — not that a report is due, not that a CVE exists, and not that the product is in scope.
 

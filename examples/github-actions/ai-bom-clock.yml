@@ -1,0 +1,57 @@
+# Copy to .github/workflows/ai-bom-clock.yml in a consumer repo.
+# Requires Python 3.12+ and ai-bom on PYTHONPATH (src/) or `pip install -e .`
+# from bets/d-ai-bom (or an installed ai-bom package).
+# This portfolio: add working-directory: bets/d-ai-bom
+#
+# Examples only — do not enable this as a live job on oss-cash-lab
+# (keep .github/workflows/ci.yml as the gate).
+#
+# Calendar helper / 日历辅助 — NOT a CRA compliance certificate.
+# clock --format gha prints ::notice / ::warning workflow commands only;
+# never ::error and always exits 0 (not a CI gate).
+name: AI-BOM CRA clock (calendar annotations)
+
+on:
+  workflow_dispatch:
+  # Optional daily calendar reminder (UTC). Leave commented unless you want it.
+  # schedule:
+  #   - cron: "0 8 * * *"
+  # push:  # optional; prefer workflow_dispatch for copy-paste consumers
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  ai-bom-clock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Prefer editable install when packaging; PYTHONPATH=src works when vendoring.
+      - name: Install ai-bom (editable) or set PYTHONPATH
+        run: |
+          if [ -f pyproject.toml ] || [ -f setup.cfg ] || [ -f setup.py ]; then
+            python3 -m pip install -e .
+          else
+            echo "PYTHONPATH=src" >> "$GITHUB_ENV"
+          fi
+
+      # Workflow commands on stdout (::notice / ::warning). No GitHub API.
+      # Exit 0 even when a window is overdue — calendar helper, not a certificate.
+      - name: CRA clock (GHA annotations)
+        run: python3 -m ai_bom clock --format gha
+
+      - name: Job summary (optional text)
+        if: always()
+        run: python3 -m ai_bom clock --format text >> "$GITHUB_STEP_SUMMARY"

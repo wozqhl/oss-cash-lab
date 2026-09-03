@@ -1,0 +1,24 @@
+name: ai-bom-clock
+description: Print ai-bom CRA calendar clock as GitHub Actions annotations (not a CRA certificate)
+inputs:
+  as-of:
+    description: Optional UTC calendar date YYYY-MM-DD (default today UTC)
+    required: false
+    default: ""
+  pythonpath:
+    description: PYTHONPATH for the CLI (src if vendoring; ignored if package installed)
+    required: false
+    default: src
+runs:
+  using: composite
+  steps:
+    - name: CRA clock (GHA annotations)
+      shell: bash
+      env:
+        PYTHONPATH: "${{ inputs.pythonpath }}"
+      run: |
+        if [ -n "${{ inputs.as-of }}" ]; then
+          python3 -m ai_bom clock --as-of "${{ inputs.as-of }}" --format gha
+        else
+          python3 -m ai_bom clock --format gha
+        fi
