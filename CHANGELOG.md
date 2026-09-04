@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated Java / Kotlin / C# clients throw typed `ApiError` after retries (same policy as TS/Python/Go). Smoke typed-errors-ok. Rust/PHP/Swift/Ruby still raw.
 - A dry-run `registry-pack` wraps generated `mcp-server.mjs` as a local MCP Registry listing payload + tarball layout (not the generator CLI). Smoke registry-pack-ok. Never POSTs. Human still publishes.
 - A generated clients send `Accept: application/json` unless already set. Smoke accept-ok.
 - A generated stdio MCP servers send `Accept: application/json` on tools/call upstream HTTP unless already set. Smoke mcp-accept-ok.

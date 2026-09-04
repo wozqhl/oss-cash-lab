@@ -27,6 +27,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Generated stdio MCP servers retry 429 / 5xx / network on tools/call (max 2 retries, Retry-After <30s; Idempotency-Key reused; smoke mcp-retry-ok)
 - [x] Generated stdio MCP servers apply a per-attempt 10s timeout on tools/call (MCP_TIMEOUT_MS / MCP_TIMEOUT_SEC or SDK_TIMEOUT_*; smoke mcp-timeout-ok)
 - [x] Generated TS / Python / Go clients throw typed ApiError after retries are exhausted (400/401/403/404/409/422/429/5xx + timeout/network; 429 carries Retry-After seconds when present; requestId is the sent X-Request-Id; body truncated). Stdio MCP maps upstream failure to an error payload with status + requestId (auth headers not copied). Smoke typed-errors-ok
+- [x] Generated Java / Kotlin / C# clients throw typed ApiError after retries are exhausted (same hierarchy/policy as TS/Python/Go; stdlib HttpURLConnection / HttpClient). Smoke typed-errors-ok. Rust / PHP / Swift / Ruby still raw HTTP failures
 
 - [x] Dry-run registry-pack for generated mcp-server.mjs (local server.json + wrapper tarball layout; smoke registry-pack-ok; never POSTs; human still publishes)
 

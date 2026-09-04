@@ -2300,29 +2300,35 @@ function listenStatusStub(status, body, extraHeaders) {
 
 async function smokeTypedErrors(petstoreSpec, tmp) {
   const dir = path.join(tmp, "typed-errors");
-  generateToDir(petstoreSpec, dir, ["ts", "python", "go"]);
+  generateToDir(petstoreSpec, dir, ["ts", "python", "go", "java", "kotlin", "csharp"]);
   const ts = fs.readFileSync(path.join(dir, "client.ts"), "utf8");
   const py = fs.readFileSync(path.join(dir, "client.py"), "utf8");
   const go = fs.readFileSync(path.join(dir, "client.go"), "utf8");
+  const java = fs.readFileSync(path.join(dir, "Client.java"), "utf8");
+  const kt = fs.readFileSync(path.join(dir, "Client.kt"), "utf8");
+  const cs = fs.readFileSync(path.join(dir, "Client.cs"), "utf8");
   for (const [label, blob] of [
     ["ts", ts],
     ["py", py],
     ["go", go],
+    ["java", java],
+    ["kotlin", kt],
+    ["csharp", cs],
   ]) {
     if (!blob.includes("ApiError") || !blob.includes("NotFoundError") || !blob.includes("RateLimitError") || !blob.includes("ServerError") || !blob.includes("BadRequestError") || !blob.includes("UnauthorizedError") || !blob.includes("ForbiddenError") || !blob.includes("ConflictError") || !blob.includes("UnprocessableEntityError")) {
       console.error("smoke typed errors", label, "missing ApiError hierarchy");
       process.exit(1);
     }
   }
-  if (!ts.includes("retryAfterSeconds") || !py.includes("retry_after_seconds") || !go.includes("RetryAfterSeconds")) {
+  if (!ts.includes("retryAfterSeconds") || !py.includes("retry_after_seconds") || !go.includes("RetryAfterSeconds") || !java.includes("retryAfterSeconds") || !kt.includes("retryAfterSeconds") || !cs.includes("RetryAfterSeconds")) {
     console.error("smoke typed errors missing retry-after field");
     process.exit(1);
   }
-  if (!ts.includes("class TimeoutError") || !py.includes("class ApiTimeoutError") || !go.includes("type TimeoutError")) {
+  if (!ts.includes("class TimeoutError") || !py.includes("class ApiTimeoutError") || !go.includes("type TimeoutError") || !java.includes("class TimeoutError") || !kt.includes("class TimeoutError") || !cs.includes("class TimeoutError")) {
     console.error("smoke typed errors missing timeout variant");
     process.exit(1);
   }
-  if (!ts.includes("class NetworkError") || !py.includes("class NetworkError") || !go.includes("type NetworkError")) {
+  if (!ts.includes("class NetworkError") || !py.includes("class NetworkError") || !go.includes("type NetworkError") || !java.includes("class NetworkError") || !kt.includes("class NetworkError") || !cs.includes("class NetworkError")) {
     console.error("smoke typed errors missing network variant");
     process.exit(1);
   }
@@ -2471,6 +2477,54 @@ async function smokeTypedErrors(petstoreSpec, tmp) {
     }
   } finally {
     await new Promise((r) => stubMcp.server.close(() => r()));
+  }
+
+  const javacProbe = spawnSync("javac", ["-version"], { encoding: "utf8", timeout: 5000 });
+  const javacOk = !(javacProbe.error || (javacProbe.status !== 0 && javacProbe.status !== null && !String(javacProbe.stderr || javacProbe.stdout || "").includes("javac")));
+  if (javacOk) {
+    const stubJ404 = await listenStatusStub(404, '{"err":"nope"}');
+    try {
+      const work = path.join(dir, "java-typed-404");
+      fs.mkdirSync(work, { recursive: true });
+      fs.copyFileSync(path.join(dir, "Client.java"), path.join(work, "Client.java"));
+      fs.writeFileSync(path.join(work, "Typed404.java"), [
+        "package client;",
+        "import java.util.HashMap;",
+        "import java.util.Map;",
+        "public class Typed404 {",
+        "    public static void main(String[] args) throws Exception {",
+        "        Client c = new Client(System.getenv(\"ERR_BASE\"));",
+        "        c.requestId = \"smoke-rid\";",
+        "        Map<String, Object> a = new HashMap<String, Object>();",
+        "        a.put(\"petId\", \"missing\");",
+        "        try {",
+        "            c.getPet(a);",
+        "            throw new RuntimeException(\"expected NotFoundError\");",
+        "        } catch (NotFoundError e) {",
+        "            if (e.status != 404 || !\"smoke-rid\".equals(e.requestId) || e.body == null || e.body.indexOf(\"nope\") < 0) {",
+        "                throw new RuntimeException(\"bad NotFoundError fields\");",
+        "            }",
+        "            System.out.println(\"typed-java-404-ok\");",
+        "        }",
+        "    }",
+        "}",
+        "",
+      ].join("\n"));
+      const compiled = spawnSync("javac", ["-d", work, "Client.java", "Typed404.java"], { encoding: "utf8", timeout: 20000, cwd: work });
+      if (compiled.error || compiled.status !== 0) {
+        console.error("smoke typed errors java 404 compile failed", compiled.status, compiled.stdout, compiled.stderr, compiled.error);
+        process.exit(1);
+      }
+      const runJ = await spawnArgvAsync("java", ["-cp", work, "client.Typed404"], {
+        env: { ...process.env, ERR_BASE: stubJ404.url },
+      }, 8000);
+      if (runJ.error || runJ.status !== 0 || !String(runJ.stdout || "").includes("typed-java-404-ok")) {
+        console.error("smoke typed errors java 404 failed", runJ.status, runJ.stdout, runJ.stderr, runJ.error);
+        process.exit(1);
+      }
+    } finally {
+      await new Promise((r) => stubJ404.server.close(() => r()));
+    }
   }
 
   console.log("typed-errors-ok");
