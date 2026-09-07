@@ -1196,7 +1196,7 @@ console.log("tenant_budget_thresholds_ok", d);
 cleanup_tb
 TB_PID=""
 trap - EXIT
-echo "==> [tenant-budget] curl JSON budgetBreaches acme + GHA ::error + /v1/budgets OK (isolated); HTML remaining table present
+echo "==> [tenant-budget] curl JSON budgetBreaches acme + GHA ::error + /v1/budgets OK (isolated); HTML remaining table present"
 
 echo "==> [budgets] isolated serve --tenant-budget acme=10 (GET /v1/budgets 200; thresholds not spend)"
 BUDGETS_PORT="${BUDGETS_PORT:-8830}"
