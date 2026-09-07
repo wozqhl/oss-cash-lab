@@ -2300,13 +2300,17 @@ function listenStatusStub(status, body, extraHeaders) {
 
 async function smokeTypedErrors(petstoreSpec, tmp) {
   const dir = path.join(tmp, "typed-errors");
-  generateToDir(petstoreSpec, dir, ["ts", "python", "go", "java", "kotlin", "csharp"]);
+  generateToDir(petstoreSpec, dir, ["ts", "python", "go", "java", "kotlin", "csharp", "rust", "php", "swift", "ruby"]);
   const ts = fs.readFileSync(path.join(dir, "client.ts"), "utf8");
   const py = fs.readFileSync(path.join(dir, "client.py"), "utf8");
   const go = fs.readFileSync(path.join(dir, "client.go"), "utf8");
   const java = fs.readFileSync(path.join(dir, "Client.java"), "utf8");
   const kt = fs.readFileSync(path.join(dir, "Client.kt"), "utf8");
   const cs = fs.readFileSync(path.join(dir, "Client.cs"), "utf8");
+  const rust = fs.readFileSync(path.join(dir, "client.rs"), "utf8");
+  const php = fs.readFileSync(path.join(dir, "Client.php"), "utf8");
+  const swift = fs.readFileSync(path.join(dir, "Client.swift"), "utf8");
+  const ruby = fs.readFileSync(path.join(dir, "client.rb"), "utf8");
   for (const [label, blob] of [
     ["ts", ts],
     ["py", py],
@@ -2314,21 +2318,25 @@ async function smokeTypedErrors(petstoreSpec, tmp) {
     ["java", java],
     ["kotlin", kt],
     ["csharp", cs],
+    ["rust", rust],
+    ["php", php],
+    ["swift", swift],
+    ["ruby", ruby],
   ]) {
     if (!blob.includes("ApiError") || !blob.includes("NotFoundError") || !blob.includes("RateLimitError") || !blob.includes("ServerError") || !blob.includes("BadRequestError") || !blob.includes("UnauthorizedError") || !blob.includes("ForbiddenError") || !blob.includes("ConflictError") || !blob.includes("UnprocessableEntityError")) {
       console.error("smoke typed errors", label, "missing ApiError hierarchy");
       process.exit(1);
     }
   }
-  if (!ts.includes("retryAfterSeconds") || !py.includes("retry_after_seconds") || !go.includes("RetryAfterSeconds") || !java.includes("retryAfterSeconds") || !kt.includes("retryAfterSeconds") || !cs.includes("RetryAfterSeconds")) {
+  if (!ts.includes("retryAfterSeconds") || !py.includes("retry_after_seconds") || !go.includes("RetryAfterSeconds") || !java.includes("retryAfterSeconds") || !kt.includes("retryAfterSeconds") || !cs.includes("RetryAfterSeconds") || !rust.includes("retry_after_seconds") || !php.includes("retryAfterSeconds") || !swift.includes("retryAfterSeconds") || !ruby.includes("retry_after_seconds")) {
     console.error("smoke typed errors missing retry-after field");
     process.exit(1);
   }
-  if (!ts.includes("class TimeoutError") || !py.includes("class ApiTimeoutError") || !go.includes("type TimeoutError") || !java.includes("class TimeoutError") || !kt.includes("class TimeoutError") || !cs.includes("class TimeoutError")) {
+  if (!ts.includes("class TimeoutError") || !py.includes("class ApiTimeoutError") || !go.includes("type TimeoutError") || !java.includes("class TimeoutError") || !kt.includes("class TimeoutError") || !cs.includes("class TimeoutError") || !rust.includes("TimeoutError") || !php.includes("class TimeoutError") || !swift.includes("class TimeoutError") || !ruby.includes("class TimeoutError")) {
     console.error("smoke typed errors missing timeout variant");
     process.exit(1);
   }
-  if (!ts.includes("class NetworkError") || !py.includes("class NetworkError") || !go.includes("type NetworkError") || !java.includes("class NetworkError") || !kt.includes("class NetworkError") || !cs.includes("class NetworkError")) {
+  if (!ts.includes("class NetworkError") || !py.includes("class NetworkError") || !go.includes("type NetworkError") || !java.includes("class NetworkError") || !kt.includes("class NetworkError") || !cs.includes("class NetworkError") || !rust.includes("NetworkError") || !php.includes("class NetworkError") || !swift.includes("class NetworkError") || !ruby.includes("class NetworkError")) {
     console.error("smoke typed errors missing network variant");
     process.exit(1);
   }
