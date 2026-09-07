@@ -688,6 +688,15 @@ def _smoke_clock_cli() -> str | None:
     if "::error" in near_out:
         return "clock gha near-window must not emit ::error"
 
+    # 4 days left (2026-09-07 → 2026-09-11): still ≤7 → ::warning, never ::error
+    rc_4d, out_4d = _capture_main(["clock", "--as-of", "2026-09-07", "--format", "gha"])
+    if rc_4d != 0:
+        return f"clock gha 4-day exit {rc_4d}"
+    if "::warning" not in out_4d or "daysUntil=4" not in out_4d:
+        return f"clock gha 4-day missing ::warning/daysUntil=4 {out_4d[:320]}"
+    if "::error" in out_4d:
+        return "clock gha 4-day must not emit ::error"
+
     rc_ov, ov_out = _capture_main(["clock", "--as-of", "2026-09-20", "--format", "gha"])
     if rc_ov != 0:
         return f"overdue clock gha exit {rc_ov} (must stay 0)"

@@ -4,6 +4,10 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### Buyer CRA Article 14 clock demo
+
+- `scripts/demo-cra-clock.sh`: bilingual banner (日历/证据辅助，不是 CRA 合格证书) + `clock --format text` (today UTC) + optional sample-app advisories + 3–5 buyer talking points (paste `ai-bom-clock.yml`, evidence-pack zip, never say compliant). Calendar helper, not a CRA certificate. README 30s + `docs/cra.md` buyer-demo subsection. Smoke: `demo-cra-clock-ok` (+ `clock-cli-ok` / `cra-clock-ok`).
+
 ### CRA clock GHA annotations
 
 - `clock --format gha` prints GitHub Actions workflow commands: bilingual disclaimer `::notice`, article14 `::notice` (daysUntil>7) or `::warning` (≤7 / due / overdue), sbom `::notice`, and optional observedVulnCount fixture notice. Never `::error`; exit 0 even when overdue. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Copy-paste `examples/github-actions/ai-bom-clock.yml`. Smoke stays `clock-cli-ok`.

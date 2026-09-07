@@ -712,8 +712,54 @@ assert "::error" not in gha, gha
 assert "compliant" not in gha.lower() and "certified" not in gha.lower()
 print("clock gha annotations ok")
 PYGHA
+# Near-window (≤7 days → ::warning): 2026-09-07 → daysUntil=4 to Article 14
+NEAR_OUT="$(python3 -m ai_bom clock --as-of 2026-09-07 --format gha)"
+echo "$NEAR_OUT" | grep -F "::warning"
+echo "$NEAR_OUT" | grep -F "daysUntil=4"
+echo "$NEAR_OUT" | grep -F "title=article14"
+NEAR_OUT="$NEAR_OUT" python3 - <<'PYNEAR'
+import os
+gha = os.environ["NEAR_OUT"]
+assert "::error" not in gha, gha
+assert "::warning" in gha
+assert "daysUntil=4" in gha
+print("clock gha near-window (4 days) warning ok")
+PYNEAR
 python3 -m ai_bom clock --as-of 2026-09-20 --format gha >/dev/null
 echo "clock-cli-ok"
+
+echo "==> demo-cra-clock.sh (buyer demo; calendar helper, not a certificate)"
+test -f scripts/demo-cra-clock.sh
+test -x scripts/demo-cra-clock.sh
+bash -n scripts/demo-cra-clock.sh
+bash scripts/demo-cra-clock.sh >/tmp/d-demo-cra-clock.out
+grep -F "日历/证据辅助，不是 CRA 合格证书" /tmp/d-demo-cra-clock.out
+grep -F "Calendar/evidence helper" /tmp/d-demo-cra-clock.out
+grep -Fi "never say compliant" /tmp/d-demo-cra-clock.out
+grep -F "ai-bom-clock.yml" /tmp/d-demo-cra-clock.out
+grep -F "evidence-pack" /tmp/d-demo-cra-clock.out
+DEMO_OUT="$(cat /tmp/d-demo-cra-clock.out)"
+DEMO_OUT="$DEMO_OUT" python3 - <<'PYDEMO'
+import os, re
+out = os.environ["DEMO_OUT"]
+low = out.lower()
+# Must keep the bilingual disclaimer and buyer "never say" line
+assert "日历/证据辅助，不是 CRA 合格证书" in out
+assert "never say compliant" in low
+# Ban status claims; disclaimer "不是 CRA 合格证书" / "not a … certificate" is OK
+banned = [
+    r"(?i)\bis certified\b",
+    r"(?i)\bwe are compliant\b",
+    r"(?i)\bstatus:\s*compliant\b",
+    r"已合格",
+    r"CRA\s*合格(?!证书)",  # "CRA 合格" alone, not "合格证书" disclaimer
+]
+for pat in banned:
+    assert not re.search(pat, out), pat
+print("demo-cra-clock content ok")
+PYDEMO
+rm -f /tmp/d-demo-cra-clock.out
+echo "demo-cra-clock-ok"
 echo "vex-ok"
 
 echo "==> temp package.json GPL-3.0 -> strict fails + evidence/sarif license hits"
@@ -2087,4 +2133,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock+clock-cli+vex)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock+clock-cli+demo-cra-clock+vex)"

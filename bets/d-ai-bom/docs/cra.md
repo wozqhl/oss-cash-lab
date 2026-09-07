@@ -90,6 +90,16 @@ Optional CI annotations (`clock --format gha`) print GitHub Actions `::notice` /
 This is a **calendar/evidence helper**. It is **not** a CRA compliance certificate, conformity claim, CE mark, or notified-body assessment. A fixture `ADV-FIXTURE-*` hit showing `daysUntil=16` on `--as-of 2026-08-26` only means the calendar offset was computed — not that a report is due, not that a CVE exists, and not that the product is in scope.
 
 
+## Buyer demo (calendar countdown, not a certificate)
+
+Short buyer walkthrough for the Article 14 window (**2026-09-11**):
+
+1. Run [`scripts/demo-cra-clock.sh`](../scripts/demo-cra-clock.sh) from `bets/d-ai-bom` (`PYTHONPATH=src`) — bilingual banner + `clock --format text` + optional sample-app advisories.
+2. Paste [`examples/github-actions/ai-bom-clock.yml`](../../../examples/github-actions/ai-bom-clock.yml) into consumer CI (`clock --format gha` → `::notice` / `::warning` when daysUntil≤7; never `::error`; exit 0).
+3. Hand an auditor an `evidence-pack` zip (`pack.json` `clock` + CycloneDX / SPDX / OpenVEX) as inventory evidence — not a conformity claim.
+
+Never say compliant / certified / 合格 / 认证. This is a **calendar/evidence helper**, not a CRA compliance certificate.
+
 ## OpenVEX (exploitability helper, not a claim)
 
 `scan --advisories <file> --vex out.json` (and `evidence-pack` `vex.json`) emits an **OpenVEX 0.2.0** document whose statements are generated **only** from components the scanner actually saw against the local advisory fixture. Status is derived, never invented: a real fixture match is `affected`; a match whose recorded `versionRange` excludes the observed version is `not_affected` **only if** the fixture recorded a spec justification (otherwise `under_investigation`); `fixed` is emitted only when the fixture literally records a `fixedVersion` equal to the observed version. This is an exploitability statement helper for Article 14-style reporting. It is **not** a CRA conformity claim, CE mark, or notified-body assessment. **中文:** OpenVEX 是第 14 条风格报告的可利用性声明辅助，**不是**符合性主张。
