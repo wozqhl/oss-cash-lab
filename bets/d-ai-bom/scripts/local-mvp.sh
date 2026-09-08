@@ -604,12 +604,13 @@ rm -rf "$OBS_TMP" "$NEG_TMP"
 echo "mlbom-obs-ok"
 echo "spdx3-ai-ok"
 
-echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST + pack.json clock; not a CRA certificate)"
+echo "==> evidence-pack (CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST + CLOCK.md + pack.json clock; not a CRA certificate)"
 PACK_TMP="$(mktemp -d)"
 python3 -m ai_bom evidence-pack --dir examples/sample-app --out "$PACK_TMP/sample"   --policy policies/default.json --advisories examples/advisories/sample.json --as-of 2026-08-26 --zip "$PACK_TMP/sample.zip"
 test -f "$PACK_TMP/sample/bom.cdx.json"
 test -f "$PACK_TMP/sample/bom.spdx3.json"
 test -f "$PACK_TMP/sample/MANIFEST.md"
+test -f "$PACK_TMP/sample/CLOCK.md"
 test -f "$PACK_TMP/sample/pack.json"
 test -f "$PACK_TMP/sample/vex.json"
 python3 -m ai_bom evidence-pack --dir examples/cra-fixtures/license-pass --out "$PACK_TMP/pass"   --policy policies/default.json --advisories examples/advisories/clean.json
@@ -665,7 +666,12 @@ blob = json.dumps(pack, ensure_ascii=False).lower()
 assert "compliant" not in blob and "certified" not in blob
 with zipfile.ZipFile(root / "sample.zip") as zf:
     names = set(zf.namelist())
-assert {"bom.cdx.json", "bom.spdx3.json", "vex.json", "MANIFEST.md", "pack.json"} <= names, names
+assert {"bom.cdx.json", "bom.spdx3.json", "vex.json", "MANIFEST.md", "CLOCK.md", "pack.json"} <= names, names
+assert "CLOCK.md" in (pack.get("files") or []), pack.get("files")
+clock_md = (root / "sample" / "CLOCK.md").read_text()
+assert "calendar/evidence helper" in clock_md.lower()
+assert "日历/证据辅助" in clock_md
+assert "compliant" not in clock_md.lower() and "certified" not in clock_md.lower()
 print("evidence-pack artifacts ok")
 print("cra-clock fields ok")
 PYPACK
@@ -726,6 +732,23 @@ assert "daysUntil=4" in gha
 print("clock gha near-window (4 days) warning ok")
 PYNEAR
 python3 -m ai_bom clock --as-of 2026-09-20 --format gha >/dev/null
+MD_OUT="$(python3 -m ai_bom clock --as-of 2026-09-01 --format md)"
+echo "$MD_OUT" | grep -F "# CRA"
+echo "$MD_OUT" | grep -F "daysUntil"
+echo "$MD_OUT" | grep -F "2026-09-11"
+echo "$MD_OUT" | grep -F "calendar/evidence helper"
+echo "$MD_OUT" | grep -F "日历/证据辅助"
+MD_OUT="$MD_OUT" python3 - <<'PYMD'
+import os
+md = os.environ["MD_OUT"].lower()
+assert "compliant" not in md and "certified" not in md
+print("clock md ok")
+PYMD
+HTML_OUT="$(python3 -m ai_bom clock --as-of 2026-09-01 --format html)"
+echo "$HTML_OUT" | grep -F "<html"
+echo "$HTML_OUT" | grep -F "daysUntil"
+echo "$HTML_OUT" | grep -F "calendar/evidence helper"
+python3 -m ai_bom clock --as-of 2026-09-20 --format html >/dev/null
 echo "clock-cli-ok"
 
 echo "==> demo-cra-clock.sh (buyer demo; calendar helper, not a certificate)"

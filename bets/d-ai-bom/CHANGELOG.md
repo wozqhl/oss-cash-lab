@@ -4,10 +4,12 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
-### CRA clock Markdown + ICS
+### CRA clock md/html/ics + CLOCK.md in evidence-pack
 
-- `clock --format md` prints bilingual Markdown (asOf, article14/sbom daysUntil/daysOverdue/status table, observedVulnCount, CLOCK_* disclaimer/notes) for ticket paste. Plain markdown, no HTML. Exit 0. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。
-- `clock --format ics` prints RFC 5545 VCALENDAR with two all-day VEVENTs (VALUE=DATE) for Article 14 reporting start and SBOM essential-requirements start. Stable UIDs `ai-bom-cra-article14@wozqhl` / `ai-bom-cra-sbom@wozqhl`. SUMMARY/DESCRIPTION say calendar helper, not certificate. Exit 0. Smoke stays `clock-cli-ok`.
+- `clock --format md` prints bilingual Markdown (disclaimer first, asOf, article14/sbom daysUntil/daysOverdue/status table, notes) for ticket/Slack/PR paste. Plain markdown, no HTML. Same body is written as evidence-pack `CLOCK.md` (outdir + zip; listed in `pack.json` `files` and MANIFEST).
+- `clock --format html` prints self-contained HTML (no CDN; near/due/overdue rows class=warn).
+- `clock --format ics` prints RFC 5545 VCALENDAR with two all-day VEVENTs (VALUE=DATE) for Article 14 reporting start and SBOM essential-requirements start. Stable UIDs `ai-bom-cra-article14@wozqhl` / `ai-bom-cra-sbom@wozqhl`. SUMMARY/DESCRIPTION say calendar helper, not certificate.
+- Exit 0 even when overdue. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `clock-cli-ok` / `evidence-pack-ok` / `cra-clock-ok`.
 
 ### Buyer CRA Article 14 clock demo
 
@@ -19,7 +21,7 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ### CRA clock CLI
 
-- `clock --as-of YYYY-MM-DD` prints the same `ai-bom-cra-clock/v1` windows as `evidence-pack` without writing a zip. Optional `--advisories FILE --dir DIR` runs the existing offline fixture match. `--format json` (default), `text`, `gha`, `md`, or `ics`. Exit 0 even when a window is overdue (not a conformity gate). Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `clock-cli-ok`.
+- `clock --as-of YYYY-MM-DD` prints the same `ai-bom-cra-clock/v1` windows as `evidence-pack` without writing a zip. Optional `--advisories FILE --dir DIR` runs the existing offline fixture match. `--format json` (default), `text`, `gha`, `md`, `html`, or `ics`. Exit 0 even when a window is overdue (not a conformity gate). Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `clock-cli-ok`.
 - README 30-second clock: from the bet directory, `python3 -m pip install -e .` then `ai-bom clock --format text` (default as-of = today UTC). `python3 -m ai_bom` is equivalent. Optional `--as-of` / `--dir` / `--advisories` stay below the copy-paste. Calendar/evidence helper, not a CRA certificate. 日历/证据辅助，不是 CRA 合格证书。
 
 ### OpenVEX 0.2.0 (observed fixture matches)

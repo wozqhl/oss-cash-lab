@@ -3,7 +3,7 @@
 Exit codes:
   0  success (no --strict / --gate-licenses / --gate-vulns violations)
      evidence-pack: pack written (gate codes recorded in MANIFEST.md)
-     clock: windows printed / gha|md|ics helpers (overdue is still 0; not a conformity gate)
+     clock: windows printed / gha|md|html|ics helpers (overdue is still 0; not a conformity gate)
   1  --strict: forbidden pattern hits, disclosure gaps, and/or forbidden licenses
      --gate-licenses: forbidden licenses only (CI license-policy gate)
      --gate-vulns: local advisory fixture hits (offline; not NVD)
@@ -31,6 +31,7 @@ from ai_bom.osv_convert import convert_files, convert_record, dumps_converted
 from ai_bom.evidence_pack import (
     ARTICLE14_DATE,
     CDX_FILENAME,
+    CLOCK_MD_FILENAME,
     MANIFEST_FILENAME,
     PACK_FILENAME,
     SBOM_DATE,
@@ -41,6 +42,7 @@ from ai_bom.evidence_pack import (
     default_policy_path,
     resolve_optional_path,
     to_clock_gha,
+    to_clock_html,
     to_clock_ics,
     to_clock_md,
     write_evidence_pack,
@@ -330,14 +332,17 @@ def _run_clock(args) -> int:
     if fmt == "gha":
         print(to_clock_gha(clock), end="")
         return 0
-    if fmt == "md":
+    if fmt in ("md", "markdown"):
         print(to_clock_md(clock), end="")
+        return 0
+    if fmt == "html":
+        print(to_clock_html(clock), end="")
         return 0
     if fmt == "ics":
         print(to_clock_ics(clock), end="")
         return 0
     if fmt != "json":
-        print("clock --format must be json, text, gha, md, or ics")
+        print("clock --format must be json, text, gha, md, html, or ics")
         return 2
     print(json.dumps(clock, indent=2, ensure_ascii=False) + "\n", end="")
     return 0
@@ -377,9 +382,21 @@ def _smoke_evidence_pack() -> str | None:
         cdx_p = sample_out / CDX_FILENAME
         spdx3_p = sample_out / SPDX3_FILENAME
         man_p = sample_out / MANIFEST_FILENAME
+        clock_md_p = sample_out / CLOCK_MD_FILENAME
         pack_p = sample_out / PACK_FILENAME
-        if not (cdx_p.is_file() and spdx3_p.is_file() and man_p.is_file() and pack_p.is_file()):
-            return f"sample-app missing artifacts {[p.name for p in (cdx_p, spdx3_p, man_p, pack_p) if not p.is_file()]}"
+        if not (cdx_p.is_file() and spdx3_p.is_file() and man_p.is_file() and clock_md_p.is_file() and pack_p.is_file()):
+            return f"sample-app missing artifacts {[p.name for p in (cdx_p, spdx3_p, man_p, clock_md_p, pack_p) if not p.is_file()]}"
+        clock_md_body = clock_md_p.read_text(encoding="utf-8")
+        if "# CRA" not in clock_md_body or "calendar/evidence helper" not in clock_md_body.lower():
+            return "sample-app CLOCK.md missing calendar helper disclaimer"
+        if "compliant" in clock_md_body.lower() or "certified" in clock_md_body.lower():
+            return "sample-app CLOCK.md invented conformity language"
+        try:
+            pack_files = (json.loads(pack_p.read_text(encoding="utf-8")).get("files") or [])
+        except Exception as e:
+            return f"sample-app pack.json parse for files {e}"
+        if CLOCK_MD_FILENAME not in pack_files:
+            return f"sample-app pack.json files missing CLOCK.md: {pack_files}"
         try:
             cdx = json.loads(cdx_p.read_text(encoding="utf-8"))
             spdx3 = json.loads(spdx3_p.read_text(encoding="utf-8"))
@@ -440,9 +457,12 @@ def _smoke_evidence_pack() -> str | None:
         import zipfile
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
-        want = {CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME, PACK_FILENAME}
+        want = {CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME, CLOCK_MD_FILENAME, PACK_FILENAME}
         if not want <= names:
             return f"zip missing {want - names}"
+        z_clock = zipfile.ZipFile(zip_path).read(CLOCK_MD_FILENAME).decode("utf-8")
+        if "calendar/evidence helper" not in z_clock.lower():
+            return "zip CLOCK.md missing calendar helper disclaimer"
         miss_rc = main(["evidence-pack", "--dir", str(sample_app)])
         if miss_rc != 2:
             return f"missing --out/--zip exit {miss_rc}"
@@ -544,15 +564,32 @@ def _smoke_cra_clock() -> str | None:
             return "MANIFEST missing bilingual clock disclaimer"
         if "compliant" in man.lower() or "certified" in man.lower():
             return "MANIFEST invented conformity badge"
+        clock_md_p = out / CLOCK_MD_FILENAME
+        if not clock_md_p.is_file():
+            return "CLOCK.md missing from evidence pack outdir"
+        clock_md_body = clock_md_p.read_text(encoding="utf-8")
+        if "calendar/evidence helper" not in clock_md_body.lower() or "日历/证据辅助" not in clock_md_body:
+            return "CLOCK.md missing bilingual calendar helper disclaimer"
+        if "compliant" in clock_md_body.lower() or "certified" in clock_md_body.lower():
+            return "CLOCK.md invented conformity language"
+        if CLOCK_MD_FILENAME not in (pack.get("files") or []):
+            return f"pack.json files missing CLOCK.md: {pack.get('files')}"
+        if CLOCK_MD_FILENAME not in man:
+            return "MANIFEST missing CLOCK.md listing"
         import zipfile
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
         if PACK_FILENAME not in names:
             return f"zip missing {PACK_FILENAME}: {names}"
+        if CLOCK_MD_FILENAME not in names:
+            return f"zip missing {CLOCK_MD_FILENAME}: {names}"
         raw = zipfile.ZipFile(zip_path).read(PACK_FILENAME)
         zpack = json.loads(raw.decode("utf-8"))
         if not (zpack.get("clock") or {}).get("observedVulns"):
             return "zip pack.json clock missing observedVulns"
+        z_clock = zipfile.ZipFile(zip_path).read(CLOCK_MD_FILENAME).decode("utf-8")
+        if "calendar/evidence helper" not in z_clock.lower():
+            return "zip CLOCK.md missing calendar helper disclaimer"
     return None
 
 
@@ -713,10 +750,12 @@ def _smoke_clock_cli() -> str | None:
     if "::error" in ov_out:
         return "overdue clock gha must not emit ::error"
 
-    # --format md: bilingual Markdown for ticket paste; exit 0
+    # --format md: one bilingual Markdown body (ticket / Slack / PR + CLOCK.md)
     rc_md, md_out = _capture_main(["clock", "--as-of", "2026-09-08", "--format", "md"])
     if rc_md != 0:
         return f"clock md exit {rc_md}"
+    if "# CRA" not in md_out:
+        return f"clock md missing # CRA heading {md_out[:240]}"
     if "2026-09-11" not in md_out:
         return f"clock md missing article14 date {md_out[:320]}"
     if "daysUntil" not in md_out:
@@ -733,6 +772,28 @@ def _smoke_clock_cli() -> str | None:
         return "clock md invented conformity language"
     if "<html" in low_md or "<table" in low_md:
         return "clock md must stay plain markdown (no HTML)"
+
+    # --format html: self-contained, no CDN
+    rc_html, html_out = _capture_main(["clock", "--as-of", "2026-09-01", "--format", "html"])
+    if rc_html != 0:
+        return f"clock html exit {rc_html}"
+    if "<html" not in html_out:
+        return f"clock html missing <html {html_out[:240]}"
+    if "daysUntil" not in html_out:
+        return f"clock html missing daysUntil {html_out[:240]}"
+    if "calendar/evidence helper" not in html_out.lower():
+        return "clock html missing EN disclaimer"
+    if "日历/证据辅助" not in html_out or "合格证书" not in html_out:
+        return "clock html missing ZH disclaimer"
+    low_html = html_out.lower()
+    if "compliant" in low_html or "certified" in low_html:
+        return "clock html invented conformity language"
+    if "cdn." in low_html or "cdnjs" in low_html or "unpkg.com" in low_html:
+        return "clock html must not load CDN assets"
+
+    rc_html_ov, _ = _capture_main(["clock", "--as-of", "2026-09-20", "--format", "html"])
+    if rc_html_ov != 0:
+        return f"overdue clock html exit {rc_html_ov} (must stay 0)"
 
     # --format ics: RFC 5545 all-day events; exit 0
     rc_ics, ics_out = _capture_main(["clock", "--as-of", "2026-09-08", "--format", "ics"])
@@ -1216,7 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_pack = sub.add_parser(
         "evidence-pack",
-        help="Write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + pack.json clock (Article 14 inventory+match; calendar helper, not a CRA certificate; VEX is not a conformity claim)",
+        help="Write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + CLOCK.md + pack.json clock (Article 14 inventory+match; calendar helper, not a CRA certificate; VEX is not a conformity claim)",
     )
     p_pack.add_argument(
         "--dir",
@@ -1226,7 +1287,7 @@ def main(argv: list[str] | None = None) -> int:
     p_pack.add_argument(
         "--out",
         default=None,
-        help="Write pack directory (bom.cdx.json, bom.spdx3.json, vex.json, MANIFEST.md, pack.json)",
+        help="Write pack directory (bom.cdx.json, bom.spdx3.json, vex.json, MANIFEST.md, CLOCK.md, pack.json)",
     )
     p_pack.add_argument(
         "--zip",
@@ -1278,8 +1339,8 @@ def main(argv: list[str] | None = None) -> int:
     p_clock.add_argument(
         "--format",
         default="json",
-        choices=["json", "text", "gha", "md", "ics"],
-        help="json (default clock dict), text (short human summary), gha (GitHub Actions annotations; never a gate), md (ticket Markdown), or ics (RFC 5545 calendar subscribe)",
+        choices=["json", "text", "gha", "md", "html", "ics"],
+        help="json (default clock dict), text (short human summary), gha (GitHub Actions annotations; never a gate), md (ticket/Slack Markdown), html (self-contained; no CDN), or ics (RFC 5545 calendar subscribe)",
     )
     args = parser.parse_args(argv)
 

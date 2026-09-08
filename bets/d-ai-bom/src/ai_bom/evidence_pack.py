@@ -1,15 +1,17 @@
 """Local CRA Article 14 evidence pack: inventory + match, not a declaration.
 
 Writes CycloneDX 1.7 JSON + SPDX 3.0.1 JSON + OpenVEX 0.2.0 JSON + MANIFEST.md
-+ pack.json from an existing scan and the existing exporters / license +
-advisory gates. pack.json includes a calendar window clock (days-until /
-days-overdue vs 2026-09-11 and 2027-12-11). OpenVEX statements are derived from
++ CLOCK.md + pack.json from an existing scan and the existing exporters /
+license + advisory gates. pack.json includes a calendar window clock
+(days-until / days-overdue vs 2026-09-11 and 2027-12-11). CLOCK.md is the same
+Markdown body as ``clock --format md``. OpenVEX statements are derived from
 observed local-fixture matches only. Does not invent CVEs, scores, or conformity
 badges. The clock is a calendar/evidence helper, not a CRA compliance
 certificate. VEX is an exploitability statement helper, not a conformity claim.
 """
 from __future__ import annotations
 
+import html
 import json
 import zipfile
 from dataclasses import dataclass, field
@@ -31,6 +33,7 @@ from ai_bom.vex import (
 CDX_FILENAME = "bom.cdx.json"
 SPDX3_FILENAME = "bom.spdx3.json"
 MANIFEST_FILENAME = "MANIFEST.md"
+CLOCK_MD_FILENAME = "CLOCK.md"
 PACK_FILENAME = "pack.json"
 # VEX_FILENAME imported from ai_bom.vex (openvex 0.2.0).
 
@@ -261,56 +264,59 @@ def to_clock_gha(clock: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _md_cell(text: Any) -> str:
+    s = "" if text is None else str(text)
+    return s.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
 def to_clock_md(clock: dict[str, Any]) -> str:
-    """Bilingual Markdown summary for pasting into a ticket.
-
-    Plain markdown only (no HTML). Reuses CLOCK_* disclaimer/note constants.
-    Calendar/evidence helper — not a CRA compliance certificate.
-    """
+    """Human/Slack Markdown CRA calendar clock. Not a certificate."""
+    lines: list[str] = []
+    lines.append("# CRA calendar clock")
+    lines.append("")
+    lines.append(CLOCK_DISCLAIMER_EN)
+    lines.append("")
+    lines.append(CLOCK_DISCLAIMER_ZH)
+    lines.append("")
+    lines.append(f"**asOf:** {_md_cell(clock.get('asOf'))}")
+    lines.append(f"**observedVulnCount:** {_md_cell(clock.get('observedVulnCount', 0))}")
+    lines.append("")
+    lines.append("| Window | Date | daysUntil | daysOverdue | status |")
+    lines.append("| --- | --- | --- | --- | --- |")
     windows = clock.get("windows") or {}
-    a14 = windows.get("article14Reporting") or {}
-    sbom = windows.get("sbom") or {}
-    as_of = clock.get("asOf") or ""
-    obs = clock.get("observedVulnCount", 0)
-    disclaimer_en = clock.get("disclaimerEn") or CLOCK_DISCLAIMER_EN
-    disclaimer_zh = clock.get("disclaimerZh") or CLOCK_DISCLAIMER_ZH
-    note_en = clock.get("noteEn") or CLOCK_NOTE_EN
-    note_zh = clock.get("noteZh") or CLOCK_NOTE_ZH
-
-    lines: list[str] = [
-        "# AI-BOM CRA calendar clock",
-        "",
-        f"- **asOf**: `{as_of}`",
-        f"- **observedVulnCount**: {obs}",
-        "",
-        "## Windows",
-        "",
-        "| Window | Date | daysUntil | daysOverdue | status |",
-        "|--------|------|-----------|-------------|--------|",
-        (
-            f"| article14Reporting | {a14.get('date') or ''} | "
-            f"{a14.get('daysUntil', '')} | {a14.get('daysOverdue', '')} | "
-            f"{a14.get('status') or ''} |"
-        ),
-        (
-            f"| sbom | {sbom.get('date') or ''} | "
-            f"{sbom.get('daysUntil', '')} | {sbom.get('daysOverdue', '')} | "
-            f"{sbom.get('status') or ''} |"
-        ),
-        "",
-        "## Disclaimer / 免责",
-        "",
-        disclaimer_en,
-        "",
-        disclaimer_zh,
-        "",
-        "## Notes",
-        "",
-        note_en,
-        "",
-        note_zh,
-        "",
-    ]
+    for key in ("article14Reporting", "sbom"):
+        w = windows.get(key) or {}
+        if not isinstance(w, dict):
+            w = {}
+        lines.append(
+            f"| {_md_cell(key)} | {_md_cell(w.get('date'))} | "
+            f"{_md_cell(w.get('daysUntil'))} | {_md_cell(w.get('daysOverdue'))} | "
+            f"{_md_cell(w.get('status'))} |"
+        )
+    lines.append("")
+    lines.append(CLOCK_NOTE_EN)
+    lines.append("")
+    lines.append(CLOCK_NOTE_ZH)
+    observed = clock.get("observedVulns") or []
+    if isinstance(observed, list) and observed:
+        lines.append("")
+        lines.append("## Observed vulns (local fixtures)")
+        lines.append("")
+        for v in observed:
+            if not isinstance(v, dict):
+                continue
+            aid = v.get("id") or ""
+            if not str(aid).strip():
+                continue
+            comp = v.get("component") or ""
+            fw = ((v.get("windows") or {}).get("article14Reporting") or {})
+            if not isinstance(fw, dict):
+                fw = {}
+            lines.append(
+                f"- `{_md_cell(aid)}` component=`{_md_cell(comp)}` "
+                f"article14 daysUntil={_md_cell(fw.get('daysUntil'))}"
+            )
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -386,6 +392,113 @@ def to_clock_ics(clock: dict[str, Any]) -> str:
     ]
     folded = [_ics_fold(ln) for ln in raw_lines]
     return "\r\n".join(folded) + "\r\n"
+
+
+def _clock_html_row_class(window: dict[str, Any]) -> str:
+    status = str(window.get("status") or "")
+    try:
+        days_until = int(window.get("daysUntil") if window.get("daysUntil") is not None else 0)
+    except (TypeError, ValueError):
+        days_until = 0
+    if status in ("overdue", "due") or (status == "until" and days_until <= 7):
+        return "warn"
+    return "ok"
+
+
+def to_clock_html(clock: dict[str, Any]) -> str:
+    """Self-contained HTML CRA calendar clock. No CDN. Not a certificate."""
+    style = (
+        "body{font-family:ui-sans-serif,system-ui,sans-serif;margin:2rem;color:#111;max-width:52rem}"
+        "h1{font-size:1.25rem}"
+        "h2{font-size:1.05rem;margin-top:1.5rem}"
+        "table{border-collapse:collapse;margin:1rem 0;min-width:28rem}"
+        "th,td{border:1px solid #ddd;padding:.4rem .6rem;text-align:left}"
+        "th{background:#f5f5f5}"
+        "tr.warn{background:#fff3cd}"
+        "tr.ok{background:#e8f5e9}"
+        ".meta{color:#555;font-size:.9rem}"
+        ".disclaimer{margin:.75rem 0;color:#333}"
+        "code{background:#f4f4f4;padding:0.1rem 0.3rem}"
+    )
+
+    def esc(val: Any) -> str:
+        return html.escape("" if val is None else str(val), quote=True)
+
+    windows = clock.get("windows") or {}
+    rows: list[str] = []
+    for key in ("article14Reporting", "sbom"):
+        w = windows.get(key) or {}
+        if not isinstance(w, dict):
+            w = {}
+        cls = _clock_html_row_class(w)
+        rows.append(
+            f'<tr class="{cls}">'
+            f"<td>{esc(key)}</td>"
+            f"<td>{esc(w.get('date'))}</td>"
+            f"<td>{esc(w.get('daysUntil'))}</td>"
+            f"<td>{esc(w.get('daysOverdue'))}</td>"
+            f"<td>{esc(w.get('status'))}</td>"
+            "</tr>"
+        )
+
+    vulns_block = ""
+    observed = clock.get("observedVulns") or []
+    if isinstance(observed, list) and observed:
+        items: list[str] = []
+        for v in observed:
+            if not isinstance(v, dict):
+                continue
+            aid = v.get("id") or ""
+            if not str(aid).strip():
+                continue
+            fw = ((v.get("windows") or {}).get("article14Reporting") or {})
+            if not isinstance(fw, dict):
+                fw = {}
+            items.append(
+                f"<li><code>{esc(aid)}</code> component={esc(v.get('component'))} "
+                f"article14 daysUntil={esc(fw.get('daysUntil'))}</li>"
+            )
+        if items:
+            vulns_block = (
+                "<h2>Observed vulns (local fixtures)</h2>\n<ul>\n"
+                + "\n".join(items)
+                + "\n</ul>\n"
+            )
+
+    parts: list[str] = [
+        "<!DOCTYPE html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8"/>',
+        '<meta name="viewport" content="width=device-width, initial-scale=1"/>',
+        "<title>CRA calendar clock</title>",
+        f"<style>{style}</style>",
+        "</head>",
+        "<body>",
+        "<h1>CRA calendar clock</h1>",
+        f'<p class="disclaimer">{esc(CLOCK_DISCLAIMER_EN)}</p>',
+        f'<p class="disclaimer">{esc(CLOCK_DISCLAIMER_ZH)}</p>',
+        (
+            f'<p class="meta">asOf: {esc(clock.get("asOf"))} · '
+            f'observedVulnCount: {esc(clock.get("observedVulnCount", 0))}</p>'
+        ),
+        "<table>",
+        (
+            "<thead><tr><th>Window</th><th>Date</th><th>daysUntil</th>"
+            "<th>daysOverdue</th><th>status</th></tr></thead>"
+        ),
+        "<tbody>",
+        *rows,
+        "</tbody>",
+        "</table>",
+        f'<p class="meta">{esc(CLOCK_NOTE_EN)}</p>',
+        f'<p class="meta">{esc(CLOCK_NOTE_ZH)}</p>',
+    ]
+    if vulns_block:
+        parts.append(vulns_block.rstrip("\n"))
+    parts.extend(["</body>", "</html>", ""])
+    return "\n".join(parts)
+
 
 
 def build_pack_document(
@@ -567,14 +680,15 @@ def write_evidence_pack(
     timestamp: str | None = None,
     as_of: str | date | datetime | None = None,
 ) -> EvidencePackResult:
-    """Scan DIR and write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + pack.json.
+    """Scan DIR and write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + CLOCK.md + pack.json.
 
     Gate codes are recorded in the manifest / pack.json. The clock section is a
     calendar helper (days-until / days-overdue vs 2026-09-11 and 2027-12-11),
-    not a CRA certificate. vex.json is OpenVEX 0.2.0 from observed local-fixture
-    matches (not a conformity claim). This function does not raise on a
-    license/advisory hit — those are the recorded exit codes, not a pack
-    failure. IO / parse errors propagate to the caller.
+    not a CRA certificate. CLOCK.md mirrors ``clock --format md``. vex.json is
+    OpenVEX 0.2.0 from observed local-fixture matches (not a conformity claim).
+    This function does not raise on a license/advisory hit — those are the
+    recorded exit codes, not a pack failure. IO / parse errors propagate to the
+    caller.
     """
     if not scan_dir.exists():
         raise FileNotFoundError(f"path not found: {scan_dir}")
@@ -616,7 +730,7 @@ def write_evidence_pack(
         timestamp=ts,
     )
     vex_text = dumps_openvex(vex_doc)
-    files = [CDX_FILENAME, SPDX3_FILENAME, VEX_FILENAME, MANIFEST_FILENAME, PACK_FILENAME]
+    files = [CDX_FILENAME, SPDX3_FILENAME, VEX_FILENAME, MANIFEST_FILENAME, CLOCK_MD_FILENAME, PACK_FILENAME]
     pack = build_pack_document(
         timestamp=ts,
         scan_dir=str(scan_dir),
@@ -658,11 +772,14 @@ def write_evidence_pack(
         spdx3_p = write_root / SPDX3_FILENAME
         vex_p = write_root / VEX_FILENAME
         man_p = write_root / MANIFEST_FILENAME
+        clock_md_p = write_root / CLOCK_MD_FILENAME
         pack_p = write_root / PACK_FILENAME
+        clock_md = to_clock_md(clock)
         cdx_p.write_text(cdx_text, encoding="utf-8")
         spdx3_p.write_text(spdx3_text, encoding="utf-8")
         vex_p.write_text(vex_text, encoding="utf-8")
         man_p.write_text(manifest, encoding="utf-8")
+        clock_md_p.write_text(clock_md, encoding="utf-8")
         pack_p.write_text(pack_text, encoding="utf-8")
 
         if zip_path is not None:
@@ -672,6 +789,7 @@ def write_evidence_pack(
                 zf.write(spdx3_p, SPDX3_FILENAME)
                 zf.write(vex_p, VEX_FILENAME)
                 zf.write(man_p, MANIFEST_FILENAME)
+                zf.write(clock_md_p, CLOCK_MD_FILENAME)
                 zf.write(pack_p, PACK_FILENAME)
     finally:
         if tmp_root_ctx is not None:

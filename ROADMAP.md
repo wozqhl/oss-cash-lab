@@ -170,7 +170,7 @@
 - [x] D evidence-pack CRA window clock (`pack.json` `clock` + zip + `--as-of`; daysUntil/daysOverdue vs 2026-09-11 and 2027-12-11 from observed advisory hits; calendar/evidence helper, not a CRA certificate; 日历/证据辅助，不是 CRA 合格证书; smoke `cra-clock-ok`)
 - [x] D `clock` CLI (daysUntil/daysOverdue vs 2026-09-11 and 2027-12-11 without evidence-pack zip; console script `ai-bom clock`; default as-of today UTC; README 30s `pip install -e .` then `ai-bom clock --format text` (also `gha`/`md`/`ics`); optional local `--advisories` match; calendar helper, not a CRA certificate; smoke `clock-cli-ok`)
 - [x] D `clock --format gha` (GitHub Actions `::notice`/`::warning` calendar annotations; never `::error`; exit 0; copy-paste `examples/github-actions/ai-bom-clock.yml`; calendar helper, not a CRA certificate; smoke `clock-cli-ok`)
-- [x] D `clock --format md` / `--format ics` (bilingual ticket Markdown + RFC 5545 all-day VCALENDAR for 2026-09-11 / 2027-12-11; calendar helper, not a CRA certificate; smoke `clock-cli-ok`)
+- [x] D `clock --format md|html|ics` + evidence-pack `CLOCK.md` (ticket/Slack Markdown + self-contained HTML, no CDN + RFC 5545 all-day VCALENDAR; pack lists CLOCK.md in files/MANIFEST/zip; calendar helper, not a CRA certificate; smoke `clock-cli-ok` / `evidence-pack-ok`)
 - [x] D buyer CRA Article 14 clock demo (`scripts/demo-cra-clock.sh`; calendar helper, not a CRA certificate; smoke `demo-cra-clock-ok`)
 
 **Exit:** >=1 paid verbal intent on B or C; A/D smoke + demo.
