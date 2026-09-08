@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import zipfile
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +259,133 @@ def to_clock_gha(clock: dict[str, Any]) -> str:
             )
         )
     return "\n".join(lines) + "\n"
+
+
+def to_clock_md(clock: dict[str, Any]) -> str:
+    """Bilingual Markdown summary for pasting into a ticket.
+
+    Plain markdown only (no HTML). Reuses CLOCK_* disclaimer/note constants.
+    Calendar/evidence helper — not a CRA compliance certificate.
+    """
+    windows = clock.get("windows") or {}
+    a14 = windows.get("article14Reporting") or {}
+    sbom = windows.get("sbom") or {}
+    as_of = clock.get("asOf") or ""
+    obs = clock.get("observedVulnCount", 0)
+    disclaimer_en = clock.get("disclaimerEn") or CLOCK_DISCLAIMER_EN
+    disclaimer_zh = clock.get("disclaimerZh") or CLOCK_DISCLAIMER_ZH
+    note_en = clock.get("noteEn") or CLOCK_NOTE_EN
+    note_zh = clock.get("noteZh") or CLOCK_NOTE_ZH
+
+    lines: list[str] = [
+        "# AI-BOM CRA calendar clock",
+        "",
+        f"- **asOf**: `{as_of}`",
+        f"- **observedVulnCount**: {obs}",
+        "",
+        "## Windows",
+        "",
+        "| Window | Date | daysUntil | daysOverdue | status |",
+        "|--------|------|-----------|-------------|--------|",
+        (
+            f"| article14Reporting | {a14.get('date') or ''} | "
+            f"{a14.get('daysUntil', '')} | {a14.get('daysOverdue', '')} | "
+            f"{a14.get('status') or ''} |"
+        ),
+        (
+            f"| sbom | {sbom.get('date') or ''} | "
+            f"{sbom.get('daysUntil', '')} | {sbom.get('daysOverdue', '')} | "
+            f"{sbom.get('status') or ''} |"
+        ),
+        "",
+        "## Disclaimer / 免责",
+        "",
+        disclaimer_en,
+        "",
+        disclaimer_zh,
+        "",
+        "## Notes",
+        "",
+        note_en,
+        "",
+        note_zh,
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _ics_fold(line: str) -> str:
+    """RFC 5545 line folding at 75 octets (ASCII-safe for our content)."""
+    if len(line) <= 75:
+        return line
+    parts: list[str] = [line[:75]]
+    rest = line[75:]
+    while rest:
+        parts.append(" " + rest[:74])
+        rest = rest[74:]
+    return "\r\n".join(parts)
+
+
+def to_clock_ics(clock: dict[str, Any]) -> str:
+    """RFC 5545 VCALENDAR with two all-day VEVENTs for CRA windows.
+
+    Dates come from windows.*.date. SUMMARY/DESCRIPTION state this is a
+    calendar helper, not a certificate. Stable UIDs; DTSTAMP from asOf
+    at 000000Z. No invented timezone beyond UTC DATE.
+    """
+    windows = clock.get("windows") or {}
+    a14 = windows.get("article14Reporting") or {}
+    sbom = windows.get("sbom") or {}
+    a14_date = str(a14.get("date") or "").replace("-", "")
+    sbom_date = str(sbom.get("date") or "").replace("-", "")
+    as_of = str(clock.get("asOf") or "").replace("-", "")
+    dtstamp = f"{as_of}T000000Z" if len(as_of) == 8 else "19700101T000000Z"
+
+    def _next_day_compact(yyyymmdd: str) -> str:
+        if len(yyyymmdd) != 8 or not yyyymmdd.isdigit():
+            return yyyymmdd
+        d = date(int(yyyymmdd[:4]), int(yyyymmdd[4:6]), int(yyyymmdd[6:8]))
+        return (d + timedelta(days=1)).strftime("%Y%m%d")
+
+    helper = (
+        "Calendar/evidence helper, not a CRA compliance certificate. "
+        "日历/证据辅助，不是 CRA 合格证书。"
+    )
+    a14_summary = "CRA Article 14 reporting start (calendar helper, not a certificate)"
+    sbom_summary = "CRA SBOM essential-requirements start (calendar helper, not a certificate)"
+    a14_desc = (
+        f"Article 14-style vulnerability reporting window begins. {helper}"
+    )
+    sbom_desc = (
+        f"CRA-oriented SBOM / essential-requirements calendar date. {helper}"
+    )
+
+    raw_lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//wozqhl//ai-bom CRA clock//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+        f"UID:ai-bom-cra-article14@wozqhl",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART;VALUE=DATE:{a14_date}",
+        f"DTEND;VALUE=DATE:{_next_day_compact(a14_date)}",
+        f"SUMMARY:{a14_summary}",
+        f"DESCRIPTION:{a14_desc}",
+        "END:VEVENT",
+        "BEGIN:VEVENT",
+        f"UID:ai-bom-cra-sbom@wozqhl",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART;VALUE=DATE:{sbom_date}",
+        f"DTEND;VALUE=DATE:{_next_day_compact(sbom_date)}",
+        f"SUMMARY:{sbom_summary}",
+        f"DESCRIPTION:{sbom_desc}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+    folded = [_ics_fold(ln) for ln in raw_lines]
+    return "\r\n".join(folded) + "\r\n"
 
 
 def build_pack_document(

@@ -18,7 +18,7 @@ ai-bom clock --format text
 # buyer demo (banner + clock + what to show): bash scripts/demo-cra-clock.sh
 ```
 
-Equivalent: `python3 -m ai_bom clock --format text`. Default as-of is today UTC (date-only). Optional `--as-of YYYY-MM-DD` and `--dir DIR --advisories FILE` (same offline fixture match as evidence-pack) stay below the copy-paste. CI annotations: `ai-bom clock --format gha` (workflow commands; calendar helper, not a certificate). Buyer walkthrough: [`scripts/demo-cra-clock.sh`](./scripts/demo-cra-clock.sh).
+Equivalent: `python3 -m ai_bom clock --format text`. Default as-of is today UTC (date-only). Optional `--as-of YYYY-MM-DD` and `--dir DIR --advisories FILE` (same offline fixture match as evidence-pack) stay below the copy-paste. CI annotations: `ai-bom clock --format gha` (workflow commands; calendar helper, not a certificate). Ticket paste / calendar subscribe: `ai-bom clock --format md` / `--format ics`. Buyer walkthrough: [`scripts/demo-cra-clock.sh`](./scripts/demo-cra-clock.sh).
 
 日历/证据辅助，不是 CRA 合格证书. Countdown ≠ certificate.
 
@@ -73,6 +73,7 @@ Equivalent: `python3 -m ai_bom clock --format text`. Default as-of is today UTC 
 - [x] Local evidence pack (`evidence-pack --dir DIR --out OUTDIR`) — CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 `vex.json` + MANIFEST + `pack.json` (license/advisory gate codes + window clock); not a CRA declaration
 - [x] CRA window clock (`pack.json` `clock` / `--as-of`) — days-until / days-overdue vs 2026-09-11 and 2027-12-11 from observed `--gate-vulns` hits; calendar/evidence helper, **not** a CRA compliance certificate / 日历/证据辅助，**不是** CRA 合格证书
 - [x] `clock` CLI (`ai-bom clock`; default as-of today UTC; optional `--as-of` / `--advisories` + `--dir`; `--format json|text|gha`) — same windows without packing a zip; `gha` emits CI `::notice`/`::warning` (never `::error`); exit 0 even if overdue; calendar helper, **not** a CRA certificate / 日历/证据辅助，**不是** CRA 合格证书
+- [x] `clock --format md` / `--format ics` (ticket Markdown + RFC 5545 calendar; helper, **not** a CRA certificate)
 - [x] Buyer demo `scripts/demo-cra-clock.sh` (banner + clock + talking points; calendar helper, **not** a CRA certificate)
 - [x] OpenVEX 0.2.0 (`scan --advisories FILE --vex out.json`; `evidence-pack` `vex.json`) from observed local-fixture matches. Status derived, never invented. Exploitability statement helper, **not** a CRA conformity claim / 可利用性声明辅助，**不是**符合性主张
 
@@ -140,6 +141,8 @@ PYTHONPATH=src python3 -m ai_bom convert-advisories --from-osv examples/advisori
 # Article 14 calendar clock (no zip; default as-of today UTC; calendar helper, not a CRA certificate):
 PYTHONPATH=src python3 -m ai_bom clock --format text
 PYTHONPATH=src python3 -m ai_bom clock --format gha   # CI annotations; never ::error / never a gate
+PYTHONPATH=src python3 -m ai_bom clock --format md    # ticket Markdown paste
+PYTHONPATH=src python3 -m ai_bom clock --format ics   # RFC 5545 subscribe (all-day)
 # equivalent after `python3 -m pip install -e .`: ai-bom clock --format text
 # Article 14 evidence pack (inventory+match + calendar clock; not a CRA certificate):
 PYTHONPATH=src python3 -m ai_bom evidence-pack --dir examples/sample-app --out out/cra-pack

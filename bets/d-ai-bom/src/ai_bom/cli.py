@@ -3,7 +3,7 @@
 Exit codes:
   0  success (no --strict / --gate-licenses / --gate-vulns violations)
      evidence-pack: pack written (gate codes recorded in MANIFEST.md)
-     clock: windows printed / gha annotations (overdue is still 0; not a conformity gate)
+     clock: windows printed / gha|md|ics helpers (overdue is still 0; not a conformity gate)
   1  --strict: forbidden pattern hits, disclosure gaps, and/or forbidden licenses
      --gate-licenses: forbidden licenses only (CI license-policy gate)
      --gate-vulns: local advisory fixture hits (offline; not NVD)
@@ -41,6 +41,8 @@ from ai_bom.evidence_pack import (
     default_policy_path,
     resolve_optional_path,
     to_clock_gha,
+    to_clock_ics,
+    to_clock_md,
     write_evidence_pack,
 )
 from ai_bom.vex import (
@@ -328,8 +330,14 @@ def _run_clock(args) -> int:
     if fmt == "gha":
         print(to_clock_gha(clock), end="")
         return 0
+    if fmt == "md":
+        print(to_clock_md(clock), end="")
+        return 0
+    if fmt == "ics":
+        print(to_clock_ics(clock), end="")
+        return 0
     if fmt != "json":
-        print("clock --format must be json, text, or gha")
+        print("clock --format must be json, text, gha, md, or ics")
         return 2
     print(json.dumps(clock, indent=2, ensure_ascii=False) + "\n", end="")
     return 0
@@ -704,6 +712,48 @@ def _smoke_clock_cli() -> str | None:
         return f"overdue clock gha missing ::warning {ov_out[:320]}"
     if "::error" in ov_out:
         return "overdue clock gha must not emit ::error"
+
+    # --format md: bilingual Markdown for ticket paste; exit 0
+    rc_md, md_out = _capture_main(["clock", "--as-of", "2026-09-08", "--format", "md"])
+    if rc_md != 0:
+        return f"clock md exit {rc_md}"
+    if "2026-09-11" not in md_out:
+        return f"clock md missing article14 date {md_out[:320]}"
+    if "daysUntil" not in md_out:
+        return f"clock md missing daysUntil field {md_out[:320]}"
+    # as-of 2026-09-08 → article14 2026-09-11 daysUntil=3 (table cell)
+    if "| 3 |" not in md_out:
+        return f"clock md missing daysUntil=3 {md_out[:480]}"
+    if "calendar/evidence helper" not in md_out.lower():
+        return "clock md missing EN disclaimer"
+    if "日历/证据辅助" not in md_out or "合格证书" not in md_out:
+        return "clock md missing ZH disclaimer"
+    low_md = md_out.lower()
+    if "compliant" in low_md or "certified" in low_md:
+        return "clock md invented conformity language"
+    if "<html" in low_md or "<table" in low_md:
+        return "clock md must stay plain markdown (no HTML)"
+
+    # --format ics: RFC 5545 all-day events; exit 0
+    rc_ics, ics_out = _capture_main(["clock", "--as-of", "2026-09-08", "--format", "ics"])
+    if rc_ics != 0:
+        return f"clock ics exit {rc_ics}"
+    if "BEGIN:VCALENDAR" not in ics_out or "END:VCALENDAR" not in ics_out:
+        return f"clock ics missing VCALENDAR {ics_out[:320]}"
+    if "VALUE=DATE:20260911" not in ics_out:
+        return f"clock ics missing article14 DATE {ics_out[:480]}"
+    if "VALUE=DATE:20271211" not in ics_out:
+        return f"clock ics missing sbom DATE {ics_out[:480]}"
+    if "UID:ai-bom-cra-article14@wozqhl" not in ics_out:
+        return "clock ics missing article14 UID"
+    if "UID:ai-bom-cra-sbom@wozqhl" not in ics_out:
+        return "clock ics missing sbom UID"
+    if "calendar helper" not in ics_out.lower() and "calendar/evidence helper" not in ics_out.lower():
+        if "not a CRA compliance certificate" not in ics_out and "not a certificate" not in ics_out.lower():
+            return "clock ics missing helper-not-certificate wording"
+    low_ics = ics_out.lower()
+    if "compliant" in low_ics or "certified" in low_ics:
+        return "clock ics invented conformity language"
     return None
 
 
@@ -1228,8 +1278,8 @@ def main(argv: list[str] | None = None) -> int:
     p_clock.add_argument(
         "--format",
         default="json",
-        choices=["json", "text", "gha"],
-        help="json (default clock dict), text (short human summary), or gha (GitHub Actions workflow commands / annotations; never a gate)",
+        choices=["json", "text", "gha", "md", "ics"],
+        help="json (default clock dict), text (short human summary), gha (GitHub Actions annotations; never a gate), md (ticket Markdown), or ics (RFC 5545 calendar subscribe)",
     )
     args = parser.parse_args(argv)
 

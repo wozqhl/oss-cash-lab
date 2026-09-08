@@ -83,9 +83,12 @@ ai-bom clock --format text
 # equivalent: python3 -m ai_bom clock --format text
 # CI annotations (workflow commands; never ::error / never a gate):
 # ai-bom clock --format gha
+# Ticket paste / calendar subscribe:
+# ai-bom clock --format md
+# ai-bom clock --format ics
 ```
 
-Optional CI annotations (`clock --format gha`) print GitHub Actions `::notice` / `::warning` lines for the same windows — still a calendar helper, not a certificate.
+Optional CI annotations (`clock --format gha`) print GitHub Actions `::notice` / `::warning` lines for the same windows — still a calendar helper, not a certificate. `--format md` is bilingual Markdown for ticket paste; `--format ics` is an RFC 5545 VCALENDAR with two all-day events (helper text in DESCRIPTION, not a certificate).
 
 This is a **calendar/evidence helper**. It is **not** a CRA compliance certificate, conformity claim, CE mark, or notified-body assessment. A fixture `ADV-FIXTURE-*` hit showing `daysUntil=16` on `--as-of 2026-08-26` only means the calendar offset was computed — not that a report is due, not that a CVE exists, and not that the product is in scope.
 

@@ -24,6 +24,10 @@ echo "==> clock --format text (as-of today UTC)"
 python3 -m ai_bom clock --format text
 echo ""
 
+echo "==> clock --format md (ticket paste; calendar helper only)"
+python3 -m ai_bom clock --format md --as-of 2026-09-08 | head -n 12
+echo ""
+
 SAMPLE_DIR="examples/sample-app"
 SAMPLE_ADV="examples/advisories/sample.json"
 if [[ -d "$SAMPLE_DIR" && -f "$SAMPLE_ADV" ]]; then
@@ -40,5 +44,6 @@ echo "   (pack.json clock + CycloneDX/SPDX/OpenVEX — inventory helper only)."
 echo "3. Countdown to 2026-09-11 is a calendar offset, not a conformity gate."
 echo "4. Never say compliant / certified / 合格 / 认证 — this is not a certificate."
 echo "5. Optional: ai-bom clock --format gha  for live CI annotations."
+echo "6. Optional: ai-bom clock --format md / --format ics for ticket paste or calendar subscribe."
 echo ""
 echo "demo-cra-clock done (calendar helper only)."
