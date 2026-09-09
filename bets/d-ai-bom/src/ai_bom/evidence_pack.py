@@ -1,13 +1,14 @@
 """Local CRA Article 14 evidence pack: inventory + match, not a declaration.
 
 Writes CycloneDX 1.7 JSON + SPDX 3.0.1 JSON + OpenVEX 0.2.0 JSON + MANIFEST.md
-+ CLOCK.md + pack.json from an existing scan and the existing exporters /
-license + advisory gates. pack.json includes a calendar window clock
-(days-until / days-overdue vs 2026-09-11 and 2027-12-11). CLOCK.md is the same
-Markdown body as ``clock --format md``. OpenVEX statements are derived from
-observed local-fixture matches only. Does not invent CVEs, scores, or conformity
-badges. The clock is a calendar/evidence helper, not a CRA compliance
-certificate. VEX is an exploitability statement helper, not a conformity claim.
++ CLOCK.md + CLOCK.html + CLOCK.ics + pack.json from an existing scan and the
+existing exporters / license + advisory gates. pack.json includes a calendar
+window clock (days-until / days-overdue vs 2026-09-11 and 2027-12-11).
+CLOCK.md / CLOCK.html / CLOCK.ics mirror ``clock --format md|html|ics``.
+OpenVEX statements are derived from observed local-fixture matches only. Does
+not invent CVEs, scores, or conformity badges. The clock is a calendar/evidence
+helper, not a CRA compliance certificate. VEX is an exploitability statement
+helper, not a conformity claim.
 """
 from __future__ import annotations
 
@@ -34,6 +35,8 @@ CDX_FILENAME = "bom.cdx.json"
 SPDX3_FILENAME = "bom.spdx3.json"
 MANIFEST_FILENAME = "MANIFEST.md"
 CLOCK_MD_FILENAME = "CLOCK.md"
+CLOCK_HTML_FILENAME = "CLOCK.html"
+CLOCK_ICS_FILENAME = "CLOCK.ics"
 PACK_FILENAME = "pack.json"
 # VEX_FILENAME imported from ai_bom.vex (openvex 0.2.0).
 
@@ -680,15 +683,15 @@ def write_evidence_pack(
     timestamp: str | None = None,
     as_of: str | date | datetime | None = None,
 ) -> EvidencePackResult:
-    """Scan DIR and write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + CLOCK.md + pack.json.
+    """Scan DIR and write CycloneDX 1.7 + SPDX 3.0.1 + OpenVEX 0.2.0 + MANIFEST.md + CLOCK.md/html/ics + pack.json.
 
     Gate codes are recorded in the manifest / pack.json. The clock section is a
     calendar helper (days-until / days-overdue vs 2026-09-11 and 2027-12-11),
-    not a CRA certificate. CLOCK.md mirrors ``clock --format md``. vex.json is
-    OpenVEX 0.2.0 from observed local-fixture matches (not a conformity claim).
-    This function does not raise on a license/advisory hit — those are the
-    recorded exit codes, not a pack failure. IO / parse errors propagate to the
-    caller.
+    not a CRA certificate. CLOCK.md / CLOCK.html / CLOCK.ics mirror
+    ``clock --format md|html|ics``. vex.json is OpenVEX 0.2.0 from observed
+    local-fixture matches (not a conformity claim). This function does not raise
+    on a license/advisory hit — those are the recorded exit codes, not a pack
+    failure. IO / parse errors propagate to the caller.
     """
     if not scan_dir.exists():
         raise FileNotFoundError(f"path not found: {scan_dir}")
@@ -730,7 +733,7 @@ def write_evidence_pack(
         timestamp=ts,
     )
     vex_text = dumps_openvex(vex_doc)
-    files = [CDX_FILENAME, SPDX3_FILENAME, VEX_FILENAME, MANIFEST_FILENAME, CLOCK_MD_FILENAME, PACK_FILENAME]
+    files = [CDX_FILENAME, SPDX3_FILENAME, VEX_FILENAME, MANIFEST_FILENAME, CLOCK_MD_FILENAME, CLOCK_HTML_FILENAME, CLOCK_ICS_FILENAME, PACK_FILENAME]
     pack = build_pack_document(
         timestamp=ts,
         scan_dir=str(scan_dir),
@@ -773,13 +776,19 @@ def write_evidence_pack(
         vex_p = write_root / VEX_FILENAME
         man_p = write_root / MANIFEST_FILENAME
         clock_md_p = write_root / CLOCK_MD_FILENAME
+        clock_html_p = write_root / CLOCK_HTML_FILENAME
+        clock_ics_p = write_root / CLOCK_ICS_FILENAME
         pack_p = write_root / PACK_FILENAME
         clock_md = to_clock_md(clock)
+        clock_html = to_clock_html(clock)
+        clock_ics = to_clock_ics(clock)
         cdx_p.write_text(cdx_text, encoding="utf-8")
         spdx3_p.write_text(spdx3_text, encoding="utf-8")
         vex_p.write_text(vex_text, encoding="utf-8")
         man_p.write_text(manifest, encoding="utf-8")
         clock_md_p.write_text(clock_md, encoding="utf-8")
+        clock_html_p.write_text(clock_html, encoding="utf-8")
+        clock_ics_p.write_text(clock_ics, encoding="utf-8")
         pack_p.write_text(pack_text, encoding="utf-8")
 
         if zip_path is not None:
@@ -790,6 +799,8 @@ def write_evidence_pack(
                 zf.write(vex_p, VEX_FILENAME)
                 zf.write(man_p, MANIFEST_FILENAME)
                 zf.write(clock_md_p, CLOCK_MD_FILENAME)
+                zf.write(clock_html_p, CLOCK_HTML_FILENAME)
+                zf.write(clock_ics_p, CLOCK_ICS_FILENAME)
                 zf.write(pack_p, PACK_FILENAME)
     finally:
         if tmp_root_ctx is not None:

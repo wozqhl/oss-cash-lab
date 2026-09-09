@@ -66,7 +66,7 @@ python3 -m ai_bom evidence-pack --dir examples/sample-app --out /tmp/cra-pack
 
 ## Window clock (calendar helper, not a certificate)
 
-`evidence-pack` writes `pack.json` (also listed in `--zip` and MANIFEST) with a **`clock`** section:
+`evidence-pack` writes `pack.json` (also listed in `--zip` and MANIFEST) with a **`clock`** section, plus `CLOCK.md` / `CLOCK.html` / `CLOCK.ics` (same bodies as `clock --format md|html|ics`):
 
 | Field | Meaning |
 |-------|---------|
@@ -99,7 +99,7 @@ Short buyer walkthrough for the Article 14 window (**2026-09-11**):
 
 1. Run [`scripts/demo-cra-clock.sh`](../scripts/demo-cra-clock.sh) from `bets/d-ai-bom` (`PYTHONPATH=src`) — bilingual banner + `clock --format text` + optional sample-app advisories.
 2. Paste [`examples/github-actions/ai-bom-clock.yml`](../../../examples/github-actions/ai-bom-clock.yml) into consumer CI (`clock --format gha` → `::notice` / `::warning` when daysUntil≤7; never `::error`; exit 0).
-3. Hand an auditor an `evidence-pack` zip (`pack.json` `clock` + CycloneDX / SPDX / OpenVEX) as inventory evidence — not a conformity claim.
+3. Hand an auditor an `evidence-pack` zip (`pack.json` `clock` + `CLOCK.md`/`CLOCK.html`/`CLOCK.ics` + CycloneDX / SPDX / OpenVEX) as inventory evidence — not a conformity claim.
 
 Never say compliant / certified / 合格 / 认证. This is a **calendar/evidence helper**, not a CRA compliance certificate.
 

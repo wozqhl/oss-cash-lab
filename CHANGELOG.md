@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- D `ai-bom clock --format md|html|ics` + evidence-pack `CLOCK.md` (same Markdown body as `--format md`; listed in pack.json / MANIFEST / zip; self-contained HTML, no CDN; RFC 5545 all-day VCALENDAR for subscribe/paste). Calendar helper, not a CRA certificate. Smoke `clock-cli-ok` / `evidence-pack-ok`.
+- D evidence-pack writes `CLOCK.html` + `CLOCK.ics` alongside `CLOCK.md` (same bodies as `clock --format html|ics`; listed in pack.json / MANIFEST / outdir / zip). Calendar helper, not a CRA certificate. Smoke `evidence-pack-ok` / `cra-clock-ok` (+ `clock-pack-html-ics-ok`).
+- D `ai-bom clock --format md|html|ics` + evidence-pack `CLOCK.md`/`CLOCK.html`/`CLOCK.ics` (same bodies as `--format md|html|ics`; listed in pack.json / MANIFEST / zip; self-contained HTML, no CDN; RFC 5545 all-day VCALENDAR for subscribe/paste). Calendar helper, not a CRA certificate. Smoke `clock-cli-ok` / `evidence-pack-ok`.
 - D buyer-facing CRA Article 14 clock demo: `bets/d-ai-bom/scripts/demo-cra-clock.sh` (banner + clock + buyer talking points; calendar helper, not a CRA certificate). Smoke `demo-cra-clock-ok`.
 - A generated Rust / PHP / Swift / Ruby clients throw typed `ApiError` after retries (same policy as TS/Python/Go/Java/Kotlin/C#). Smoke typed-errors-ok.
 - A generated Java / Kotlin / C# clients throw typed `ApiError` after retries (same policy as TS/Python/Go). Smoke typed-errors-ok.

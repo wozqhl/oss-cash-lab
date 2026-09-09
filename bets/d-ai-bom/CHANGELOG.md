@@ -4,11 +4,15 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### Evidence-pack CLOCK.html + CLOCK.ics
+
+- `evidence-pack` now also writes `CLOCK.html` and `CLOCK.ics` (same bodies as `clock --format html|ics`) alongside `CLOCK.md`. Listed in `pack.json` `files`, MANIFEST, outdir, and zip. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `evidence-pack-ok` / `cra-clock-ok` (+ `clock-pack-html-ics-ok`).
+
 ### CRA clock md/html/ics + CLOCK.md in evidence-pack
 
 - `clock --format md` prints bilingual Markdown (disclaimer first, asOf, article14/sbom daysUntil/daysOverdue/status table, notes) for ticket/Slack/PR paste. Plain markdown, no HTML. Same body is written as evidence-pack `CLOCK.md` (outdir + zip; listed in `pack.json` `files` and MANIFEST).
-- `clock --format html` prints self-contained HTML (no CDN; near/due/overdue rows class=warn).
-- `clock --format ics` prints RFC 5545 VCALENDAR with two all-day VEVENTs (VALUE=DATE) for Article 14 reporting start and SBOM essential-requirements start. Stable UIDs `ai-bom-cra-article14@wozqhl` / `ai-bom-cra-sbom@wozqhl`. SUMMARY/DESCRIPTION say calendar helper, not certificate.
+- `clock --format html` prints self-contained HTML (no CDN; near/due/overdue rows class=warn). Same body is written as evidence-pack `CLOCK.html`.
+- `clock --format ics` prints RFC 5545 VCALENDAR with two all-day VEVENTs (VALUE=DATE) for Article 14 reporting start and SBOM essential-requirements start. Stable UIDs `ai-bom-cra-article14@wozqhl` / `ai-bom-cra-sbom@wozqhl`. SUMMARY/DESCRIPTION say calendar helper, not certificate. Same body is written as evidence-pack `CLOCK.ics`.
 - Exit 0 even when overdue. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `clock-cli-ok` / `evidence-pack-ok` / `cra-clock-ok`.
 
 ### Buyer CRA Article 14 clock demo

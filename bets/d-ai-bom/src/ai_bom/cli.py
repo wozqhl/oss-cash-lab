@@ -31,6 +31,8 @@ from ai_bom.osv_convert import convert_files, convert_record, dumps_converted
 from ai_bom.evidence_pack import (
     ARTICLE14_DATE,
     CDX_FILENAME,
+    CLOCK_HTML_FILENAME,
+    CLOCK_ICS_FILENAME,
     CLOCK_MD_FILENAME,
     MANIFEST_FILENAME,
     PACK_FILENAME,
@@ -383,20 +385,38 @@ def _smoke_evidence_pack() -> str | None:
         spdx3_p = sample_out / SPDX3_FILENAME
         man_p = sample_out / MANIFEST_FILENAME
         clock_md_p = sample_out / CLOCK_MD_FILENAME
+        clock_html_p = sample_out / CLOCK_HTML_FILENAME
+        clock_ics_p = sample_out / CLOCK_ICS_FILENAME
         pack_p = sample_out / PACK_FILENAME
-        if not (cdx_p.is_file() and spdx3_p.is_file() and man_p.is_file() and clock_md_p.is_file() and pack_p.is_file()):
-            return f"sample-app missing artifacts {[p.name for p in (cdx_p, spdx3_p, man_p, clock_md_p, pack_p) if not p.is_file()]}"
+        needed = (cdx_p, spdx3_p, man_p, clock_md_p, clock_html_p, clock_ics_p, pack_p)
+        if not all(p.is_file() for p in needed):
+            return f"sample-app missing artifacts {[p.name for p in needed if not p.is_file()]}"
         clock_md_body = clock_md_p.read_text(encoding="utf-8")
         if "# CRA" not in clock_md_body or "calendar/evidence helper" not in clock_md_body.lower():
             return "sample-app CLOCK.md missing calendar helper disclaimer"
         if "compliant" in clock_md_body.lower() or "certified" in clock_md_body.lower():
             return "sample-app CLOCK.md invented conformity language"
+        clock_html_body = clock_html_p.read_text(encoding="utf-8")
+        if "calendar/evidence helper" not in clock_html_body.lower() or "日历/证据辅助" not in clock_html_body:
+            return "sample-app CLOCK.html missing calendar helper disclaimer"
+        if "compliant" in clock_html_body.lower() or "certified" in clock_html_body.lower():
+            return "sample-app CLOCK.html invented conformity language"
+        clock_ics_body = clock_ics_p.read_text(encoding="utf-8")
+        if "BEGIN:VCALENDAR" not in clock_ics_body or "UID:ai-bom-cra-article14@wozqhl" not in clock_ics_body:
+            return "sample-app CLOCK.ics missing VCALENDAR / stable UID"
+        ics_un = clock_ics_body.replace("\r\n ", "").replace("\n ", "")
+        ics_low = ics_un.lower()
+        if "calendar/evidence helper" not in ics_low or "not a cra compliance certificate" not in ics_low:
+            return "sample-app CLOCK.ics missing helper disclaimer"
+        if "compliant" in ics_low or "certified" in ics_low:
+            return "sample-app CLOCK.ics invented conformity language"
         try:
             pack_files = (json.loads(pack_p.read_text(encoding="utf-8")).get("files") or [])
         except Exception as e:
             return f"sample-app pack.json parse for files {e}"
-        if CLOCK_MD_FILENAME not in pack_files:
-            return f"sample-app pack.json files missing CLOCK.md: {pack_files}"
+        for name in (CLOCK_MD_FILENAME, CLOCK_HTML_FILENAME, CLOCK_ICS_FILENAME):
+            if name not in pack_files:
+                return f"sample-app pack.json files missing {name}: {pack_files}"
         try:
             cdx = json.loads(cdx_p.read_text(encoding="utf-8"))
             spdx3 = json.loads(spdx3_p.read_text(encoding="utf-8"))
@@ -457,12 +477,26 @@ def _smoke_evidence_pack() -> str | None:
         import zipfile
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
-        want = {CDX_FILENAME, SPDX3_FILENAME, MANIFEST_FILENAME, CLOCK_MD_FILENAME, PACK_FILENAME}
+        want = {
+            CDX_FILENAME,
+            SPDX3_FILENAME,
+            MANIFEST_FILENAME,
+            CLOCK_MD_FILENAME,
+            CLOCK_HTML_FILENAME,
+            CLOCK_ICS_FILENAME,
+            PACK_FILENAME,
+        }
         if not want <= names:
             return f"zip missing {want - names}"
         z_clock = zipfile.ZipFile(zip_path).read(CLOCK_MD_FILENAME).decode("utf-8")
         if "calendar/evidence helper" not in z_clock.lower():
             return "zip CLOCK.md missing calendar helper disclaimer"
+        z_html = zipfile.ZipFile(zip_path).read(CLOCK_HTML_FILENAME).decode("utf-8")
+        if "calendar/evidence helper" not in z_html.lower():
+            return "zip CLOCK.html missing calendar helper disclaimer"
+        z_ics = zipfile.ZipFile(zip_path).read(CLOCK_ICS_FILENAME).decode("utf-8")
+        if "BEGIN:VCALENDAR" not in z_ics or "UID:ai-bom-cra-article14@wozqhl" not in z_ics:
+            return "zip CLOCK.ics missing VCALENDAR / stable UID"
         miss_rc = main(["evidence-pack", "--dir", str(sample_app)])
         if miss_rc != 2:
             return f"missing --out/--zip exit {miss_rc}"
@@ -565,24 +599,48 @@ def _smoke_cra_clock() -> str | None:
         if "compliant" in man.lower() or "certified" in man.lower():
             return "MANIFEST invented conformity badge"
         clock_md_p = out / CLOCK_MD_FILENAME
+        clock_html_p = out / CLOCK_HTML_FILENAME
+        clock_ics_p = out / CLOCK_ICS_FILENAME
         if not clock_md_p.is_file():
             return "CLOCK.md missing from evidence pack outdir"
+        if not clock_html_p.is_file():
+            return "CLOCK.html missing from evidence pack outdir"
+        if not clock_ics_p.is_file():
+            return "CLOCK.ics missing from evidence pack outdir"
         clock_md_body = clock_md_p.read_text(encoding="utf-8")
         if "calendar/evidence helper" not in clock_md_body.lower() or "日历/证据辅助" not in clock_md_body:
             return "CLOCK.md missing bilingual calendar helper disclaimer"
         if "compliant" in clock_md_body.lower() or "certified" in clock_md_body.lower():
             return "CLOCK.md invented conformity language"
-        if CLOCK_MD_FILENAME not in (pack.get("files") or []):
-            return f"pack.json files missing CLOCK.md: {pack.get('files')}"
-        if CLOCK_MD_FILENAME not in man:
-            return "MANIFEST missing CLOCK.md listing"
+        clock_html_body = clock_html_p.read_text(encoding="utf-8")
+        if "calendar/evidence helper" not in clock_html_body.lower() or "日历/证据辅助" not in clock_html_body:
+            return "CLOCK.html missing bilingual calendar helper disclaimer"
+        if "compliant" in clock_html_body.lower() or "certified" in clock_html_body.lower():
+            return "CLOCK.html invented conformity language"
+        clock_ics_body = clock_ics_p.read_text(encoding="utf-8")
+        if "BEGIN:VCALENDAR" not in clock_ics_body or "UID:ai-bom-cra-article14@wozqhl" not in clock_ics_body:
+            return "CLOCK.ics missing VCALENDAR / stable UID"
+        ics_un = clock_ics_body.replace("\r\n ", "").replace("\n ", "")
+        ics_low = ics_un.lower()
+        if "calendar/evidence helper" not in ics_low or "not a cra compliance certificate" not in ics_low:
+            return "CLOCK.ics missing helper disclaimer"
+        if "compliant" in ics_low or "certified" in ics_low:
+            return "CLOCK.ics invented conformity language"
+        pack_files = pack.get("files") or []
+        for name in (CLOCK_MD_FILENAME, CLOCK_HTML_FILENAME, CLOCK_ICS_FILENAME):
+            if name not in pack_files:
+                return f"pack.json files missing {name}: {pack_files}"
+        for name in (CLOCK_MD_FILENAME, CLOCK_HTML_FILENAME, CLOCK_ICS_FILENAME):
+            if name not in man:
+                return f"MANIFEST missing {name} listing"
         import zipfile
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
         if PACK_FILENAME not in names:
             return f"zip missing {PACK_FILENAME}: {names}"
-        if CLOCK_MD_FILENAME not in names:
-            return f"zip missing {CLOCK_MD_FILENAME}: {names}"
+        for name in (CLOCK_MD_FILENAME, CLOCK_HTML_FILENAME, CLOCK_ICS_FILENAME):
+            if name not in names:
+                return f"zip missing {name}: {names}"
         raw = zipfile.ZipFile(zip_path).read(PACK_FILENAME)
         zpack = json.loads(raw.decode("utf-8"))
         if not (zpack.get("clock") or {}).get("observedVulns"):
@@ -590,6 +648,13 @@ def _smoke_cra_clock() -> str | None:
         z_clock = zipfile.ZipFile(zip_path).read(CLOCK_MD_FILENAME).decode("utf-8")
         if "calendar/evidence helper" not in z_clock.lower():
             return "zip CLOCK.md missing calendar helper disclaimer"
+        z_html = zipfile.ZipFile(zip_path).read(CLOCK_HTML_FILENAME).decode("utf-8")
+        if "calendar/evidence helper" not in z_html.lower():
+            return "zip CLOCK.html missing calendar helper disclaimer"
+        z_ics = zipfile.ZipFile(zip_path).read(CLOCK_ICS_FILENAME).decode("utf-8")
+        if "BEGIN:VCALENDAR" not in z_ics or "UID:ai-bom-cra-article14@wozqhl" not in z_ics:
+            return "zip CLOCK.ics missing VCALENDAR / stable UID"
+        print("clock-pack-html-ics-ok")
     return None
 
 
