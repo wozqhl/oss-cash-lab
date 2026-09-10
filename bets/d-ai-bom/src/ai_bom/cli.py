@@ -3000,7 +3000,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, json.JSONDecodeError) as e:
             print(f"smoke failed openapi load: {e}")
             return 1
-        need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
+        need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/clock.json", "/clock", "/clock.md", "/clock.html", "/clock.ics", "/v1/clock", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
         paths = spec.get("paths") or {}
         missing = [p for p in need if p not in paths]
         get_health = ((paths.get("/health") or {}).get("get") or {}).get("responses") or {}
@@ -3092,6 +3092,24 @@ def main(argv: list[str] | None = None) -> int:
             and "GET /v1/exceptions" in desc
             and "hasUrl" in str(((spec.get("components") or {}).get("schemas") or {}).get("RuntimeConfig") or {})
             and "hasSecret" in str(((spec.get("components") or {}).get("schemas") or {}).get("RuntimeConfig") or {})
+            and "get" in (paths.get("/clock.json") or {})
+            and ((paths.get("/clock.json") or {}).get("get") or {}).get("operationId") == "getClockJson"
+            and "get" in (paths.get("/clock") or {})
+            and ((paths.get("/clock") or {}).get("get") or {}).get("operationId") == "getClock"
+            and "get" in (paths.get("/clock.md") or {})
+            and ((paths.get("/clock.md") or {}).get("get") or {}).get("operationId") == "getClockMd"
+            and "get" in (paths.get("/clock.html") or {})
+            and ((paths.get("/clock.html") or {}).get("get") or {}).get("operationId") == "getClockHtml"
+            and "get" in (paths.get("/clock.ics") or {})
+            and ((paths.get("/clock.ics") or {}).get("get") or {}).get("operationId") == "getClockIcs"
+            and "get" in (paths.get("/v1/clock") or {})
+            and ((paths.get("/v1/clock") or {}).get("get") or {}).get("operationId") == "getClockV1"
+            and "400" in (((paths.get("/v1/clock") or {}).get("get") or {}).get("responses") or {})
+            and "ClockFormat" in params
+            and "ClockAsOf" in params
+            and "CraClock" in ((spec.get("components") or {}).get("schemas") or {})
+            and "GET /clock.json" in desc
+            and ("calendar helper" in desc.lower() or "calendar-helper" in desc.lower() or "不是 CRA 合格证书" in desc)
             and "RateLimited" in responses
             and "429" in get_bom
             and "429" in get_v1
@@ -3827,6 +3845,122 @@ def main(argv: list[str] | None = None) -> int:
                         except Exception:
                             pass
                         cfg_httpd.server_close()
+
+                # CRA calendar clock on serve (helper, not a CRA certificate)
+                with urllib.request.urlopen(base + "/clock.json") as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    clock_json = json.loads(resp.read().decode("utf-8"))
+                    if resp.status != 200:
+                        print(f"smoke failed HTTP /clock.json status {resp.status}")
+                        return 1
+                    if clock_json.get("schema") != "ai-bom-cra-clock/v1":
+                        print(f"smoke failed HTTP /clock.json schema {clock_json.get('schema')}")
+                        return 1
+                    if clock_json.get("kind") != "calendar-helper":
+                        print(f"smoke failed HTTP /clock.json kind {clock_json.get('kind')}")
+                        return 1
+                    den = str(clock_json.get("disclaimerEn") or "")
+                    dzh = str(clock_json.get("disclaimerZh") or "")
+                    if "calendar" not in den.lower() and "helper" not in den.lower():
+                        print(f"smoke failed HTTP /clock.json disclaimerEn {den}")
+                        return 1
+                    if "日历" not in dzh and "合格证书" not in dzh:
+                        print(f"smoke failed HTTP /clock.json disclaimerZh {dzh}")
+                        return 1
+                    blob = json.dumps(clock_json).lower()
+                    if "certified" in blob or "compliant" in blob:
+                        print(f"smoke failed HTTP /clock.json compliance claim {blob[:200]}")
+                        return 1
+                    if "json" not in ctype:
+                        print(f"smoke failed HTTP /clock.json content-type {ctype}")
+                        return 1
+                with urllib.request.urlopen(base + "/clock") as resp:
+                    clock_alias = json.loads(resp.read().decode("utf-8"))
+                    if clock_alias.get("schema") != "ai-bom-cra-clock/v1":
+                        print(f"smoke failed HTTP /clock {clock_alias}")
+                        return 1
+                with urllib.request.urlopen(base + "/clock.md") as resp:
+                    clock_md = resp.read().decode("utf-8")
+                    if resp.status != 200 or "日历" not in clock_md:
+                        print(f"smoke failed HTTP /clock.md {clock_md[:120]!r}")
+                        return 1
+                    if "certified" in clock_md.lower() or "compliant" in clock_md.lower():
+                        print("smoke failed HTTP /clock.md compliance claim")
+                        return 1
+                with urllib.request.urlopen(base + "/clock.html") as resp:
+                    clock_html = resp.read().decode("utf-8")
+                    if resp.status != 200 or "<html" not in clock_html.lower():
+                        print(f"smoke failed HTTP /clock.html {clock_html[:120]!r}")
+                        return 1
+                    if "certified" in clock_html.lower() or "compliant" in clock_html.lower():
+                        print("smoke failed HTTP /clock.html compliance claim")
+                        return 1
+                with urllib.request.urlopen(base + "/clock.ics") as resp:
+                    clock_ics = resp.read().decode("utf-8")
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    if resp.status != 200 or "BEGIN:VCALENDAR" not in clock_ics:
+                        print(f"smoke failed HTTP /clock.ics {clock_ics[:120]!r}")
+                        return 1
+                    if "calendar" not in ctype:
+                        print(f"smoke failed HTTP /clock.ics content-type {ctype}")
+                        return 1
+                    if "certified" in clock_ics.lower() or "compliant" in clock_ics.lower():
+                        print("smoke failed HTTP /clock.ics compliance claim")
+                        return 1
+                with urllib.request.urlopen(base + "/v1/clock?format=gha") as resp:
+                    clock_gha = resp.read().decode("utf-8")
+                    if resp.status != 200:
+                        print(f"smoke failed HTTP /v1/clock?format=gha status {resp.status}")
+                        return 1
+                    if "::error" in clock_gha:
+                        print(f"smoke failed HTTP clock gha used ::error {clock_gha!r}")
+                        return 1
+                    if "日历" not in clock_gha and "calendar helper" not in clock_gha.lower():
+                        print(f"smoke failed HTTP clock gha disclaimer {clock_gha!r}")
+                        return 1
+                with urllib.request.urlopen(base + "/v1/clock?format=json&as-of=2026-09-11") as resp:
+                    clock_due = json.loads(resp.read().decode("utf-8"))
+                    a14 = ((clock_due.get("windows") or {}).get("article14Reporting") or {})
+                    if clock_due.get("asOf") != "2026-09-11":
+                        print(f"smoke failed HTTP clock as-of {clock_due.get('asOf')}")
+                        return 1
+                    if a14.get("daysUntil") != 0:
+                        print(f"smoke failed HTTP clock as-of daysUntil {a14}")
+                        return 1
+                    if clock_due.get("schema") != "ai-bom-cra-clock/v1" or clock_due.get("kind") != "calendar-helper":
+                        print(f"smoke failed HTTP clock as-of schema/kind {clock_due}")
+                        return 1
+                try:
+                    urllib.request.urlopen(base + "/v1/clock?format=nope")
+                    print("smoke failed HTTP clock bad format expected 400")
+                    return 1
+                except urllib.error.HTTPError as e:
+                    if e.code != 400:
+                        print(f"smoke failed HTTP clock bad format {e.code}")
+                        return 1
+                    bad = json.loads(e.read().decode("utf-8"))
+                    if bad.get("error") != "bad_format":
+                        print(f"smoke failed HTTP clock bad format body {bad}")
+                        return 1
+                try:
+                    urllib.request.urlopen(base + "/clock.json?as-of=not-a-date")
+                    print("smoke failed HTTP clock bad as-of expected 400")
+                    return 1
+                except urllib.error.HTTPError as e:
+                    if e.code != 400:
+                        print(f"smoke failed HTTP clock bad as-of {e.code}")
+                        return 1
+                    bad = json.loads(e.read().decode("utf-8"))
+                    if bad.get("error") != "bad_as_of":
+                        print(f"smoke failed HTTP clock bad as-of body {bad}")
+                        return 1
+                with urllib.request.urlopen(base + "/") as resp:
+                    idx = resp.read().decode("utf-8")
+                    if "/clock.json" not in idx or "日历辅助" not in idx:
+                        print("smoke failed index missing clock nav / disclaimer")
+                        return 1
+                print("serve-clock-ok")
+
                 begin_shutdown(httpd)
                 try:
                     urllib.request.urlopen(base + "/ready")
@@ -3850,7 +3984,7 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock+clockCli+vex")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock+clockCli+serveClock+vex")
         return 0
     if args.cmd == "convert-advisories":
         return _run_convert_advisories(args)

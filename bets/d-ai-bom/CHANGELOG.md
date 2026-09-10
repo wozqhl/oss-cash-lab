@@ -4,6 +4,10 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### Serve CRA calendar clock
+
+- Local `serve` exposes `GET /clock.json` / `GET /clock` (JSON), `/clock.md`, `/clock.html`, `/clock.ics`, and `GET /v1/clock?format=json|md|html|ics|gha|text` (same bodies as CLI clock formats; bad format → 400 `bad_format`). Optional `?as-of=YYYY-MM-DD` (UTC; invalid → 400 `bad_as_of`; default today UTC). Observed vulns default empty (same as bare `ai-bom clock`); buyers still use CLI `--advisories` / evidence-pack for matched counts. Listen banner + index nav + OpenAPI document the paths with honest "calendar helper, not a CRA certificate" / 日历辅助 wording. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `serve-clock-ok`.
+
 ### Evidence-pack CLOCK.html + CLOCK.ics
 
 - `evidence-pack` now also writes `CLOCK.html` and `CLOCK.ics` (same bodies as `clock --format html|ics`) alongside `CLOCK.md`. Listed in `pack.json` `files`, MANIFEST, outdir, and zip. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `evidence-pack-ok` / `cra-clock-ok` (+ `clock-pack-html-ics-ok`).

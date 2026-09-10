@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI-BOM Local Serve API",
-    "description": "Local OSS BOM HTTP snapshot (stdlib `http.server`; hosted inventory = paid later). Documents `GET /health`, `GET /ready`, `GET /bom.json`, `GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html` (default json = internal AI-BOM; cyclonedx = CycloneDX 1.7 JSON; cyclonedx-xml = CycloneDX 1.7 XML; spdx = SPDX 2.3 JSON; spdx-xml = SPDX 2.3 XML; spdx3 = SPDX 3.0.1 JSON; sarif = SARIF 2.1.0 same as CLI `--sarif`; md = human/Slack Markdown summary (`text/markdown`; not an SBOM spec); gha = GitHub Actions workflow commands (`::error`/`::notice`; `text/plain`; alias annotations); html = self-contained HTML BOM summary (`text/html`; no CDN; policy hits red); optional `GET /v1/bom.sarif` / `GET /v1/bom.xml` / `GET /v1/bom.spdx.xml` / `GET /v1/bom.md` / `GET /v1/bom.gha.txt` / `GET /v1/bom.html`; `/bom.json` unchanged), `GET /v1/policy` (active license/policy gate: `forbiddenLicenseIds`, `forbiddenPatterns` ids, `exceptionsCount`, `ignoreFile`; **200** even if no policy file — empty lists; never dumps file contents, regexes, exception reasons, or secrets), `GET /v1/config` (redacted runtime knobs: `ok`, `rateLimit.perMinute`, `cors.origins`, `watch`, `scanPathBase` basename only, `hasPolicyFile`, `webhooks.hasUrl` / `webhooks.hasSecret`; **never** webhook URL/secret, full policy JSON — that is `/v1/policy` — or exception file contents), `GET /v1/components` (lightweight inventory from the last scan: `{ok, count, components:[{name, version, license, path}]}`; `path` is relative to scan root or basename — never an absolute host path; empty scan → `{ok:true, count:0, components:[]}` **200**; optional `?license=` case-insensitive exact filter; cap **500** with `truncated:true`; not CycloneDX/SPDX), `GET /v1/exceptions` (redacted license-exception / waiver inventory: `{ok, count, exceptions:[{component, license, expiresAt, expired}]}`; `count` is the full waiver count; array cap **500** original file order with `truncated:true` when more; empty / no sidecar → `{ok:true, count:0, exceptions:[]}` **200**; optional `?expired=true|false` (unknown value → empty list 200); never sidecar path, full policy JSON, webhook URL/secret, API keys, or raw file dump), `GET /evidence.md`, `GET /`, `GET /openapi.json`, `GET /metrics` (Prometheus text: `ai_bom_component_count`, `ai_bom_policy_hits`, `ai_bom_forbidden_licenses`). `GET /ready` is **200** `{ok:true, service}` plus the same snapshot fields as `/health` when healthy (stateless; no circuit/queue). On SIGTERM/SIGINT, **503** `{ok:false, reason:\"shutting_down\"}` (liveness `GET /health` stays 200 with `shuttingDown: true` while draining). Compose/stack-demo healthchecks stay on `/health`. `GET /openapi.json` serves this file. Default scan runs once at process start. Optional `serve --watch` polls scan-root max mtime (~500ms) and rescans the snapshot used by `/bom.json`, `/health`, `/metrics`, `/` (and `/ready`; OpenAPI stays file-backed). Optional `X-Request-Id` request header: echoed on **every** response (including 4xx / OPTIONS). If omitted or empty, the server generates a UUID (max 128 chars; CR/LF stripped). Default allow/expose CORS headers include `X-Request-Id`. **403 CORS**: optional `--cors-origins` CSV or env `AI_BOM_CORS_ORIGINS` (`*` allowed). Default omitted/empty = no extra CORS headers (deny; OPTIONS **404**). When enabled with an explicit list, OPTIONS preflight for a listed Origin → **204** with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin (e.g. `http://evil.example`) → **403** `{error:\"forbidden\",reason:\"cors_denied\"}` (no ACAO). Matching GET includes ACAO. GET from a disallowed Origin still executes (e.g. 200) but omits ACAO. local-mvp isolated prove uses `http://localhost:3000`; main serve / stack-demo default deny. **429 rate limit**: `--rate-limit` / env `RATE_LIMIT_PER_MINUTE` (alias `RATE_LIMIT_RPM`) default **120** requests/minute per client IP (`X-Forwarded-For` first hop, else socket). In-memory sliding window. Exceed → `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. `/health`, `/ready`, `/metrics` are **not** rate-limited (k8s probes / Prometheus). Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 429 `Retry-After`). 0 disables the limit. Optional scan-root `.aibom-exceptions.json` (and CLI `--exceptions` / env `AI_BOM_EXCEPTIONS`) applies named component+license waivers (`summary.waived`; expired still count as hits in `expiredExceptions`). Query `?exceptions=` / `?exceptions=skip` on `/bom.json` and `/v1/bom` reconstructs un-waived hits. Bad exceptions JSON does not 500.",
+    "description": "Local OSS BOM HTTP snapshot (stdlib `http.server`; hosted inventory = paid later). Documents `GET /health`, `GET /ready`, `GET /bom.json`, `GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html` (default json = internal AI-BOM; cyclonedx = CycloneDX 1.7 JSON; cyclonedx-xml = CycloneDX 1.7 XML; spdx = SPDX 2.3 JSON; spdx-xml = SPDX 2.3 XML; spdx3 = SPDX 3.0.1 JSON; sarif = SARIF 2.1.0 same as CLI `--sarif`; md = human/Slack Markdown summary (`text/markdown`; not an SBOM spec); gha = GitHub Actions workflow commands (`::error`/`::notice`; `text/plain`; alias annotations); html = self-contained HTML BOM summary (`text/html`; no CDN; policy hits red); optional `GET /v1/bom.sarif` / `GET /v1/bom.xml` / `GET /v1/bom.spdx.xml` / `GET /v1/bom.md` / `GET /v1/bom.gha.txt` / `GET /v1/bom.html`; `/bom.json` unchanged), `GET /v1/policy` (active license/policy gate: `forbiddenLicenseIds`, `forbiddenPatterns` ids, `exceptionsCount`, `ignoreFile`; **200** even if no policy file — empty lists; never dumps file contents, regexes, exception reasons, or secrets), `GET /v1/config` (redacted runtime knobs: `ok`, `rateLimit.perMinute`, `cors.origins`, `watch`, `scanPathBase` basename only, `hasPolicyFile`, `webhooks.hasUrl` / `webhooks.hasSecret`; **never** webhook URL/secret, full policy JSON — that is `/v1/policy` — or exception file contents), `GET /v1/components` (lightweight inventory from the last scan: `{ok, count, components:[{name, version, license, path}]}`; `path` is relative to scan root or basename — never an absolute host path; empty scan → `{ok:true, count:0, components:[]}` **200**; optional `?license=` case-insensitive exact filter; cap **500** with `truncated:true`; not CycloneDX/SPDX), `GET /v1/exceptions` (redacted license-exception / waiver inventory: `{ok, count, exceptions:[{component, license, expiresAt, expired}]}`; `count` is the full waiver count; array cap **500** original file order with `truncated:true` when more; empty / no sidecar → `{ok:true, count:0, exceptions:[]}` **200**; optional `?expired=true|false` (unknown value → empty list 200); never sidecar path, full policy JSON, webhook URL/secret, API keys, or raw file dump), `GET /clock.json` / `GET /clock` (default JSON), `GET /clock.md`, `GET /clock.html`, `GET /clock.ics`, `GET /v1/clock?format=json|md|html|ics|gha|text` (CRA calendar helper — **not** a CRA compliance certificate / 日历辅助，不是 CRA 合格证书; optional `?as-of=YYYY-MM-DD` UTC; default today UTC; observed vulns empty on serve — use CLI `--advisories` / evidence-pack for matched counts; bad format → **400** `bad_format`; bad as-of → **400** `bad_as_of`), `GET /evidence.md`, `GET /`, `GET /openapi.json`, `GET /metrics` (Prometheus text: `ai_bom_component_count`, `ai_bom_policy_hits`, `ai_bom_forbidden_licenses`). `GET /ready` is **200** `{ok:true, service}` plus the same snapshot fields as `/health` when healthy (stateless; no circuit/queue). On SIGTERM/SIGINT, **503** `{ok:false, reason:\"shutting_down\"}` (liveness `GET /health` stays 200 with `shuttingDown: true` while draining). Compose/stack-demo healthchecks stay on `/health`. `GET /openapi.json` serves this file. Default scan runs once at process start. Optional `serve --watch` polls scan-root max mtime (~500ms) and rescans the snapshot used by `/bom.json`, `/health`, `/metrics`, `/` (and `/ready`; OpenAPI stays file-backed). Optional `X-Request-Id` request header: echoed on **every** response (including 4xx / OPTIONS). If omitted or empty, the server generates a UUID (max 128 chars; CR/LF stripped). Default allow/expose CORS headers include `X-Request-Id`. **403 CORS**: optional `--cors-origins` CSV or env `AI_BOM_CORS_ORIGINS` (`*` allowed). Default omitted/empty = no extra CORS headers (deny; OPTIONS **404**). When enabled with an explicit list, OPTIONS preflight for a listed Origin → **204** with `Access-Control-Allow-Origin` / `Allow-Methods` / `Allow-Headers`; unlisted Origin (e.g. `http://evil.example`) → **403** `{error:\"forbidden\",reason:\"cors_denied\"}` (no ACAO). Matching GET includes ACAO. GET from a disallowed Origin still executes (e.g. 200) but omits ACAO. local-mvp isolated prove uses `http://localhost:3000`; main serve / stack-demo default deny. **429 rate limit**: `--rate-limit` / env `RATE_LIMIT_PER_MINUTE` (alias `RATE_LIMIT_RPM`) default **120** requests/minute per client IP (`X-Forwarded-For` first hop, else socket). In-memory sliding window. Exceed → `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. `/health`, `/ready`, `/metrics` are **not** rate-limited (k8s probes / Prometheus). Default `Access-Control-Expose-Headers` includes `Retry-After` and `X-Request-Id` (browser JS can read 429 `Retry-After`). 0 disables the limit. Optional scan-root `.aibom-exceptions.json` (and CLI `--exceptions` / env `AI_BOM_EXCEPTIONS`) applies named component+license waivers (`summary.waived`; expired still count as hits in `expiredExceptions`). Query `?exceptions=` / `?exceptions=skip` on `/bom.json` and `/v1/bom` reconstructs un-waived hits. Bad exceptions JSON does not 500.",
     "version": "0.1.0",
     "license": {
       "name": "Apache-2.0",
@@ -27,6 +27,10 @@
     {
       "name": "meta",
       "description": "OpenAPI document and Prometheus metrics"
+    },
+    {
+      "name": "clock",
+      "description": "CRA calendar window clock (Article 14 / SBOM orientation dates). Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。"
     }
   ],
   "paths": {
@@ -177,6 +181,389 @@
             "$ref": "#/components/parameters/ExceptionsSkip"
           }
         ]
+      }
+    },
+    "/clock.json": {
+      "get": {
+        "tags": [
+          "clock"
+        ],
+        "summary": "CRA calendar clock (JSON)",
+        "description": "CRA Article 14 / SBOM calendar windows (`ai-bom-cra-clock/v1`, `kind: calendar-helper`). Calendar/evidence helper, **not** a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书. Optional `?as-of=YYYY-MM-DD` (UTC date; default today UTC). Serve defaults to empty observed vulns (same as bare CLI `ai-bom clock`); buyers use CLI `--advisories` / evidence-pack for matched counts. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Same body as `GET /clock` and `GET /v1/clock?format=json`.",
+        "operationId": "getClockJson",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ClockAsOf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CRA calendar clock body (helper, not a certificate)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CraClock"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `format` (`bad_format`) and/or bad `as-of` (`bad_as_of`).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockError"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/clock": {
+      "get": {
+        "tags": [
+          "clock"
+        ],
+        "summary": "CRA calendar clock (JSON default)",
+        "description": "CRA Article 14 / SBOM calendar windows (`ai-bom-cra-clock/v1`, `kind: calendar-helper`). Calendar/evidence helper, **not** a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书. Optional `?as-of=YYYY-MM-DD` (UTC date; default today UTC). Serve defaults to empty observed vulns (same as bare CLI `ai-bom clock`); buyers use CLI `--advisories` / evidence-pack for matched counts. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Defaults to JSON (same as `/clock.json`).",
+        "operationId": "getClock",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ClockAsOf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CRA calendar clock body (helper, not a certificate)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CraClock"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `format` (`bad_format`) and/or bad `as-of` (`bad_as_of`).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockError"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/clock.md": {
+      "get": {
+        "tags": [
+          "clock"
+        ],
+        "summary": "CRA calendar clock (Markdown)",
+        "description": "CRA Article 14 / SBOM calendar windows (`ai-bom-cra-clock/v1`, `kind: calendar-helper`). Calendar/evidence helper, **not** a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书. Optional `?as-of=YYYY-MM-DD` (UTC date; default today UTC). Serve defaults to empty observed vulns (same as bare CLI `ai-bom clock`); buyers use CLI `--advisories` / evidence-pack for matched counts. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Same body as CLI `clock --format md` / evidence-pack `CLOCK.md`.",
+        "operationId": "getClockMd",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ClockAsOf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CRA calendar clock body (helper, not a certificate)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `format` (`bad_format`) and/or bad `as-of` (`bad_as_of`).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockError"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/clock.html": {
+      "get": {
+        "tags": [
+          "clock"
+        ],
+        "summary": "CRA calendar clock (HTML)",
+        "description": "CRA Article 14 / SBOM calendar windows (`ai-bom-cra-clock/v1`, `kind: calendar-helper`). Calendar/evidence helper, **not** a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书. Optional `?as-of=YYYY-MM-DD` (UTC date; default today UTC). Serve defaults to empty observed vulns (same as bare CLI `ai-bom clock`); buyers use CLI `--advisories` / evidence-pack for matched counts. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Same body as CLI `clock --format html` / evidence-pack `CLOCK.html` (self-contained, no CDN).",
+        "operationId": "getClockHtml",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ClockAsOf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CRA calendar clock body (helper, not a certificate)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `format` (`bad_format`) and/or bad `as-of` (`bad_as_of`).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockError"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/clock.ics": {
+      "get": {
+        "tags": [
+          "clock"
+        ],
+        "summary": "CRA calendar clock (iCalendar)",
+        "description": "CRA Article 14 / SBOM calendar windows (`ai-bom-cra-clock/v1`, `kind: calendar-helper`). Calendar/evidence helper, **not** a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书. Optional `?as-of=YYYY-MM-DD` (UTC date; default today UTC). Serve defaults to empty observed vulns (same as bare CLI `ai-bom clock`); buyers use CLI `--advisories` / evidence-pack for matched counts. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Same body as CLI `clock --format ics` / evidence-pack `CLOCK.ics` (RFC 5545).",
+        "operationId": "getClockIcs",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ClockAsOf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CRA calendar clock body (helper, not a certificate)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "text/calendar": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `format` (`bad_format`) and/or bad `as-of` (`bad_as_of`).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockError"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/clock": {
+      "get": {
+        "tags": [
+          "clock"
+        ],
+        "summary": "CRA calendar clock (versioned; format query)",
+        "description": "CRA Article 14 / SBOM calendar windows (`ai-bom-cra-clock/v1`, `kind: calendar-helper`). Calendar/evidence helper, **not** a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书. Optional `?as-of=YYYY-MM-DD` (UTC date; default today UTC). Serve defaults to empty observed vulns (same as bare CLI `ai-bom clock`); buyers use CLI `--advisories` / evidence-pack for matched counts. CORS OPTIONS unlisted Origin → **403** `cors_denied`. Rate limit exceeded → **429** `{ok:false, reason:\"rate_limited\"}` + `Retry-After`. Query `format=json|md|html|ics|gha|text` (default json). Unknown format → **400** `{error:\"bad_format\"}`. Invalid as-of → **400** `{error:\"bad_as_of\"}`.",
+        "operationId": "getClockV1",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/ClockFormat"
+          },
+          {
+            "$ref": "#/components/parameters/ClockAsOf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CRA calendar clock body (helper, not a certificate)",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CraClock"
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/calendar": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `format` (`bad_format`) and/or bad `as-of` (`bad_as_of`).",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockError"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CorsDenied"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
       }
     },
     "/v1/bom": {
@@ -1649,6 +2036,67 @@
             "description": "True when more than 500 waivers matched (list capped at 500). Omitted when not truncated."
           }
         }
+      },
+      "CraClock": {
+        "type": "object",
+        "description": "CRA calendar clock (`schema: ai-bom-cra-clock/v1`, `kind: calendar-helper`). Not a CRA compliance certificate.",
+        "required": [
+          "schema",
+          "kind",
+          "asOf",
+          "windows"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string",
+            "example": "ai-bom-cra-clock/v1"
+          },
+          "kind": {
+            "type": "string",
+            "example": "calendar-helper"
+          },
+          "disclaimerEn": {
+            "type": "string"
+          },
+          "disclaimerZh": {
+            "type": "string"
+          },
+          "noteEn": {
+            "type": "string"
+          },
+          "noteZh": {
+            "type": "string"
+          },
+          "asOf": {
+            "type": "string",
+            "example": "2026-09-10"
+          },
+          "windows": {
+            "type": "object"
+          },
+          "observedVulnCount": {
+            "type": "integer",
+            "example": 0
+          },
+          "observedVulns": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "ClockError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "bad_format"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
       }
     },
     "responses": {
@@ -1759,6 +2207,34 @@
         "schema": {
           "type": "string",
           "example": "false"
+        }
+      },
+      "ClockAsOf": {
+        "name": "as-of",
+        "in": "query",
+        "required": false,
+        "description": "UTC calendar date `YYYY-MM-DD` for the CRA window clock. Default: today UTC (same as CLI). Invalid value → **400** `{error:\"bad_as_of\"}`.",
+        "schema": {
+          "type": "string",
+          "example": "2026-09-11"
+        }
+      },
+      "ClockFormat": {
+        "name": "format",
+        "in": "query",
+        "required": false,
+        "description": "Clock body format. `json` (default) = `ai-bom-cra-clock/v1` dict. `md` / `html` / `ics` / `gha` / `text` match CLI `clock --format`. Unknown → **400** `{error:\"bad_format\"}`. Calendar helper, not a CRA certificate.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "json",
+            "md",
+            "html",
+            "ics",
+            "gha",
+            "text"
+          ],
+          "default": "json"
         }
       }
     }

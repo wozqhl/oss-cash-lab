@@ -171,6 +171,7 @@
 - [x] D `clock` CLI (daysUntil/daysOverdue vs 2026-09-11 and 2027-12-11 without evidence-pack zip; console script `ai-bom clock`; default as-of today UTC; README 30s `pip install -e .` then `ai-bom clock --format text` (also `gha`/`md`/`ics`); optional local `--advisories` match; calendar helper, not a CRA certificate; smoke `clock-cli-ok`)
 - [x] D `clock --format gha` (GitHub Actions `::notice`/`::warning` calendar annotations; never `::error`; exit 0; copy-paste `examples/github-actions/ai-bom-clock.yml`; calendar helper, not a CRA certificate; smoke `clock-cli-ok`)
 - [x] D `clock --format md|html|ics` + evidence-pack `CLOCK.md`/`CLOCK.html`/`CLOCK.ics` (ticket/Slack Markdown + self-contained HTML, no CDN + RFC 5545 all-day VCALENDAR; pack lists all three in files/MANIFEST/outdir/zip; calendar helper, not a CRA certificate; smoke `clock-cli-ok` / `evidence-pack-ok` / `cra-clock-ok`)
+- [x] D serve CRA calendar clock (`GET /clock.json`/`/clock`/`/clock.md`/`/clock.html`/`/clock.ics` + `GET /v1/clock?format=json|md|html|ics|gha|text`; optional `?as-of=YYYY-MM-DD`; empty observed hits on serve; calendar helper, not a CRA certificate; 日历/证据辅助，不是 CRA 合格证书; smoke `serve-clock-ok`)
 - [x] D buyer CRA Article 14 clock demo (`scripts/demo-cra-clock.sh`; calendar helper, not a CRA certificate; smoke `demo-cra-clock-ok`)
 
 **Exit:** >=1 paid verbal intent on B or C; A/D smoke + demo.

@@ -1641,6 +1641,27 @@ curl -sf "http://127.0.0.1:$PORT/evidence.md" -o out/serve-evidence.md
 grep -q "DRAFT" out/serve-evidence.md
 grep -q "AI-BOM Compliance Evidence" out/serve-evidence.md
 
+echo "==> GET /clock.json + /clock.html (CRA calendar helper, not a CRA certificate)"
+curl -sf "http://127.0.0.1:$PORT/clock.json" -o out/serve-clock.json
+test -s out/serve-clock.json
+python3 - <<"PYCLOCK"
+import json
+from pathlib import Path
+d = json.loads(Path("out/serve-clock.json").read_text())
+assert d.get("schema") == "ai-bom-cra-clock/v1", d.get("schema")
+assert d.get("kind") == "calendar-helper", d.get("kind")
+assert "calendar" in str(d.get("disclaimerEn") or "").lower()
+assert "合格证书" in str(d.get("disclaimerZh") or "")
+blob = json.dumps(d).lower()
+assert "certified" not in blob and "compliant" not in blob
+print("serve /clock.json ok", d.get("asOf"), "article14 daysUntil=",
+      ((d.get("windows") or {}).get("article14Reporting") or {}).get("daysUntil"))
+PYCLOCK
+curl -sf "http://127.0.0.1:$PORT/clock.html" -o out/serve-clock.html
+grep -qi '<html' out/serve-clock.html
+grep -Eqi 'calendar helper|日历' out/serve-clock.html
+echo "serve /clock.html ok"
+
 echo "==> GET /openapi.json (file-backed spec)"
 RID_OA="mvp-oa-rid-d1"
 curl -s -o out/serve-openapi.json -D out/serve-openapi.h \
@@ -1655,7 +1676,7 @@ from pathlib import Path
 spec = json.loads(Path("out/serve-openapi.json").read_text(encoding="utf-8"))
 assert str(spec.get("openapi") or "").startswith("3."), spec.get("openapi")
 paths = spec.get("paths") or {}
-need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
+need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/clock.json", "/clock", "/clock.md", "/clock.html", "/clock.ics", "/v1/clock", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
 missing = [p for p in need if p not in paths]
 assert not missing, missing
 assert "get" in (paths.get("/health") or {})
@@ -2156,4 +2177,4 @@ CFG_ISO_PID=""
 trap - EXIT
 echo "==> [config] isolated webhook not leaked OK"
 
-echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock+clock-cli+demo-cra-clock+vex)"
+echo "d-ai-bom local-mvp OK (scan+serve+cors+request-id+openapi+metrics+webhook+hmac+watch+cyclonedx+spdx+spdx3+cyclonedx-xml+spdx-xml+md+html+rate-limit+exceptions+policy+config+exceptionsList+advisories+osv-convert+mlbom-obs+spdx3-ai+evidence-pack+cra-clock+clock-cli+serve-clock+demo-cra-clock+vex)"

@@ -35,8 +35,88 @@ from ai_bom.scanner import (
     scan_path,
 )
 from ai_bom.export import FORMATS_HELP, content_type_for, dumps_export, normalize_format, to_html
+from ai_bom.evidence_pack import (
+    build_cra_clock,
+    parse_as_of,
+    to_clock_gha,
+    to_clock_html,
+    to_clock_ics,
+    to_clock_md,
+)
 from ai_bom.runtime_config import summarize_runtime_config
 from ai_bom.webhook import parse_webhook_secret, parse_webhook_url, resolve_webhook_secret, resolve_webhook_url
+
+
+CLOCK_FORMATS = ("json", "md", "html", "ics", "gha", "text")
+CLOCK_FORMATS_HELP = "json|md|html|ics|gha|text"
+# Serve clock defaults to empty observed hits (same as bare `ai-bom clock`).
+# Buyers still use CLI `--advisories` / evidence-pack for matched counts.
+
+
+def clock_content_type(fmt: str) -> str:
+    if fmt == "json":
+        return "application/json; charset=utf-8"
+    if fmt == "md":
+        return "text/markdown; charset=utf-8"
+    if fmt == "html":
+        return "text/html; charset=utf-8"
+    if fmt == "ics":
+        return "text/calendar; charset=utf-8"
+    # gha + text
+    return "text/plain; charset=utf-8"
+
+
+def to_clock_text(clock: dict[str, Any]) -> str:
+    """Same body as CLI `clock --format text` (stdout lines joined)."""
+    windows = clock.get("windows") or {}
+    a14 = windows.get("article14Reporting") or {}
+    sbom = windows.get("sbom") or {}
+    lines = [
+        f"asOf: {clock.get('asOf')}",
+        (
+            f"article14Reporting: {a14.get('date')} "
+            f"daysUntil={a14.get('daysUntil')} daysOverdue={a14.get('daysOverdue')} "
+            f"status={a14.get('status')}"
+        ),
+        (
+            f"sbom: {sbom.get('date')} "
+            f"daysUntil={sbom.get('daysUntil')} daysOverdue={sbom.get('daysOverdue')} "
+            f"status={sbom.get('status')}"
+        ),
+        f"observedVulnCount: {clock.get('observedVulnCount', 0)}",
+        (
+            "日历/证据辅助，不是 CRA 合格证书 / "
+            "calendar helper, not a CRA compliance certificate"
+        ),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def normalize_clock_format(raw: str | None) -> str | None:
+    fmt = (raw or "json").strip().lower()
+    if fmt in ("markdown",):
+        fmt = "md"
+    if fmt in CLOCK_FORMATS:
+        return fmt
+    return None
+
+
+def render_clock_body(clock: dict[str, Any], fmt: str) -> str:
+    if fmt == "json":
+        return json.dumps(clock, indent=2, ensure_ascii=False) + "\n"
+    if fmt == "md":
+        return to_clock_md(clock)
+    if fmt == "html":
+        return to_clock_html(clock)
+    if fmt == "ics":
+        return to_clock_ics(clock)
+    if fmt == "gha":
+        return to_clock_gha(clock)
+    if fmt == "text":
+        return to_clock_text(clock)
+    raise ValueError(f"unsupported clock format (use {CLOCK_FORMATS_HELP})")
+
 
 DEFAULT_SERVE_PORT = 8793
 DEFAULT_SERVE_HOST = "127.0.0.1"
@@ -506,6 +586,51 @@ def _handler_class() -> type[BaseHTTPRequestHandler]:
                 payload = exceptions_json(loaded, expired=expired_raw)
                 self._send_json(200, payload, head_only=head_only)
                 return
+
+            if path in ("/clock", "/clock.json", "/clock.md", "/clock.html", "/clock.ics") or path == "/v1/clock":
+                qs = parse_qs(parsed.query)
+                raw_as_of = (qs.get("as-of") or qs.get("as_of") or [None])[0]
+                try:
+                    as_of = parse_as_of(raw_as_of)
+                except ValueError as e:
+                    self._send_json(
+                        400,
+                        {"error": "bad_as_of", "detail": str(e)},
+                        head_only=head_only,
+                    )
+                    return
+                # Default empty hits (same as bare CLI clock without --advisories).
+                clock = build_cra_clock(as_of, [])
+                if path == "/v1/clock":
+                    raw_fmt = (qs.get("format") or ["json"])[0]
+                    fmt = normalize_clock_format(raw_fmt)
+                    if fmt is None:
+                        self._send_json(
+                            400,
+                            {
+                                "error": "bad_format",
+                                "detail": f"format must be {CLOCK_FORMATS_HELP}",
+                            },
+                            head_only=head_only,
+                        )
+                        return
+                elif path == "/clock.md":
+                    fmt = "md"
+                elif path == "/clock.html":
+                    fmt = "html"
+                elif path == "/clock.ics":
+                    fmt = "ics"
+                else:
+                    # /clock and /clock.json default to JSON
+                    fmt = "json"
+                body = render_clock_body(clock, fmt)
+                self._send(
+                    200,
+                    body,
+                    clock_content_type(fmt),
+                    head_only=head_only,
+                )
+                return
             if path == "/evidence.md":
                 self._send(
                     200,
@@ -664,7 +789,7 @@ def serve_forever(
     limit_note = httpd.rate_limit if httpd.rate_limit is not None else "unlimited"
     print(f"ai-bom listening on http://{host}:{port}")
     print(f"path={path}")
-    print("GET /health  GET /ready  GET /  GET /bom.json  GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html  GET /v1/bom.xml  GET /v1/bom.spdx.xml  GET /v1/bom.sarif  GET /v1/bom.md  GET /v1/bom.gha.txt  GET /v1/bom.html  GET /v1/policy  GET /v1/config  GET /v1/components  GET /v1/exceptions  GET /evidence.md  GET /openapi.json  GET /metrics")
+    print("GET /health  GET /ready  GET /  GET /bom.json  GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html  GET /v1/bom.xml  GET /v1/bom.spdx.xml  GET /v1/bom.sarif  GET /v1/bom.md  GET /v1/bom.gha.txt  GET /v1/bom.html  GET /clock.json  GET /clock  GET /clock.md  GET /clock.html  GET /clock.ics  GET /v1/clock?format=json|md|html|ics|gha|text  GET /v1/policy  GET /v1/config  GET /v1/components  GET /v1/exceptions  GET /evidence.md  GET /openapi.json  GET /metrics")
     print(f"cors={cors_note}")
     print(f"rate_limit_per_minute={limit_note}")
     print(f"watch={'poll %dms' % WATCH_POLL_MS if watch else 'off'}")

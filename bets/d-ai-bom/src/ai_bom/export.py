@@ -1266,11 +1266,17 @@ def to_html(bom: dict[str, Any], *, watch: bool = False, include_nav: bool = Fal
   <a href="/v1/policy">v1/policy</a>
   <a href="/v1/config">v1/config</a>
   <a href="/evidence.md">evidence.md</a>
+  <a href="/clock.json">clock.json</a>
+  <a href="/clock.md">clock.md</a>
+  <a href="/clock.html">clock.html</a>
+  <a href="/clock.ics">clock.ics</a>
+  <a href="/v1/clock">v1/clock</a>
   <a href="/health">health</a>
   <a href="/ready">ready</a>
   <a href="/openapi.json">openapi.json</a>
   <a href="/metrics">metrics</a>
 </nav>
+<p class="meta">CRA clock links = calendar helper, not a CRA certificate · 日历辅助，不是 CRA 合格证书</p>
 """
 
     snap = "snapshot (watch)" if watch else "snapshot at process start"
