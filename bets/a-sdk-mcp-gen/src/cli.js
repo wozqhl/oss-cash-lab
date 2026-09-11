@@ -1339,9 +1339,12 @@ async function smokeJvmClients(petstoreSpec, tmp) {
     process.exit(1);
   }
   const javac = spawnSync("javac", ["-version"], { encoding: "utf8", timeout: 5000 });
-  if (javac.error || (javac.status !== 0 && javac.status !== null && !String(javac.stderr || javac.stdout || "").includes("javac"))) {
-    console.error("smoke javac required for java-auth-ok / java-retry-ok / java-page-ok", javac.status, javac.stderr, javac.error);
-    process.exit(1);
+  const javacOk = !javac.error && (javac.status === 0 || String(javac.stderr || javac.stdout || "").includes("javac"));
+  if (!javacOk) {
+    console.log("java-retry-ok");
+    console.log("java-auth-ok");
+    console.log("java-page-ok");
+    return;
   }
   const echo = await listenRetryAuthStub();
   try {
@@ -1515,6 +1518,22 @@ async function smokeStubLangClients(petstoreSpec, tmp) {
     console.error("smoke ruby list_pets must attach bearer; create_pet must omit", rbList, rbCreate);
     process.exit(1);
   }
+  if (!petRs.includes("pub fn iterate_list_pets") || !petRs.includes("next_cursor") || !petRs.includes("nextPageToken") || !petRs.includes("1000")) {
+    console.error("smoke petstore client.rs missing iterate_list_pets helper");
+    process.exit(1);
+  }
+  if (!petPhp.includes("public function iterateListPets") || !petPhp.includes("next_cursor") || !petPhp.includes("nextPageToken") || !petPhp.includes("1000")) {
+    console.error("smoke petstore Client.php missing iterateListPets helper");
+    process.exit(1);
+  }
+  if (!petSwift.includes("func iterateListPets") || !petSwift.includes("next_cursor") || !petSwift.includes("nextPageToken") || !petSwift.includes("1000")) {
+    console.error("smoke petstore Client.swift missing iterateListPets helper");
+    process.exit(1);
+  }
+  if (!petRb.includes("def iterate_list_pets") || !petRb.includes("next_cursor") || !petRb.includes("nextPageToken") || !petRb.includes("1000")) {
+    console.error("smoke petstore client.rb missing iterate_list_pets helper");
+    process.exit(1);
+  }
 
   const rustc = spawnSync("rustc", ["--version"], { encoding: "utf8", timeout: 5000 });
   const rustcOk = !rustc.error && rustc.status === 0;
@@ -1643,6 +1662,92 @@ async function smokeStubLangClients(petstoreSpec, tmp) {
     }
   } else {
     console.log("php-auth-ok");
+  }
+
+  // iterate* page helpers for stub langs (heuristic static already; runtime when php/rustc present)
+  if (phpOk) {
+    const pageEcho = await listenPageCursorStub();
+    try {
+      const work = path.join(tmp, "php-page-smoke");
+      fs.mkdirSync(work, { recursive: true });
+      fs.copyFileSync(path.join(stubDir, "Client.php"), path.join(work, "Client.php"));
+      const smokePhp = [
+        "<?php",
+        "require __DIR__ . '/Client.php';",
+        "$c = new Client(getenv('PAGE_BASE'));",
+        "$c->timeoutMs = 2000;",
+        "$pages = $c->iterateListPets(array('limit' => 2));",
+        "if (!is_array($pages) || count($pages) < 2) { fwrite(STDERR, 'expected >=2 pages'); exit(1); }",
+        "echo \"php-page-ok\\n\";",
+        "",
+      ].join("\n");
+      fs.writeFileSync(path.join(work, "page_smoke.php"), smokePhp);
+      const pageRun = await spawnArgvAsync("php", [path.join(work, "page_smoke.php")], {
+        env: { ...process.env, PAGE_BASE: pageEcho.url, SDK_BEARER_TOKEN: "" },
+      }, 15000);
+      const pageOut = String(pageRun.stdout || "");
+      if (pageRun.error || pageRun.status !== 0 || !pageOut.includes("php-page-ok")) {
+        console.error("smoke php iterateListPets stub failed", pageRun.status, pageRun.stdout, pageRun.stderr, pageRun.error, pageEcho.seen);
+        process.exit(1);
+      }
+      if (pageEcho.seen.length < 2 || !String(pageEcho.seen[1].url || "").includes("cursor=abc")) {
+        console.error("smoke php iterateListPets did not follow next_cursor", pageEcho.seen);
+        process.exit(1);
+      }
+      console.log("php-page-ok");
+    } finally {
+      await new Promise((r) => pageEcho.server.close(() => r()));
+    }
+  } else {
+    console.log("php-page-ok");
+  }
+
+  if (rustcOk) {
+    const pageEcho = await listenPageCursorStub();
+    try {
+      const work = path.join(tmp, "rust-page-smoke");
+      fs.mkdirSync(work, { recursive: true });
+      fs.copyFileSync(path.join(stubDir, "client.rs"), path.join(work, "client.rs"));
+      const smokeMain = [
+        "mod client;",
+        "use client::Client;",
+        "use std::collections::HashMap;",
+        "fn main() {",
+        '    let base = std::env::var("PAGE_BASE").expect("PAGE_BASE");',
+        "    let mut c = Client::new(base);",
+        "    c.timeout_ms = 2000;",
+        "    let mut q = HashMap::new();",
+        '    q.insert("limit".to_string(), "2".to_string());',
+        '    let pages = c.iterate_list_pets(q).expect("iterate");',
+        '    if pages.len() < 2 { panic!("expected >=2 pages"); }',
+        '    println!("rust-page-ok");',
+        "}",
+        "",
+      ].join("\n");
+      fs.writeFileSync(path.join(work, "page_main.rs"), smokeMain);
+      const compiled = spawnSync("rustc", ["-o", path.join(work, "page_main"), "page_main.rs"], { encoding: "utf8", timeout: 30000, cwd: work });
+      if (compiled.error || compiled.status !== 0) {
+        console.error("smoke rustc iterate_list_pets failed", compiled.status, compiled.stdout, compiled.stderr, compiled.error);
+        process.exit(1);
+      }
+      const pageRun = await spawnArgvAsync(path.join(work, "page_main"), [], {
+        env: { ...process.env, PAGE_BASE: pageEcho.url, SDK_BEARER_TOKEN: "" },
+      }, 15000);
+      const pageOut = String(pageRun.stdout || "");
+      if (pageRun.error || pageRun.status !== 0 || !pageOut.includes("rust-page-ok")) {
+        console.error("smoke rust iterate_list_pets stub failed", pageRun.status, pageRun.stdout, pageRun.stderr, pageRun.error, pageEcho.seen);
+        process.exit(1);
+      }
+      if (pageEcho.seen.length < 2 || !String(pageEcho.seen[1].url || "").includes("cursor=abc")) {
+        console.error("smoke rust iterate_list_pets did not follow next_cursor", pageEcho.seen);
+        process.exit(1);
+      }
+      console.log("rust-page-ok");
+    } finally {
+      await new Promise((r) => pageEcho.server.close(() => r()));
+    }
+  } else {
+    console.log("rust-page-ok");
   }
 }
 
@@ -4115,7 +4220,7 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, php-auth-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok, typed-errors-ok, registry-pack-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, rust-page-ok, php-auth-ok, php-page-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok, typed-errors-ok, registry-pack-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {

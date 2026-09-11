@@ -454,6 +454,8 @@ grep -q 'pub fn delete_pet' out/petstore/client.rs
 grep -q 'SDK_TIMEOUT_MS' out/petstore/client.rs
 grep -q 'bearer_token' out/petstore/client.rs
 grep -q '429' out/petstore/client.rs
+grep -q 'iterate_list_pets' out/petstore/client.rs
+grep -q 'next_cursor' out/petstore/client.rs
 python3 - <<'RUSTPY'
 from pathlib import Path
 import re
@@ -462,7 +464,7 @@ if "pub struct Client" not in src:
     raise SystemExit("client.rs missing pub struct Client")
 if "TcpStream" not in src:
     raise SystemExit("client.rs missing TcpStream")
-for name in ("list_pets", "create_pet", "get_pet", "delete_pet"):
+for name in ("list_pets", "create_pet", "get_pet", "delete_pet", "iterate_list_pets"):
     if f"pub fn {name}" not in src:
         raise SystemExit(f"client.rs missing pub fn {name}")
 # char/byte literals first so '"' does not start a fake string
@@ -641,6 +643,8 @@ grep -q 'func deletePet' out/petstore/Client.swift
 grep -q 'SDK_TIMEOUT_MS' out/petstore/Client.swift
 grep -q 'bearerToken' out/petstore/Client.swift
 grep -q '429' out/petstore/Client.swift
+grep -q 'iterateListPets' out/petstore/Client.swift
+grep -q 'next_cursor' out/petstore/Client.swift
 if grep -qiE 'Alamofire|import[[:space:]]+Alamofire' out/petstore/Client.swift; then
   echo "Client.swift must be Alamofire-free" >&2
   exit 1
@@ -701,6 +705,8 @@ grep -q 'def delete_pet' out/petstore/client.rb
 grep -q 'SDK_TIMEOUT_MS' out/petstore/client.rb
 grep -q 'bearer_token' out/petstore/client.rb
 grep -q '429' out/petstore/client.rb
+grep -q 'iterate_list_pets' out/petstore/client.rb
+grep -q 'next_cursor' out/petstore/client.rb
 if grep -qiE 'httparty|faraday|rest-client' out/petstore/client.rb; then
   echo "client.rb must be gem-free (stdlib Net::HTTP only)" >&2
   exit 1
@@ -757,6 +763,8 @@ grep -q 'public function deletePet' out/petstore/Client.php
 grep -q 'SDK_TIMEOUT_MS' out/petstore/Client.php
 grep -q 'bearerToken' out/petstore/Client.php
 grep -q '429' out/petstore/Client.php
+grep -q 'iterateListPets' out/petstore/Client.php
+grep -q 'next_cursor' out/petstore/Client.php
 if grep -qiE 'curl_init|curl_exec|curl_setopt' out/petstore/Client.php; then
   echo "Client.php must be curl-extension-free (stdlib fopen/stream only)" >&2
   exit 1

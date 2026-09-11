@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A generated Rust / PHP / Swift / Ruby clients add iterate* page helpers (page/cursor; cap 1000; existing names unchanged). Smoke rust-page-ok / php-page-ok.
 - D serve CRA calendar clock: `GET /clock.json` / `/clock` / `/clock.md` / `/clock.html` / `/clock.ics` + `GET /v1/clock?format=json|md|html|ics|gha|text` (optional `?as-of=YYYY-MM-DD`; default empty observed hits; banner + index nav + OpenAPI). Calendar helper, not a CRA certificate. 日历/证据辅助，不是 CRA 合格证书. Smoke `serve-clock-ok`.
 - D evidence-pack writes `CLOCK.html` + `CLOCK.ics` alongside `CLOCK.md` (same bodies as `clock --format html|ics`; listed in pack.json / MANIFEST / outdir / zip). Calendar helper, not a CRA certificate. Smoke `evidence-pack-ok` / `cra-clock-ok` (+ `clock-pack-html-ics-ok`).
 - D `ai-bom clock --format md|html|ics` + evidence-pack `CLOCK.md`/`CLOCK.html`/`CLOCK.ics` (same bodies as `--format md|html|ics`; listed in pack.json / MANIFEST / zip; self-contained HTML, no CDN; RFC 5545 all-day VCALENDAR for subscribe/paste). Calendar helper, not a CRA certificate. Smoke `clock-cli-ok` / `evidence-pack-ok`.

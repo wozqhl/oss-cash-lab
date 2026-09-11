@@ -4856,6 +4856,238 @@ export function toRustIdent(name) {
   return snake;
 }
 
+
+function emitRustPageRuntime(lines) {
+  lines.push(`// Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.`);
+  lines.push(`// Heuristic JSON page helpers over raw response strings (stdlib-only; not a full JSON parser).`);
+  lines.push(`fn json_string_field(raw: &str, key: &str) -> Option<String> {`);
+  lines.push(`    let needle = format!("\\"{}\\"", key);`);
+  lines.push(`    let bytes = raw.as_bytes();`);
+  lines.push(`    let mut i = 0usize;`);
+  lines.push(`    while i + needle.len() <= bytes.len() {`);
+  lines.push(`        if &raw[i..i + needle.len()] == needle {`);
+  lines.push(`            let mut j = i + needle.len();`);
+  lines.push(`            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\\t' || bytes[j] == b'\\n' || bytes[j] == b'\\r') {`);
+  lines.push(`                j += 1;`);
+  lines.push(`            }`);
+  lines.push(`            if j >= bytes.len() || bytes[j] != b':' {`);
+  lines.push(`                i += 1;`);
+  lines.push(`                continue;`);
+  lines.push(`            }`);
+  lines.push(`            j += 1;`);
+  lines.push(`            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\\t' || bytes[j] == b'\\n' || bytes[j] == b'\\r') {`);
+  lines.push(`                j += 1;`);
+  lines.push(`            }`);
+  lines.push(`            if j >= bytes.len() || bytes[j] != b'"' {`);
+  lines.push(`                return None;`);
+  lines.push(`            }`);
+  lines.push(`            j += 1;`);
+  lines.push(`            let start = j;`);
+  lines.push(`            while j < bytes.len() {`);
+  lines.push(`                if bytes[j] == b'\\\\' {`);
+  lines.push(`                    j += 2;`);
+  lines.push(`                    continue;`);
+  lines.push(`                }`);
+  lines.push(`                if bytes[j] == b'"' {`);
+  lines.push(`                    return Some(raw[start..j].to_string());`);
+  lines.push(`                }`);
+  lines.push(`                j += 1;`);
+  lines.push(`            }`);
+  lines.push(`            return None;`);
+  lines.push(`        }`);
+  lines.push(`        i += 1;`);
+  lines.push(`    }`);
+  lines.push(`    None`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn json_array_len_at(raw: &str, start: usize) -> i32 {`);
+  lines.push(`    let bytes = raw.as_bytes();`);
+  lines.push(`    if start >= bytes.len() || bytes[start] != b'[' {`);
+  lines.push(`        return -1;`);
+  lines.push(`    }`);
+  lines.push(`    let mut i = start + 1;`);
+  lines.push(`    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\\t' || bytes[i] == b'\\n' || bytes[i] == b'\\r') {`);
+  lines.push(`        i += 1;`);
+  lines.push(`    }`);
+  lines.push(`    if i < bytes.len() && bytes[i] == b']' {`);
+  lines.push(`        return 0;`);
+  lines.push(`    }`);
+  lines.push(`    let mut depth = 0i32;`);
+  lines.push(`    let mut in_str = false;`);
+  lines.push(`    let mut esc = false;`);
+  lines.push(`    let mut count = 1i32;`);
+  lines.push(`    while i < bytes.len() {`);
+  lines.push(`        let c = bytes[i];`);
+  lines.push(`        if in_str {`);
+  lines.push(`            if esc {`);
+  lines.push(`                esc = false;`);
+  lines.push(`            } else if c == b'\\\\' {`);
+  lines.push(`                esc = true;`);
+  lines.push(`            } else if c == b'"' {`);
+  lines.push(`                in_str = false;`);
+  lines.push(`            }`);
+  lines.push(`            i += 1;`);
+  lines.push(`            continue;`);
+  lines.push(`        }`);
+  lines.push(`        match c {`);
+  lines.push(`            b'"' => in_str = true,`);
+  lines.push(`            b'{' | b'[' => depth += 1,`);
+  lines.push(`            b'}' | b']' => {`);
+  lines.push(`                if depth == 0 {`);
+  lines.push(`                    return if c == b']' { count } else { -1 };`);
+  lines.push(`                }`);
+  lines.push(`                depth -= 1;`);
+  lines.push(`            }`);
+  lines.push(`            b',' if depth == 0 => count += 1,`);
+  lines.push(`            _ => {}`);
+  lines.push(`        }`);
+  lines.push(`        i += 1;`);
+  lines.push(`    }`);
+  lines.push(`    -1`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn find_json_array_after_key(raw: &str, key: &str) -> Option<usize> {`);
+  lines.push(`    let needle = format!("\\"{}\\"", key);`);
+  lines.push(`    let bytes = raw.as_bytes();`);
+  lines.push(`    let mut i = 0usize;`);
+  lines.push(`    while i + needle.len() <= bytes.len() {`);
+  lines.push(`        if &raw[i..i + needle.len()] == needle {`);
+  lines.push(`            let mut j = i + needle.len();`);
+  lines.push(`            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\\t' || bytes[j] == b'\\n' || bytes[j] == b'\\r') {`);
+  lines.push(`                j += 1;`);
+  lines.push(`            }`);
+  lines.push(`            if j < bytes.len() && bytes[j] == b':' {`);
+  lines.push(`                j += 1;`);
+  lines.push(`                while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\\t' || bytes[j] == b'\\n' || bytes[j] == b'\\r') {`);
+  lines.push(`                    j += 1;`);
+  lines.push(`                }`);
+  lines.push(`                if j < bytes.len() && bytes[j] == b'[' {`);
+  lines.push(`                    return Some(j);`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        i += 1;`);
+  lines.push(`    }`);
+  lines.push(`    None`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn page_len(data: &str) -> i32 {`);
+  lines.push(`    let s = data.trim();`);
+  lines.push(`    if s.is_empty() || s == "null" {`);
+  lines.push(`        return 0;`);
+  lines.push(`    }`);
+  lines.push(`    if s.as_bytes().first() == Some(&b'[') {`);
+  lines.push(`        return json_array_len_at(s, 0);`);
+  lines.push(`    }`);
+  lines.push(`    for key in ["data", "items", "results"] {`);
+  lines.push(`        if let Some(idx) = find_json_array_after_key(s, key) {`);
+  lines.push(`            return json_array_len_at(s, idx);`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(`    -1`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn next_cursor_of(data: &str) -> Option<String> {`);
+  lines.push(`    for key in ["next", "next_cursor", "nextPageToken"] {`);
+  lines.push(`        if let Some(v) = json_string_field(data, key) {`);
+  lines.push(`            if !v.is_empty() {`);
+  lines.push(`                return Some(v);`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(`    None`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn as_i64(v: Option<&String>, fallback: i64) -> i64 {`);
+  lines.push(`    match v {`);
+  lines.push(`        Some(s) => s.trim().parse::<i64>().unwrap_or(fallback),`);
+  lines.push(`        None => fallback,`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`fn clone_args(args: &HashMap<String, String>) -> HashMap<String, String> {`);
+  lines.push(`    args.clone()`);
+  lines.push(`}`);
+  lines.push(``);
+}
+
+function emitRustIterate(lines, op, info, iterName) {
+  const fn = toRustIdent(op.operationId);
+  const rustIter = toRustIdent(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\*\//g, "* /");
+  lines.push(`    /// ${rustIter} ${summary}`);
+  lines.push(`    pub fn ${rustIter}(&self, args: HashMap<String, String>) -> Result<Vec<String>, ApiError> {`);
+  lines.push(`        let mut state = clone_args(&args);`);
+  if (mode === "offset") {
+    lines.push(`        let mut offset = as_i64(state.get(${JSON.stringify(offsetKey)}), 0);`);
+  } else if (mode === "page") {
+    lines.push(`        let mut page = as_i64(state.get(${JSON.stringify(pageKey)}), 1);`);
+    lines.push(`        if page < 1 {`);
+    lines.push(`            page = 1;`);
+    lines.push(`        }`);
+  }
+  lines.push(`        let mut pages: Vec<String> = Vec::new();`);
+  lines.push(`        for _n in 0..1000 {`);
+  lines.push(`            let mut call = clone_args(&state);`);
+  if (mode === "offset") {
+    lines.push(`            call.insert(${JSON.stringify(offsetKey)}.to_string(), offset.to_string());`);
+  } else if (mode === "page") {
+    lines.push(`            call.insert(${JSON.stringify(pageKey)}.to_string(), page.to_string());`);
+  }
+  if (sizeKey) {
+    lines.push(`            let size = as_i64(call.get(${JSON.stringify(sizeKey)}), 0);`);
+  }
+  lines.push(`            let data = self.${fn}(call)?;`);
+  lines.push(`            let ln = page_len(&data);`);
+  lines.push(`            pages.push(data.clone());`);
+  if (sizeKey) {
+    lines.push(`            if data.trim().is_empty() || data.trim() == "null" || ln == 0 || (size > 0 && ln >= 0 && (ln as i64) < size) {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+  } else {
+    lines.push(`            if data.trim().is_empty() || data.trim() == "null" || ln == 0 {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+  }
+  lines.push(`            if let Some(cur) = next_cursor_of(&data) {`);
+  lines.push(`                let prev = state.get(${JSON.stringify(cursorKey)}).cloned().unwrap_or_default();`);
+  lines.push(`                if cur != prev {`);
+  lines.push(`                    state.insert(${JSON.stringify(cursorKey)}.to_string(), cur);`);
+  lines.push(`                    continue;`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  if (mode === "cursor") {
+    lines.push(`            break;`);
+  } else if (mode === "offset") {
+    lines.push(`            if ln < 0 {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+    if (sizeKey) {
+      lines.push(`            let step = if size > 0 { size } else { ln as i64 };`);
+    } else {
+      lines.push(`            let step = ln as i64;`);
+    }
+    lines.push(`            if step <= 0 {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+    lines.push(`            offset += step;`);
+  } else {
+    lines.push(`            if ln < 0 {`);
+    lines.push(`                break;`);
+    lines.push(`            }`);
+    lines.push(`            page += 1;`);
+  }
+  lines.push(`        }`);
+  lines.push(`        Ok(pages)`);
+  lines.push(`    }`);
+  lines.push(``);
+}
+
 /**
  * Minimal Rust HTTP client stub (stdlib only: std::net::TcpStream HTTP/1.1, http:// — no TLS).
  * Compiles with `rustc --crate-type lib client.rs`.
@@ -4863,6 +5095,7 @@ export function toRustIdent(name) {
 export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const safeTitle = String(title || "GeneratedClient").replace(/\*\//g, "* /");
+  const pageable = pageableOps(ops);
   const auth = authFlags(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
@@ -5127,9 +5360,15 @@ export function generateRustClient(ops, title = "GeneratedClient", opts = {}) {
     }
     lines.push(`    }`);
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitRustIterate(lines, op, hit.info, hit.iter);
   }
 
   lines.push(`}`);
+  if (pageable.length) {
+    lines.push(``);
+    emitRustPageRuntime(lines);
+  }
   lines.push(``);
   lines.push(`fn env_timeout_ms() -> u64 {`);
   lines.push(`    if let Ok(raw) = env::var("SDK_TIMEOUT_MS") {`);
@@ -7124,6 +7363,143 @@ export function toSwiftIdent(name) {
   return cleaned;
 }
 
+
+function emitSwiftPageRuntime(lines) {
+  lines.push(`    // Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.`);
+  lines.push(`    private func pageLen(_ data: Any?) -> Int {`);
+  lines.push(`        if let arr = data as? [Any] {`);
+  lines.push(`            return arr.count`);
+  lines.push(`        }`);
+  lines.push(`        if let dict = data as? [String: Any] {`);
+  lines.push(`            for k in ["data", "items", "results"] {`);
+  lines.push(`                if let arr = dict[k] as? [Any] {`);
+  lines.push(`                    return arr.count`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return -1`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private func nextCursorOf(_ data: Any?) -> String? {`);
+  lines.push(`        guard let dict = data as? [String: Any] else {`);
+  lines.push(`            return nil`);
+  lines.push(`        }`);
+  lines.push(`        for k in ["next", "next_cursor", "nextPageToken"] {`);
+  lines.push(`            if let s = dict[k] as? String, !s.isEmpty {`);
+  lines.push(`                return s`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return nil`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private func asInt(_ v: Any?, _ fallback: Int) -> Int {`);
+  lines.push(`        if v == nil {`);
+  lines.push(`            return fallback`);
+  lines.push(`        }`);
+  lines.push(`        if let n = v as? Int {`);
+  lines.push(`            return n`);
+  lines.push(`        }`);
+  lines.push(`        if let n = v as? Int64 {`);
+  lines.push(`            return Int(n)`);
+  lines.push(`        }`);
+  lines.push(`        if let n = v as? Double {`);
+  lines.push(`            return Int(n)`);
+  lines.push(`        }`);
+  lines.push(`        if let s = v as? String, let n = Int(s.trimmingCharacters(in: .whitespacesAndNewlines)) {`);
+  lines.push(`            return n`);
+  lines.push(`        }`);
+  lines.push(`        return fallback`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    private func cloneArgs(_ args: [String: Any]?) -> [String: Any] {`);
+  lines.push(`        var out: [String: Any] = [:]`);
+  lines.push(`        if let args = args {`);
+  lines.push(`            for (k, v) in args {`);
+  lines.push(`                out[k] = v`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        return out`);
+  lines.push(`    }`);
+  lines.push(``);
+}
+
+function emitSwiftIterate(lines, op, info, iterName) {
+  const fn = toSwiftIdent(op.operationId);
+  const swIter = toSwiftIdent(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\*\//g, "* /");
+  lines.push(`    /// ${swIter} ${summary}`);
+  lines.push(`    public func ${swIter}(_ args: [String: Any]? = nil) throws -> [Any?] {`);
+  lines.push(`        var state = cloneArgs(args)`);
+  if (mode === "offset") {
+    lines.push(`        var offset = asInt(state[${JSON.stringify(offsetKey)}], 0)`);
+  } else if (mode === "page") {
+    lines.push(`        var page = asInt(state[${JSON.stringify(pageKey)}], 1)`);
+    lines.push(`        if page < 1 {`);
+    lines.push(`            page = 1`);
+    lines.push(`        }`);
+  }
+  lines.push(`        var pages: [Any?] = []`);
+  lines.push(`        var n = 0`);
+  lines.push(`        while n < 1000 {`);
+  lines.push(`            n += 1`);
+  lines.push(`            var call = cloneArgs(state)`);
+  if (mode === "offset") {
+    lines.push(`            call[${JSON.stringify(offsetKey)}] = offset`);
+  } else if (mode === "page") {
+    lines.push(`            call[${JSON.stringify(pageKey)}] = page`);
+  }
+  lines.push(`            let data = try self.${fn}(call)`);
+  lines.push(`            pages.append(data)`);
+  lines.push(`            let ln = pageLen(data)`);
+  if (sizeKey) {
+    lines.push(`            let size = asInt(call[${JSON.stringify(sizeKey)}], 0)`);
+    lines.push(`            if data == nil || ln == 0 || (size > 0 && ln >= 0 && ln < size) {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+  } else {
+    lines.push(`            if data == nil || ln == 0 {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+  }
+  lines.push(`            if let cur = nextCursorOf(data) {`);
+  lines.push(`                let prev = state[${JSON.stringify(cursorKey)}]`);
+  lines.push(`                if prev == nil || cur != String(describing: prev!) {`);
+  lines.push(`                    state[${JSON.stringify(cursorKey)}] = cur`);
+  lines.push(`                    continue`);
+  lines.push(`                }`);
+  lines.push(`            }`);
+  if (mode === "cursor") {
+    lines.push(`            break`);
+  } else if (mode === "offset") {
+    lines.push(`            if ln < 0 {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+    if (sizeKey) {
+      lines.push(`            let step = size > 0 ? size : ln`);
+    } else {
+      lines.push(`            let step = ln`);
+    }
+    lines.push(`            if step <= 0 {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+    lines.push(`            offset += step`);
+  } else {
+    lines.push(`            if ln < 0 {`);
+    lines.push(`                break`);
+    lines.push(`            }`);
+    lines.push(`            page += 1`);
+  }
+  lines.push(`        }`);
+  lines.push(`        return pages`);
+  lines.push(`    }`);
+  lines.push(``);
+}
+
 /**
  * Minimal Swift HTTP client stub (Foundation URLSession).
  * Single file: `swiftc -typecheck Client.swift` (no SPM / Alamofire).
@@ -7132,6 +7508,7 @@ export function toSwiftIdent(name) {
 export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const safeTitle = String(title || "GeneratedClient").replace(/\*\//g, "* /");
+  const pageable = pageableOps(ops);
   const auth = authFlags(ops);
   const lines = [];
   lines.push(`// Auto-generated by sdk-mcp-gen — do not edit by hand`);
@@ -7387,6 +7764,7 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push(`    }`);
   lines.push(``);
 
+  if (pageable.length) emitSwiftPageRuntime(lines);
   for (const op of ops) {
     const fn = toSwiftIdent(op.operationId);
     const authSuf = swiftAuthArgs(op, auth.any);
@@ -7404,6 +7782,8 @@ export function generateSwiftClient(ops, title = "GeneratedClient", opts = {}) {
     }
     lines.push(`    }`);
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitSwiftIterate(lines, op, hit.info, hit.iter);
   }
 
   lines.push(`}`);
@@ -7433,6 +7813,110 @@ export function toRubyIdent(name) {
   return snake;
 }
 
+
+function emitRubyPageRuntime(lines) {
+  lines.push(`  # Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.`);
+  lines.push(`  def page_len(data)`);
+  lines.push(`    if data.is_a?(Array)`);
+  lines.push(`      return data.length`);
+  lines.push(`    end`);
+  lines.push(`    if data.is_a?(Hash)`);
+  lines.push(`      ["data", "items", "results"].each do |k|`);
+  lines.push(`        v = data[k] || data[k.to_sym]`);
+  lines.push(`        return v.length if v.is_a?(Array)`);
+  lines.push(`      end`);
+  lines.push(`    end`);
+  lines.push(`    -1`);
+  lines.push(`  end`);
+  lines.push(``);
+  lines.push(`  def next_cursor_of(data)`);
+  lines.push(`    return nil unless data.is_a?(Hash)`);
+  lines.push(`    ["next", "next_cursor", "nextPageToken"].each do |k|`);
+  lines.push(`      v = data[k] || data[k.to_sym]`);
+  lines.push(`      return v if v.is_a?(String) && !v.empty?`);
+  lines.push(`    end`);
+  lines.push(`    nil`);
+  lines.push(`  end`);
+  lines.push(``);
+  lines.push(`  def as_int(v, fallback)`);
+  lines.push(`    return fallback if v.nil?`);
+  lines.push(`    Integer(v)`);
+  lines.push(`  rescue ArgumentError, TypeError`);
+  lines.push(`    fallback`);
+  lines.push(`  end`);
+  lines.push(``);
+  lines.push(`  def clone_args(args)`);
+  lines.push(`    out = {}`);
+  lines.push(`    (args || {}).each { |k, v| out[k.to_s] = v }`);
+  lines.push(`    out`);
+  lines.push(`  end`);
+  lines.push(``);
+}
+
+function emitRubyIterate(lines, op, info, iterName) {
+  const fn = toRubyIdent(op.operationId);
+  const rbIter = toRubyIdent(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\r?\n/g, " ").replace(/#/g, "");
+  lines.push(`  # ${rbIter} ${summary}`);
+  lines.push(`  def ${rbIter}(args = nil)`);
+  lines.push(`    state = clone_args(args)`);
+  if (mode === "offset") {
+    lines.push(`    offset = as_int(state[${JSON.stringify(offsetKey)}], 0)`);
+  } else if (mode === "page") {
+    lines.push(`    page = as_int(state[${JSON.stringify(pageKey)}], 1)`);
+    lines.push(`    page = 1 if page < 1`);
+  }
+  lines.push(`    pages = []`);
+  lines.push(`    n = 0`);
+  lines.push(`    while n < 1000`);
+  lines.push(`      n += 1`);
+  lines.push(`      call = clone_args(state)`);
+  if (mode === "offset") {
+    lines.push(`      call[${JSON.stringify(offsetKey)}] = offset`);
+  } else if (mode === "page") {
+    lines.push(`      call[${JSON.stringify(pageKey)}] = page`);
+  }
+  lines.push(`      data = ${fn}(call)`);
+  lines.push(`      pages << data`);
+  lines.push(`      ln = page_len(data)`);
+  if (sizeKey) {
+    lines.push(`      size = as_int(call[${JSON.stringify(sizeKey)}], 0)`);
+    lines.push(`      break if data.nil? || ln == 0 || (size > 0 && ln >= 0 && ln < size)`);
+  } else {
+    lines.push(`      break if data.nil? || ln == 0`);
+  }
+  lines.push(`      cur = next_cursor_of(data)`);
+  lines.push(`      prev = state[${JSON.stringify(cursorKey)}]`);
+  lines.push(`      if cur && (prev.nil? || cur != prev.to_s)`);
+  lines.push(`        state[${JSON.stringify(cursorKey)}] = cur`);
+  lines.push(`        next`);
+  lines.push(`      end`);
+  if (mode === "cursor") {
+    lines.push(`      break`);
+  } else if (mode === "offset") {
+    lines.push(`      break if ln < 0`);
+    if (sizeKey) {
+      lines.push(`      step = size > 0 ? size : ln`);
+    } else {
+      lines.push(`      step = ln`);
+    }
+    lines.push(`      break if step <= 0`);
+    lines.push(`      offset += step`);
+  } else {
+    lines.push(`      break if ln < 0`);
+    lines.push(`      page += 1`);
+  }
+  lines.push(`    end`);
+  lines.push(`    pages`);
+  lines.push(`  end`);
+  lines.push(``);
+}
+
 /**
  * Minimal Ruby HTTP client stub (stdlib Net::HTTP).
  * Single file: `ruby -c client.rb` (no gems / httparty / faraday).
@@ -7441,6 +7925,7 @@ export function toRubyIdent(name) {
 export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const safeTitle = String(title || "GeneratedClient").replace(/\r?\n/g, " ");
+  const pageable = pageableOps(ops);
   const auth = authFlags(ops);
   const lines = [];
   lines.push(`# Auto-generated by sdk-mcp-gen — do not edit by hand`);
@@ -7554,9 +8039,12 @@ export function generateRubyClient(ops, title = "GeneratedClient", opts = {}) {
     }
     lines.push(`  end`);
     lines.push(``);
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitRubyIterate(lines, op, hit.info, hit.iter);
   }
 
   lines.push(`  private`);
+  if (pageable.length) emitRubyPageRuntime(lines);
   lines.push(``);
   lines.push(`  def self.env_timeout_ms`);
   lines.push(`    raw_ms = ENV["SDK_TIMEOUT_MS"]`);
@@ -7766,6 +8254,140 @@ function phpQuote(s) {
   return "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
 }
 
+
+function emitPhpPageRuntime(lines) {
+  lines.push("    // Page helper: GET page/pageSize/offset/limit/cursor/starting_after. Follow next/next_cursor/nextPageToken or increment page. Cap 1000. Not a Stainless pager.");
+  lines.push("    private static function pageLen($data) {");
+  lines.push("        if (is_array($data)) {");
+  lines.push("            $isList = true;");
+  lines.push("            $i = 0;");
+  lines.push("            foreach ($data as $k => $_) {");
+  lines.push("                if ($k !== $i) { $isList = false; break; }");
+  lines.push("                $i++;");
+  lines.push("            }");
+  lines.push("            if ($isList) {");
+  lines.push("                return count($data);");
+  lines.push("            }");
+  lines.push("            foreach (array(\"data\", \"items\", \"results\") as $k) {");
+  lines.push("                if (isset($data[$k]) && is_array($data[$k])) {");
+  lines.push("                    return count($data[$k]);");
+  lines.push("                }");
+  lines.push("            }");
+  lines.push("        }");
+  lines.push("        return -1;");
+  lines.push("    }");
+  lines.push("");
+  lines.push("    private static function nextCursorOf($data) {");
+  lines.push("        if (!is_array($data)) {");
+  lines.push("            return null;");
+  lines.push("        }");
+  lines.push("        foreach (array(\"next\", \"next_cursor\", \"nextPageToken\") as $k) {");
+  lines.push("            if (isset($data[$k]) && is_string($data[$k]) && $data[$k] !== \"\") {");
+  lines.push("                return $data[$k];");
+  lines.push("            }");
+  lines.push("        }");
+  lines.push("        return null;");
+  lines.push("    }");
+  lines.push("");
+  lines.push("    private static function asInt($v, $fallback) {");
+  lines.push("        if ($v === null) {");
+  lines.push("            return $fallback;");
+  lines.push("        }");
+  lines.push("        if (is_int($v)) {");
+  lines.push("            return $v;");
+  lines.push("        }");
+  lines.push("        if (is_float($v) || is_numeric($v)) {");
+  lines.push("            return intval($v);");
+  lines.push("        }");
+  lines.push("        return $fallback;");
+  lines.push("    }");
+  lines.push("");
+  lines.push("    private static function cloneArgs($args) {");
+  lines.push("        $out = array();");
+  lines.push("        if (is_array($args)) {");
+  lines.push("            foreach ($args as $k => $v) {");
+  lines.push("                $out[(string) $k] = $v;");
+  lines.push("            }");
+  lines.push("        }");
+  lines.push("        return $out;");
+  lines.push("    }");
+  lines.push("");
+}
+
+function emitPhpIterate(lines, op, info, iterName) {
+  const fn = toPhpIdent(op.operationId);
+  const phpIter = toPhpIdent(iterName);
+  const mode = info.mode;
+  const sizeKey = info.sizeParam;
+  const cursorKey = info.cursorParam || "cursor";
+  const pageKey = info.pageParam || "page";
+  const offsetKey = info.offsetParam || "offset";
+  const summary = `walks pages for ${op.operationId} (page/cursor; cap 1000). Not a full pager.`.replace(/\*\//g, "* /");
+  lines.push("    /** " + phpIter + " " + summary + " */");
+  lines.push("    public function " + phpIter + "($args = null) {");
+  lines.push("        $state = self::cloneArgs($args);");
+  if (mode === "offset") {
+    lines.push("        $offset = self::asInt(isset($state[" + JSON.stringify(offsetKey) + "]) ? $state[" + JSON.stringify(offsetKey) + "] : null, 0);");
+  } else if (mode === "page") {
+    lines.push("        $page = self::asInt(isset($state[" + JSON.stringify(pageKey) + "]) ? $state[" + JSON.stringify(pageKey) + "] : null, 1);");
+    lines.push("        if ($page < 1) {");
+    lines.push("            $page = 1;");
+    lines.push("        }");
+  }
+  lines.push("        $pages = array();");
+  lines.push("        for ($n = 0; $n < 1000; $n++) {");
+  lines.push("            $call = self::cloneArgs($state);");
+  if (mode === "offset") {
+    lines.push("            $call[" + JSON.stringify(offsetKey) + "] = $offset;");
+  } else if (mode === "page") {
+    lines.push("            $call[" + JSON.stringify(pageKey) + "] = $page;");
+  }
+  lines.push("            $data = $this->" + fn + "($call);");
+  lines.push("            $pages[] = $data;");
+  lines.push("            $ln = self::pageLen($data);");
+  if (sizeKey) {
+    lines.push("            $size = self::asInt(isset($call[" + JSON.stringify(sizeKey) + "]) ? $call[" + JSON.stringify(sizeKey) + "] : null, 0);");
+    lines.push("            if ($data === null || $ln === 0 || ($size > 0 && $ln >= 0 && $ln < $size)) {");
+    lines.push("                break;");
+    lines.push("            }");
+  } else {
+    lines.push("            if ($data === null || $ln === 0) {");
+    lines.push("                break;");
+    lines.push("            }");
+  }
+  lines.push("            $cur = self::nextCursorOf($data);");
+  lines.push("            $prev = isset($state[" + JSON.stringify(cursorKey) + "]) ? $state[" + JSON.stringify(cursorKey) + "] : null;");
+  lines.push("            if ($cur !== null && ($prev === null || $cur !== (string) $prev)) {");
+  lines.push("                $state[" + JSON.stringify(cursorKey) + "] = $cur;");
+  lines.push("                continue;");
+  lines.push("            }");
+  if (mode === "cursor") {
+    lines.push("            break;");
+  } else if (mode === "offset") {
+    lines.push("            if ($ln < 0) {");
+    lines.push("                break;");
+    lines.push("            }");
+    if (sizeKey) {
+      lines.push("            $step = $size > 0 ? $size : $ln;");
+    } else {
+      lines.push("            $step = $ln;");
+    }
+    lines.push("            if ($step <= 0) {");
+    lines.push("                break;");
+    lines.push("            }");
+    lines.push("            $offset += $step;");
+  } else {
+    lines.push("            if ($ln < 0) {");
+    lines.push("                break;");
+    lines.push("            }");
+    lines.push("            $page += 1;");
+  }
+  lines.push("        }");
+  lines.push("        return $pages;");
+  lines.push("    }");
+  lines.push("");
+}
+
 /**
  * Minimal PHP HTTP client stub (stdlib fopen / stream wrappers; curl-extension-free).
  * Single file: `php -l Client.php`.
@@ -7774,6 +8396,7 @@ function phpQuote(s) {
 export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   const pkg = pkgFromOpts(opts);
   const safeTitle = String(title || "GeneratedClient").replace(/\r?\n/g, " ").replace(/\*\//g, "* /");
+  const pageable = pageableOps(ops);
   const auth = authFlags(ops);
   const lines = [];
   lines.push("<?php");
@@ -7932,6 +8555,7 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
   lines.push("    }");
   lines.push("");
 
+  if (pageable.length) emitPhpPageRuntime(lines);
   for (const op of ops) {
     const fn = toPhpIdent(op.operationId);
     const authSuf = phpAuthArgs(op, auth.any);
@@ -7954,6 +8578,8 @@ export function generatePhpClient(ops, title = "GeneratedClient", opts = {}) {
     }
     lines.push("    }");
     lines.push("");
+    const hit = pageable.find((p) => p.op === op);
+    if (hit) emitPhpIterate(lines, op, hit.info, hit.iter);
   }
 
   const reqSig = auth.any
@@ -8146,7 +8772,7 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     files.push(`- \`Client.java\` — Java HTTP client stub (stdlib HttpURLConnection, package ${pkg.ident}; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("rust") || langSet.has("rs")) {
-    files.push(`- \`client.rs\` — Rust HTTP/1.1 client stub (stdlib TcpStream, http:// only; 429/5xx retry, per-attempt timeout, per-op auth)`);
+    files.push(`- \`client.rs\` — Rust HTTP/1.1 client stub (stdlib TcpStream, http:// only; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("csharp") || langSet.has("cs") || langSet.has("c#")) {
     files.push(`- \`Client.cs\` — C# HTTP client stub (stdlib HttpClient, namespace ${pkg.pascal}; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
@@ -8155,13 +8781,13 @@ export function generateReadmeSnippet(ops, outDir, langs = ["ts", "python", "go"
     files.push(`- \`Client.kt\` — Kotlin HTTP client stub (stdlib HttpURLConnection, package ${pkg.ident}; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("swift")) {
-    files.push(`- \`Client.swift\` — Swift HTTP client stub (Foundation URLSession, class Client; 429/5xx retry, per-attempt timeout, per-op auth)`);
+    files.push(`- \`Client.swift\` — Swift HTTP client stub (Foundation URLSession, class Client; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("ruby") || langSet.has("rb")) {
-    files.push(`- \`client.rb\` — Ruby HTTP client stub (stdlib Net::HTTP, class Client; 429/5xx retry, per-attempt timeout, per-op auth)`);
+    files.push(`- \`client.rb\` — Ruby HTTP client stub (stdlib Net::HTTP, class Client; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   if (langSet.has("php")) {
-    files.push(`- \`Client.php\` — PHP HTTP client stub (stdlib fopen/stream, class Client; 429/5xx retry, per-attempt timeout, per-op auth)`);
+    files.push(`- \`Client.php\` — PHP HTTP client stub (stdlib fopen/stream, class Client; 429/5xx retry, per-attempt timeout, per-op auth, iterate* page helpers)`);
   }
   files.push(`- \`mcp-tools.json\` — MCP tools list`);
   if (mcp) {
