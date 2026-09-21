@@ -3,7 +3,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PORT="${PORT:-8787}"
-UPSTREAM_PORT="${UPSTREAM_PORT:-8790}"
+# Mock-upstream port: auto-pick a free ephemeral port unless UPSTREAM_PORT is
+# set. The old fixed default 8790 collided with other listeners on shared/CI
+# hosts (e.g. sand-egress-tun; F cn-work-agent also serves on 8790), so the
+# mock upstream failed to bind and /health reported upstream.connected=false.
+# The single $UPSTREAM_PORT value feeds the mock upstream, the gateway policy
+# upstream.baseUrl, and the health waits below, so they stay consistent.
+if [ -z "${UPSTREAM_PORT:-}" ]; then
+  UPSTREAM_PORT="$(node --input-type=module -e '
+import net from "node:net";
+const s = net.createServer();
+s.listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); });
+')"
+fi
+echo "upstream_port=$UPSTREAM_PORT"
 WH_PORT="${WH_PORT:-8792}"
 WH_OUT="$ROOT/data/webhook-last.json"
 WH_HDR="$ROOT/data/webhook-last.headers.json"
@@ -83,9 +96,14 @@ cleanup() {
 trap cleanup EXIT
 
 for i in $(seq 1 50); do
-  if curl -sf "http://127.0.0.1:$UPSTREAM_PORT/health" >/dev/null \
-     && curl -sf "http://127.0.0.1:$WH_PORT/health" >/dev/null \
-     && curl -sf "http://127.0.0.1:$PORT/health" >/dev/null; then
+  if ! kill -0 "$UP_PID" 2>/dev/null; then
+    echo "mock-upstream exited early (port $UPSTREAM_PORT already in use?)" >&2
+    cat "$ROOT/data/mock-upstream.log" >&2 || true
+    exit 1
+  fi
+  if curl -sf --max-time 2 "http://127.0.0.1:$UPSTREAM_PORT/health" >/dev/null \
+     && curl -sf --max-time 2 "http://127.0.0.1:$WH_PORT/health" >/dev/null \
+     && curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null; then
     break
   fi
   sleep 0.1

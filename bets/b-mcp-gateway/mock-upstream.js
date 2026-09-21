@@ -177,6 +177,8 @@ if (stdio) {
     }
   });
   server.listen(port, host, () => {
-    console.log("mock-upstream listening on http://" + host + ":" + port + (delayMs > 0 ? " delayMs=" + delayMs : ""));
+    // Report the bound port so --port 0 (OS-assigned free port) is usable.
+    const actualPort = server.address().port;
+    console.log("mock-upstream listening on http://" + host + ":" + actualPort + (delayMs > 0 ? " delayMs=" + delayMs : ""));
   });
 }
