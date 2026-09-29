@@ -33,6 +33,13 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 
 - [x] Dry-run registry-pack for generated mcp-server.mjs (local server.json + wrapper tarball layout; smoke registry-pack-ok; never POSTs; human still publishes)
 
+- [x] `check --format gha|md|text` (annotations alias → gha; CI ::error for REMOVED tools / missing client exports; md for $GITHUB_STEP_SUMMARY; smoke check-gha-ok)
+- [x] `check --format html` (self-contained HTML drift report; inline CSS; no CDN; smoke check-html-ok)
+- [x] `check --format sarif` (SARIF 2.1.0 OpenAPI/MCP drift for GitHub code scanning upload; smoke check-sarif-ok)
+- [x] `check --format json` (machine-readable OpenAPI/MCP drift for CI/jq; smoke check-json-ok)
+- [x] `check --format junit` (JUnit XML OpenAPI/MCP drift for Actions/Jenkins/GitLab; smoke check-junit-ok)
+- [x] `check --format tap` (TAP version 13 OpenAPI/MCP drift; empty → 1..0; # escaped; smoke check-tap-ok)
+
 ## Still open
 
 - [ ] Human upload of @oss-cash-lab/sdk-mcp-gen (needs org / access)
