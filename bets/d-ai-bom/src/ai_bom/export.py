@@ -9,6 +9,8 @@ SPDX 3 (`spdx3`) is a compact 3.0.1 JSON document from the same scan fields (sof
 Markdown (`md`) is a human/Slack summary of summary counts — not another SBOM spec.
 GHA (`gha` / `annotations`) is GitHub Actions workflow commands (`::error` / `::notice`) — not an SBOM spec.
 HTML (`html`) is a self-contained BOM summary (stdlib `html.escape`, inline CSS, no CDN) — not an SBOM spec.
+JUnit (`junit`) is a single `<testsuite name="ai-bom-gate">` for Actions/Jenkins/GitLab — not an SBOM spec.
+TAP (`tap`) is TAP version 13 gate stream for harnesses that ingest TAP — not an SBOM spec.
 """
 from __future__ import annotations
 
@@ -22,10 +24,10 @@ from urllib.parse import quote
 
 from ai_bom import __version__
 
-FORMATS = ("json", "cyclonedx", "spdx", "sarif", "cyclonedx-xml", "spdx-xml", "spdx3", "md", "gha", "html")
+FORMATS = ("json", "cyclonedx", "spdx", "sarif", "cyclonedx-xml", "spdx-xml", "spdx3", "md", "gha", "html", "junit", "tap")
 DEFAULT_FORMAT = "json"
 FORMAT_ALIASES = {"cdx-xml": "cyclonedx-xml", "spdxxml": "spdx-xml", "spdx-3": "spdx3", "markdown": "md", "annotations": "gha"}
-FORMATS_HELP = "json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html"
+FORMATS_HELP = "json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html|junit|tap"
 FORMAT_CHOICES = (*FORMATS, *FORMAT_ALIASES)
 
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
@@ -35,6 +37,8 @@ SPDX_XML_CONTENT_TYPE = "application/spdx+xml; charset=utf-8"
 MD_CONTENT_TYPE = "text/markdown; charset=utf-8"
 GHA_CONTENT_TYPE = "text/plain; charset=utf-8"
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
+JUNIT_CONTENT_TYPE = "application/xml; charset=utf-8"
+TAP_CONTENT_TYPE = "text/plain; charset=utf-8"
 CDX_XMLNS = "http://cyclonedx.org/schema/bom/1.7"
 
 CDX_SPEC_VERSION = "1.7"
@@ -61,7 +65,7 @@ _CDX_TYPE = {
 
 
 def normalize_format(raw: str | None) -> str | None:
-    """Return json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html. Empty/None → json. Unknown → None."""
+    """Return json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html|junit|tap. Empty/None → json. Unknown → None."""
     if raw is None:
         return DEFAULT_FORMAT
     s = str(raw).strip().lower()
@@ -683,6 +687,10 @@ def content_type_for(fmt: str | None = DEFAULT_FORMAT) -> str:
         return GHA_CONTENT_TYPE
     if kind == "html":
         return HTML_CONTENT_TYPE
+    if kind == "junit":
+        return JUNIT_CONTENT_TYPE
+    if kind == "tap":
+        return TAP_CONTENT_TYPE
     return JSON_CONTENT_TYPE
 
 
@@ -1263,6 +1271,8 @@ def to_html(bom: dict[str, Any], *, watch: bool = False, include_nav: bool = Fal
   <a href="/v1/bom.md">md</a>
   <a href="/v1/bom.gha.txt">gha</a>
   <a href="/v1/bom.html">html</a>
+  <a href="/v1/bom.junit.xml">junit</a>
+  <a href="/v1/bom.tap.txt">tap</a>
   <a href="/v1/policy">v1/policy</a>
   <a href="/v1/config">v1/config</a>
   <a href="/evidence.md">evidence.md</a>
@@ -1321,8 +1331,127 @@ Policy: <code>{policy_label}</code></p>
 """
 
 
+
+def _junit_escape(text: Any) -> str:
+    """Escape JUnit XML attribute/text (`& < > " '`).
+
+    Uses stdlib `html.escape(..., quote=True)` (Python 3.13+ emits `&#x27;` for `'`).
+    """
+    s = _xml_escape(text)
+    if "'" in s:
+        s = s.replace("'", "&#39;")
+    return s
+
+
+def to_junit(bom: dict[str, Any]) -> str:
+    """JUnit XML gate report for policy / license / advisory hits.
+
+    Single `<testsuite name="ai-bom-gate">` (Actions / Jenkins / GitLab ingest).
+    Policy hit / disclosure gap → classname=`policy`; forbidden license → `license`;
+    advisory hit (observed `--advisories`) → `advisory`. Clean scan → empty suite
+    tests="0" failures="0" errors="0" (no fake pass). Same summary sources as
+    `to_gha` plus `summary.advisoryHits` when present. Does not invent CVEs.
+    Exit codes stay with `--strict` / `--gate-*`; format only changes stdout.
+    """
+    summary = bom.get("summary") or {}
+    forbidden = [h for h in (summary.get("forbidden") or []) if isinstance(h, dict)]
+    gaps = [g for g in (summary.get("disclosureGaps") or []) if isinstance(g, dict)]
+    forbidden_licenses = [
+        h for h in (summary.get("forbiddenLicenses") or []) if isinstance(h, dict)
+    ]
+    advisories = [a for a in (summary.get("advisoryHits") or []) if isinstance(a, dict)]
+
+    cases: list[tuple[str, str, str]] = []
+    for h in forbidden:
+        name = _md_component_label(h) or "component"
+        rule = h.get("pattern") or h.get("id") or "forbidden"
+        cases.append(("policy", str(name), str(rule)))
+    for g in gaps:
+        rid = str(g.get("id") or g.get("check") or "gap")
+        cases.append(("policy", rid, f"disclosure/{rid}"))
+    for h in forbidden_licenses:
+        name = _md_component_label(h) or str(h.get("component") or "component")
+        lid = h.get("licenseId") or "UNKNOWN"
+        cases.append(("license", str(name), str(lid)))
+    for a in advisories:
+        name = (
+            str(a.get("component") or "").strip()
+            or _md_component_label(a)
+            or "component"
+        )
+        msg = str(a.get("id") or a.get("summary") or "advisory")
+        cases.append(("advisory", name, msg))
+
+    n = len(cases)
+    lines = [
+        f'<testsuite name="ai-bom-gate" tests="{n}" failures="{n}" errors="0" time="0">',
+    ]
+    for classname, name, message in cases:
+        cn = _junit_escape(classname)
+        nm = _junit_escape(name)
+        msg = _junit_escape(message)
+        lines.append(f'  <testcase classname="{cn}" name="{nm}" time="0">')
+        lines.append(f'    <failure message="{msg}">{msg}</failure>')
+        lines.append("  </testcase>")
+    lines.append("</testsuite>")
+    return "\n".join(lines) + "\n"
+
+
+
+def _tap_escape(text: Any) -> str:
+    """Keep TAP descriptions/diagnostics from becoming comments (`#`) or wrapping."""
+    s = "" if text is None else str(text)
+    s = s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    return s.replace("#", "\\#")
+
+
+def to_tap(bom: dict[str, Any]) -> str:
+    """TAP version 13 gate report for policy / license / advisory hits.
+
+    Same hit sources as `to_junit`: policy hit / disclosure gap → `policy/<id>`;
+    forbidden license → `license/<component>`; advisory hit → `advisory/<component>`.
+    Clean scan → empty plan `1..0` (no fake passes).
+    `#` in descriptions/diagnostics escaped. Exit codes stay with
+    `--strict` / `--gate-*`; format only changes stdout. Not an SBOM spec.
+    """
+    summary = bom.get("summary") or {}
+    forbidden = [h for h in (summary.get("forbidden") or []) if isinstance(h, dict)]
+    gaps = [g for g in (summary.get("disclosureGaps") or []) if isinstance(g, dict)]
+    forbidden_licenses = [
+        h for h in (summary.get("forbiddenLicenses") or []) if isinstance(h, dict)
+    ]
+    advisories = [a for a in (summary.get("advisoryHits") or []) if isinstance(a, dict)]
+
+    cases: list[tuple[str, str]] = []
+    for h in forbidden:
+        name = _md_component_label(h) or "component"
+        rule = h.get("pattern") or h.get("id") or "forbidden"
+        cases.append((f"policy/{name}", str(rule)))
+    for g in gaps:
+        rid = str(g.get("id") or g.get("check") or "gap")
+        cases.append((f"policy/{rid}", f"disclosure/{rid}"))
+    for h in forbidden_licenses:
+        name = _md_component_label(h) or str(h.get("component") or "component")
+        lid = h.get("licenseId") or "UNKNOWN"
+        cases.append((f"license/{name}", str(lid)))
+    for a in advisories:
+        name = (
+            str(a.get("component") or "").strip()
+            or _md_component_label(a)
+            or "component"
+        )
+        msg = str(a.get("id") or a.get("summary") or "advisory")
+        cases.append((f"advisory/{name}", msg))
+
+    n = len(cases)
+    lines = ["TAP version 13", f"1..{n}"]
+    for i, (desc, message) in enumerate(cases, start=1):
+        lines.append(f"not ok {i} - {_tap_escape(desc)}")
+        lines.append(f"# {_tap_escape(message)}")
+    return "\n".join(lines) + "\n"
+
 def dumps_export(bom: dict[str, Any], fmt: str | None = DEFAULT_FORMAT) -> str:
-    """Serialize BOM as json (internal), cyclonedx, cyclonedx-xml, spdx, spdx-xml, spdx3, sarif, md, gha, or html. Raises ValueError on bad fmt."""
+    """Serialize BOM as json (internal), cyclonedx, cyclonedx-xml, spdx, spdx-xml, spdx3, sarif, md, gha, html, junit, or tap. Raises ValueError on bad fmt."""
     kind = normalize_format(fmt)
     if kind is None:
         raise ValueError(f"unsupported format (use {FORMATS_HELP})")
@@ -1346,6 +1475,10 @@ def dumps_export(bom: dict[str, Any], fmt: str | None = DEFAULT_FORMAT) -> str:
         return to_gha(bom)
     if kind == "html":
         return to_html(bom)
+    if kind == "junit":
+        return to_junit(bom)
+    if kind == "tap":
+        return to_tap(bom)
     from ai_bom.scanner import dumps_bom
 
     return dumps_bom(bom)

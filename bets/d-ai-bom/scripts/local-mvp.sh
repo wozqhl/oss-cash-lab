@@ -1515,6 +1515,54 @@ assert "AI-BOM" in html
 print("http ?format=html ok")
 PYHTMLQ
 
+echo "==> GET /v1/bom.junit.xml and ?format=junit (JUnit gate report)"
+JUNIT_CODE="$(curl -s -o out/serve-bom.junit.xml -D out/serve-bom-junit.h -w "%{http_code}" \
+  "http://127.0.0.1:$PORT/v1/bom.junit.xml")"
+echo "v1_bom_junit_status=$JUNIT_CODE"
+test "$JUNIT_CODE" = "200"
+grep -qiE '^content-type:.*xml' out/serve-bom-junit.h
+python3 - <<"PYJUNITHTTP"
+from pathlib import Path
+xml = Path("out/serve-bom.junit.xml").read_text()
+assert 'name="ai-bom-gate"' in xml, xml[:400]
+print("http /v1/bom.junit.xml ok")
+PYJUNITHTTP
+JUNIT_Q="$(curl -s -o out/serve-bom-junit-q.xml -D out/serve-bom-junit-q.h -w "%{http_code}" \
+  "http://127.0.0.1:$PORT/v1/bom?format=junit")"
+echo "v1_bom_junit_query_status=$JUNIT_Q"
+test "$JUNIT_Q" = "200"
+grep -qiE '^content-type:.*xml' out/serve-bom-junit-q.h
+python3 - <<"PYJUNITQ"
+from pathlib import Path
+xml = Path("out/serve-bom-junit-q.xml").read_text()
+assert 'name="ai-bom-gate"' in xml
+print("http ?format=junit ok")
+PYJUNITQ
+
+echo "==> GET /v1/bom.tap.txt and ?format=tap (TAP13 gate report)"
+TAP_CODE="$(curl -s -o out/serve-bom.tap.txt -D out/serve-bom-tap.h -w "%{http_code}" \
+  "http://127.0.0.1:$PORT/v1/bom.tap.txt")"
+echo "v1_bom_tap_status=$TAP_CODE"
+test "$TAP_CODE" = "200"
+grep -qiE '^content-type:.*text/plain' out/serve-bom-tap.h
+python3 - <<"PYTAPHTTP"
+from pathlib import Path
+body = Path("out/serve-bom.tap.txt").read_text()
+assert body.startswith("TAP version 13"), body[:400]
+print("http /v1/bom.tap.txt ok")
+PYTAPHTTP
+TAP_Q="$(curl -s -o out/serve-bom-tap-q.txt -D out/serve-bom-tap-q.h -w "%{http_code}" \
+  "http://127.0.0.1:$PORT/v1/bom?format=tap")"
+echo "v1_bom_tap_query_status=$TAP_Q"
+test "$TAP_Q" = "200"
+grep -qiE '^content-type:.*text/plain' out/serve-bom-tap-q.h
+python3 - <<"PYTAPQ"
+from pathlib import Path
+body = Path("out/serve-bom-tap-q.txt").read_text()
+assert "TAP version 13" in body
+print("http ?format=tap ok")
+PYTAPQ
+
 echo "==> GET /v1/policy (active license/policy gate; no file dump)"
 POL_CODE="$(curl -s -o out/serve-policy.json -D out/serve-policy.h -w "%{http_code}"   "http://127.0.0.1:$PORT/v1/policy" -H "X-Request-Id: mvp-policy-rid-d1")"
 echo "v1_policy_status=$POL_CODE"
@@ -1676,7 +1724,7 @@ from pathlib import Path
 spec = json.loads(Path("out/serve-openapi.json").read_text(encoding="utf-8"))
 assert str(spec.get("openapi") or "").startswith("3."), spec.get("openapi")
 paths = spec.get("paths") or {}
-need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/clock.json", "/clock", "/clock.md", "/clock.html", "/clock.ics", "/v1/clock", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
+need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/v1/bom.junit.xml", "/v1/bom.tap.txt", "/clock.json", "/clock", "/clock.md", "/clock.html", "/clock.ics", "/v1/clock", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
 missing = [p for p in need if p not in paths]
 assert not missing, missing
 assert "get" in (paths.get("/health") or {})
@@ -1697,6 +1745,10 @@ assert "get" in (paths.get("/v1/bom.gha.txt") or {})
 assert ((paths.get("/v1/bom.gha.txt") or {}).get("get") or {}).get("operationId") == "getBomGha"
 assert "get" in (paths.get("/v1/bom.html") or {})
 assert ((paths.get("/v1/bom.html") or {}).get("get") or {}).get("operationId") == "getBomHtml"
+assert "get" in (paths.get("/v1/bom.junit.xml") or {})
+assert ((paths.get("/v1/bom.junit.xml") or {}).get("get") or {}).get("operationId") == "getBomJunit"
+assert "get" in (paths.get("/v1/bom.tap.txt") or {})
+assert ((paths.get("/v1/bom.tap.txt") or {}).get("get") or {}).get("operationId") == "getBomTap"
 assert "get" in (paths.get("/v1/policy") or {})
 assert ((paths.get("/v1/policy") or {}).get("get") or {}).get("operationId") == "getPolicy"
 assert "get" in (paths.get("/v1/config") or {})
@@ -1711,7 +1763,7 @@ assert "ExceptionInventory" in ((spec.get("components") or {}).get("schemas") or
 params = (spec.get("components") or {}).get("parameters") or {}
 assert "BomFormat" in params, params
 enum = ((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or []
-assert "sarif" in enum and "json" in enum and "cyclonedx" in enum and "cyclonedx-xml" in enum and "spdx" in enum and "spdx-xml" in enum and "spdx3" in enum and "md" in enum and "gha" in enum and "html" in enum, enum
+assert "sarif" in enum and "json" in enum and "cyclonedx" in enum and "cyclonedx-xml" in enum and "spdx" in enum and "spdx-xml" in enum and "spdx3" in enum and "md" in enum and "gha" in enum and "html" in enum and "junit" in enum and "tap" in enum, enum
 assert "get" in (paths.get("/evidence.md") or {})
 assert "get" in (paths.get("/") or {})
 assert "get" in (paths.get("/metrics") or {})

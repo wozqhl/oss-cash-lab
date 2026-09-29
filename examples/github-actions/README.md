@@ -94,6 +94,8 @@ Typical consumer:
 
 This job (petstore fixture, happy path): `node src/cli.js generate examples/petstore.openapi.json --out sdk` then `node src/cli.js generate examples/petstore.openapi.json --out sdk-new --check-baseline sdk` → exit 0.
 
+Optional (commented in the YAML): `--format gha` annotations, `--format md` → `$GITHUB_STEP_SUMMARY`, `--format html > drift.html`, `--format sarif > drift.sarif` plus optional `github/codeql-action/upload-sarif@v3` (consumer code scanning only; not a live workflow here), `--format json > drift.json` for jq, and `--format junit > drift.junit.xml` plus optional `actions/upload-artifact` (Actions/Jenkins/GitLab ingest).
+
 Thin composite: [`sdk-mcp-gen-check/action.yml`](./sdk-mcp-gen-check/action.yml) (run CLI `generate --check-baseline`).
 
 ## C · JUnit
@@ -150,7 +152,7 @@ Thin composite: [`ai-bom-clock/action.yml`](./ai-bom-clock/action.yml) (optional
 2. `node src/cli.js report --in examples/spans.json --format md >> "$GITHUB_STEP_SUMMARY"`
 3. `node src/cli.js report --in examples/spans.json --format md --out costs.md` then `actions/upload-artifact@v4`
 
-That is the simplest green path. Commented in the YAML: `--budget policies/budget.json` (exit 1 + `::error title=budget::`) and `--tenant-budget acme=0.0001` (`::error title=tenant/acme::`, exit 0). Fixture: E [`examples/spans.json`](../../bets/e-otel-ai-cost/examples/spans.json) (one span `tenant=acme`).
+That is the simplest green path. Commented in the YAML: `--budget policies/budget.json` (exit 1 + `::error title=budget::`), `--tenant-budget acme=0.0001` (`::error title=tenant/acme::`, exit 0), and optional `--format junit > costs.junit.xml` + `upload-artifact` (budget gate suite `otel-ai-cost-budget`; empty when clean). Optional `--format tap > costs.tap.txt` (TAP13; empty `1..0` when clean). Fixture: E [`examples/spans.json`](../../bets/e-otel-ai-cost/examples/spans.json) (one span `tenant=acme`).
 
 Thin composite: [`otel-ai-cost-gha/action.yml`](./otel-ai-cost-gha/action.yml) (run CLI `--format gha`).
 

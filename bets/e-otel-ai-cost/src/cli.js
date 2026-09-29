@@ -14,6 +14,8 @@ import {
   formatCsv,
   formatMd,
   formatGha,
+  formatJunit,
+  formatTap,
   toDailyJson,
   filterSpans,
   loadPolicy,
@@ -149,7 +151,7 @@ Usage:
   otel-ai-cost demo
   otel-ai-cost report --in spans.json [--html out/report.html] [--budget policies/budget.json]
                      [--tenant-budget acme=10,other=5] [--webhook-url URL] [--webhook-secret SECRET]
-                     [--group-by day] [--out out/daily.json] [--format csv|json|html|md|gha]
+                     [--group-by day] [--out out/daily.json] [--format csv|json|html|md|gha|junit|tap]
   otel-ai-cost check-budget --in spans.json --budget policies/budget.json [--tenant-budget acme=10]
                      [--webhook-url URL] [--webhook-secret SECRET]
   otel-ai-cost filter --in spans.json --out out/filtered.json [--sample 0.5] [--redact] [--policy policies/redact-basic.json]
@@ -794,6 +796,96 @@ if (cmd === "--version" || cmd === "-V") {
     console.error("smoke gha annotations failed", { ghaNone, ghaTenant, ghaGlobal, ghaBoth, ghaPct, ghaEmpty });
     process.exit(1);
   }
+  // report --format junit (JUnit XML budget gate; align A/D)
+  const junitNone = formatJunit(r);
+  const junitTenant = formatJunit(tbHigh);
+  const junitGlobal = formatJunit(r, { budget: { maxTotalUsd: 0.000001 } });
+  const junitBoth = formatJunit(tbHigh, { budget: { maxTotalUsd: 0.000001 } });
+  const junitEmpty = formatJunit(report([]));
+  const junitEsc = formatJunit({
+    totalUsd: 1,
+    budgetBreaches: [{ tenant: "a&b<c>'\"", usd: 1, budget: 0.1 }],
+  });
+  const junitOk =
+    junitNone.includes('<testsuite name="otel-ai-cost-budget"') &&
+    junitNone.includes('tests="0"') &&
+    junitNone.includes('failures="0"') &&
+    junitNone.includes('errors="0"') &&
+    !junitNone.includes("<failure") &&
+    junitEmpty.includes('tests="0"') &&
+    !junitEmpty.includes("<failure") &&
+    junitTenant.includes("<failure") &&
+    junitTenant.includes('classname="tenant"') &&
+    junitTenant.includes('name="acme"') &&
+    junitTenant.includes("usd ") &&
+    (junitTenant.includes(" > budget ") || junitTenant.includes(" &gt; budget ")) &&
+    !junitTenant.includes('classname="budget"') &&
+    junitGlobal.includes('classname="budget"') &&
+    junitGlobal.includes('name="maxTotalUsd"') &&
+    junitGlobal.includes("<failure") &&
+    junitBoth.includes('classname="budget"') &&
+    junitBoth.includes('classname="tenant"') &&
+    junitBoth.includes('name="acme"') &&
+    junitEsc.includes("a&amp;b&lt;c&gt;&#39;&quot;") &&
+    !junitEsc.includes("a&b<c>") &&
+    !junitEsc.includes("gen_ai.prompt") &&
+    !junitEsc.includes("SECRET");
+  if (!junitOk) {
+    console.error("smoke junit failed", {
+      junitNone: junitNone.slice(0, 200),
+      junitTenant: junitTenant.slice(0, 300),
+      junitGlobal: junitGlobal.slice(0, 300),
+      junitBoth: junitBoth.slice(0, 400),
+      junitEsc: junitEsc.slice(0, 300),
+      junitEmpty,
+    });
+    process.exit(1);
+  }
+  console.log("junit-ok");
+  // report --format tap (TAP version 13 budget gate; align A/D)
+  const tapNone = formatTap(r);
+  const tapTenant = formatTap(tbHigh);
+  const tapGlobal = formatTap(r, { budget: { maxTotalUsd: 0.000001 } });
+  const tapBoth = formatTap(tbHigh, { budget: { maxTotalUsd: 0.000001 } });
+  const tapEmpty = formatTap(report([]));
+  const tapEsc = formatTap({
+    totalUsd: 1,
+    budgetBreaches: [{ tenant: "a#b\nc", usd: 1, budget: 0.1 }],
+  });
+  const tapOk =
+    tapNone.startsWith("TAP version 13\n") &&
+    tapNone.includes("1..0") &&
+    !tapNone.includes("not ok") &&
+    tapEmpty.startsWith("TAP version 13\n") &&
+    tapEmpty.includes("1..0") &&
+    !tapEmpty.includes("not ok") &&
+    tapTenant.includes("not ok 1 - tenant/acme") &&
+    tapTenant.includes("# usd ") &&
+    tapTenant.includes(" > budget ") &&
+    !tapTenant.includes("budget/maxTotalUsd") &&
+    tapGlobal.includes("not ok 1 - budget/maxTotalUsd") &&
+    tapGlobal.includes("# totalUsd ") &&
+    tapGlobal.includes(" > budget ") &&
+    tapBoth.includes("budget/maxTotalUsd") &&
+    tapBoth.includes("tenant/acme") &&
+    tapBoth.includes("1..2") &&
+    tapEsc.includes("tenant/a\\#b c") &&
+    tapEsc.includes("\\#") &&
+    !tapEsc.includes("not ok 1 - tenant/a#b") &&
+    !tapEsc.includes("gen_ai.prompt") &&
+    !tapEsc.includes("SECRET");
+  if (!tapOk) {
+    console.error("smoke tap failed", {
+      tapNone: tapNone.slice(0, 200),
+      tapTenant: tapTenant.slice(0, 300),
+      tapGlobal: tapGlobal.slice(0, 300),
+      tapBoth: tapBoth.slice(0, 400),
+      tapEsc: tapEsc.slice(0, 300),
+      tapEmpty,
+    });
+    process.exit(1);
+  }
+  console.log("tap-ok");
   const tenantHookCheck = tenantBudgetWebhookCheck(tbHigh);
   const tenantHookPayload = buildWebhookPayload(tenantHookCheck);
   const tenantHookOk =
@@ -1547,7 +1639,7 @@ if (cmd === "--version" || cmd === "-V") {
     process.exit(1);
   }
   const specPaths = spec.paths || {};
-  const specNeed = ["/health", "/ready", "/", "/report.json", "/v1/costs.csv", "/v1/costs.md", "/v1/costs.gha.txt", "/v1/costs", "/v1/budgets", "/v1/models", "/v1/config", "/v1/spans", "/v1/tenants", "/v1/tenants.csv", "/metrics", "/openapi.json"];
+  const specNeed = ["/health", "/ready", "/", "/report.json", "/v1/costs.csv", "/v1/costs.md", "/v1/costs.gha.txt", "/v1/costs.junit.xml", "/v1/costs.tap.txt", "/v1/costs.html", "/v1/costs", "/v1/budgets", "/v1/models", "/v1/config", "/v1/spans", "/v1/tenants", "/v1/tenants.csv", "/metrics", "/openapi.json"];
   const specMissing = specNeed.filter((p) => !specPaths[p] || !specPaths[p].get);
   const specDesc = String((spec.info || {}).description || "");
   const specParams = (spec.components || {}).parameters || {};
@@ -1608,6 +1700,18 @@ if (cmd === "--version" || cmd === "-V") {
     (specDesc.includes("/v1/tenants.csv") || specDesc.includes("getTenantsCsv") || specDesc.includes("spend_usd")) &&
     (specDesc.includes("/v1/costs.md") || specDesc.includes("text/markdown") || specDesc.includes("format=md")) &&
     (specDesc.includes("/v1/costs.gha.txt") || specDesc.includes("format=gha") || specDesc.includes("::error")) &&
+    (specDesc.includes("/v1/costs.junit.xml") || specDesc.includes("format=junit") || specDesc.includes("otel-ai-cost-budget")) &&
+    ((specPaths["/v1/costs.junit.xml"] || {}).get || {}).operationId === "getCostsJunit" &&
+    Boolean((((specPaths["/v1/costs.junit.xml"] || {}).get || {}).responses || {})["200"]) &&
+    JSON.stringify(specParams.CostFormat || {}).includes("junit") &&
+    (specDesc.includes("/v1/costs.tap.txt") || specDesc.includes("format=tap") || specDesc.includes("TAP version 13")) &&
+    ((specPaths["/v1/costs.tap.txt"] || {}).get || {}).operationId === "getCostsTap" &&
+    Boolean((((specPaths["/v1/costs.tap.txt"] || {}).get || {}).responses || {})["200"]) &&
+    JSON.stringify(specParams.CostFormat || {}).includes("tap") &&
+    (specDesc.includes("/v1/costs.html") || specDesc.includes("format=html") || specDesc.includes("getCostsHtml")) &&
+    ((specPaths["/v1/costs.html"] || {}).get || {}).operationId === "getCostsHtml" &&
+    Boolean((((specPaths["/v1/costs.html"] || {}).get || {}).responses || {})["200"]) &&
+    JSON.stringify(specParams.CostFormat || {}).includes("html") &&
     ((specPaths["/metrics"] || {}).get || {}).operationId === "getMetrics" &&
     specResponses.RateLimited &&
     Boolean((((specPaths["/report.json"] || {}).get || {}).responses || {})["429"]) &&
@@ -1787,6 +1891,122 @@ if (cmd === "--version" || cmd === "-V") {
       console.error("smoke serve /v1/costs.gha.txt custom X-Request-Id failed", ghaCustom.headers.get("x-request-id"));
       process.exit(1);
     }
+    const junitRes = await fetch(`${base}/v1/costs.junit.xml`);
+    const junitText = await junitRes.text();
+    const junitCt = String(junitRes.headers.get("content-type") || "");
+    const junitQ = await fetch(`${base}/v1/costs?format=junit`);
+    const junitQText = await junitQ.text();
+    const junitQCt = String(junitQ.headers.get("content-type") || "");
+    const junitBad = await fetch(`${base}/v1/costs?format=nope`);
+    const junitBadBody = await junitBad.json();
+    if (
+      junitRes.status !== 200 ||
+      !junitCt.includes("application/xml") ||
+      !junitText.includes('<testsuite name="otel-ai-cost-budget"') ||
+      !junitText.includes('tests="0"') ||
+      junitText.includes("<failure") ||
+      junitQ.status !== 200 ||
+      !junitQCt.includes("application/xml") ||
+      junitQText !== junitText ||
+      junitBad.status !== 400 ||
+      junitBadBody.error !== "bad_format" ||
+      !Array.isArray(junitBadBody.allowed) ||
+      !junitBadBody.allowed.includes("junit") ||
+      !junitBadBody.allowed.includes("html") ||
+      !junitBadBody.allowed.includes("tap")
+    ) {
+      console.error(
+        "smoke serve /v1/costs.junit.xml failed",
+        junitRes.status,
+        junitCt,
+        junitText.slice(0, 240),
+        junitQ.status,
+        junitBad.status,
+        junitBadBody
+      );
+      process.exit(1);
+    }
+    const junitRid = "mvp-junit-rid-e1";
+    const junitCustom = await fetch(`${base}/v1/costs.junit.xml`, { headers: { "X-Request-Id": junitRid } });
+    if (!junitCustom.ok || junitCustom.headers.get("x-request-id") !== junitRid) {
+      console.error("smoke serve /v1/costs.junit.xml custom X-Request-Id failed", junitCustom.headers.get("x-request-id"));
+      process.exit(1);
+    }
+    const tapRes = await fetch(`${base}/v1/costs.tap.txt`);
+    const tapText = await tapRes.text();
+    const tapCt = String(tapRes.headers.get("content-type") || "");
+    const tapAlias = await fetch(`${base}/v1/costs.tap`);
+    const tapAliasText = await tapAlias.text();
+    const tapQ = await fetch(`${base}/v1/costs?format=tap`);
+    const tapQText = await tapQ.text();
+    const tapQCt = String(tapQ.headers.get("content-type") || "");
+    const tapBad = await fetch(`${base}/v1/costs?format=nope`);
+    const tapBadBody = await tapBad.json();
+    if (
+      tapRes.status !== 200 ||
+      !tapCt.includes("text/plain") ||
+      !tapText.startsWith("TAP version 13") ||
+      !tapText.includes("1..0") ||
+      tapText.includes("not ok") ||
+      tapAlias.status !== 200 ||
+      tapAliasText !== tapText ||
+      tapQ.status !== 200 ||
+      !tapQCt.includes("text/plain") ||
+      tapQText !== tapText ||
+      tapBad.status !== 400 ||
+      tapBadBody.error !== "bad_format" ||
+      !Array.isArray(tapBadBody.allowed) ||
+      !tapBadBody.allowed.includes("tap") ||
+      !tapBadBody.allowed.includes("junit")
+    ) {
+      console.error(
+        "smoke serve /v1/costs.tap.txt failed",
+        tapRes.status,
+        tapCt,
+        tapText.slice(0, 240),
+        tapQ.status,
+        tapBad.status,
+        tapBadBody
+      );
+      process.exit(1);
+    }
+    const tapRid = "mvp-tap-rid-e1";
+    const tapCustom = await fetch(`${base}/v1/costs.tap.txt`, { headers: { "X-Request-Id": tapRid } });
+    if (!tapCustom.ok || tapCustom.headers.get("x-request-id") !== tapRid) {
+      console.error("smoke serve /v1/costs.tap.txt custom X-Request-Id failed", tapCustom.headers.get("x-request-id"));
+      process.exit(1);
+    }
+    const htmlApiRes = await fetch(`${base}/v1/costs.html`);
+    const htmlApiText = await htmlApiRes.text();
+    const htmlApiCt = String(htmlApiRes.headers.get("content-type") || "");
+    const htmlApiQ = await fetch(`${base}/v1/costs?format=html`);
+    const htmlApiQText = await htmlApiQ.text();
+    const htmlApiQCt = String(htmlApiQ.headers.get("content-type") || "");
+    if (
+      htmlApiRes.status !== 200 ||
+      !htmlApiCt.includes("text/html") ||
+      !htmlApiText.includes("<table") ||
+      !htmlApiText.includes("otel-ai-cost report") ||
+      htmlApiQ.status !== 200 ||
+      !htmlApiQCt.includes("text/html") ||
+      htmlApiQText !== htmlApiText
+    ) {
+      console.error(
+        "smoke serve /v1/costs.html failed",
+        htmlApiRes.status,
+        htmlApiCt,
+        htmlApiText.slice(0, 240),
+        htmlApiQ.status
+      );
+      process.exit(1);
+    }
+    const htmlApiRid = "mvp-html-rid-e1";
+    const htmlApiCustom = await fetch(`${base}/v1/costs.html`, { headers: { "X-Request-Id": htmlApiRid } });
+    if (!htmlApiCustom.ok || htmlApiCustom.headers.get("x-request-id") !== htmlApiRid) {
+      console.error("smoke serve /v1/costs.html custom X-Request-Id failed", htmlApiCustom.headers.get("x-request-id"));
+      process.exit(1);
+    }
+    console.log("costs-html-ok");
     const budgetsRes = await fetch(`${base}/v1/budgets`);
     const budgetsBody = await budgetsRes.json();
     const budgetsCt = String(budgetsRes.headers.get("content-type") || "");
@@ -2074,6 +2294,14 @@ if (cmd === "--version" || cmd === "-V") {
     const tbGha = await tbGhaRes.text();
     const tbGhaCt = String(tbGhaRes.headers.get("content-type") || "");
     const tbGhaQ = await (await fetch(`http://127.0.0.1:${tbAddr.port}/v1/costs?format=gha`)).text();
+    const tbJunitRes = await fetch(`http://127.0.0.1:${tbAddr.port}/v1/costs.junit.xml`);
+    const tbJunit = await tbJunitRes.text();
+    const tbJunitCt = String(tbJunitRes.headers.get("content-type") || "");
+    const tbJunitQ = await (await fetch(`http://127.0.0.1:${tbAddr.port}/v1/costs?format=junit`)).text();
+    const tbTapRes = await fetch(`http://127.0.0.1:${tbAddr.port}/v1/costs.tap.txt`);
+    const tbTap = await tbTapRes.text();
+    const tbTapCt = String(tbTapRes.headers.get("content-type") || "");
+    const tbTapQ = await (await fetch(`http://127.0.0.1:${tbAddr.port}/v1/costs?format=tap`)).text();
     const tbBudgetsRes = await fetch(`http://127.0.0.1:${tbAddr.port}/v1/budgets`);
     const tbBudgets = await tbBudgetsRes.json();
     if (
@@ -2090,6 +2318,19 @@ if (cmd === "--version" || cmd === "-V") {
       !tbGha.includes("::error") ||
       !tbGha.includes("title=tenant/acme::") ||
       tbGhaQ !== tbGha ||
+      tbJunitRes.status !== 200 ||
+      !tbJunitCt.includes("application/xml") ||
+      !tbJunit.includes("<failure") ||
+      !tbJunit.includes('classname="tenant"') ||
+      !tbJunit.includes('name="acme"') ||
+      !tbJunit.includes('name="otel-ai-cost-budget"') ||
+      tbJunitQ !== tbJunit ||
+      tbTapRes.status !== 200 ||
+      !tbTapCt.includes("text/plain") ||
+      !tbTap.includes("TAP version 13") ||
+      !tbTap.includes("not ok") ||
+      !tbTap.includes("tenant/acme") ||
+      tbTapQ !== tbTap ||
       tbBudgetsRes.status !== 200 ||
       tbBudgets.ok !== true ||
       tbBudgets.globalUsd !== null ||
@@ -2097,7 +2338,7 @@ if (cmd === "--version" || cmd === "-V") {
       "token" in tbBudgets ||
       JSON.stringify(tbBudgets).indexOf("sk-") !== -1
     ) {
-      console.error("smoke serve tenant-budget JSON/gha/budgets failed", tbJson.budgetBreaches, tbGha, tbBudgets);
+      console.error("smoke serve tenant-budget JSON/gha/junit/tap/budgets failed", tbJson.budgetBreaches, tbGha, tbJunit.slice(0, 240), tbBudgets);
       process.exit(1);
     }
   } finally {
@@ -3448,7 +3689,7 @@ if (cmd === "--version" || cmd === "-V") {
     await closeServer(periodServed.server);
   }
 
-  console.log(`otel-ai-cost ${VERSION} smoke OK — totalUSD=${r.totalUsd} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+csv+md+gha+rateLimit+tenant+tenantBudget+budgets+models+config+otlpIngest+spanMax+ingestDenyWebhook+wouldExceed+costAttr+export+period+remainDash`);
+  console.log(`otel-ai-cost ${VERSION} smoke OK — totalUSD=${r.totalUsd} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+csv+md+gha+junit+tap+rateLimit+tenant+tenantBudget+budgets+models+config+otlpIngest+spanMax+ingestDenyWebhook+wouldExceed+costAttr+export+period+remainDash`);
 } else if (cmd === "models" || cmd === "prices") {
   console.log(JSON.stringify(modelsJson(), null, 2));
 } else if (cmd === "demo") {
@@ -3485,9 +3726,11 @@ if (cmd === "--version" || cmd === "-V") {
     format !== "md" &&
     format !== "markdown" &&
     format !== "gha" &&
-    format !== "annotations"
+    format !== "annotations" &&
+    format !== "junit" &&
+    format !== "tap"
   ) {
-    console.error(`unsupported --format ${args.format} (supported: csv|json|html|md|gha)`);
+    console.error(`unsupported --format ${args.format} (supported: csv|json|html|md|gha|junit|tap)`);
     process.exit(2);
   }
   if (format === "markdown") format = "md";
@@ -3559,6 +3802,24 @@ if (cmd === "--version" || cmd === "-V") {
       process.stdout.write(gha);
     }
     if (args.html) writeHtmlFile(args.html);
+  } else if (format === "junit") {
+    const junit = formatJunit(r, { budget: budgetPolicy });
+    if (args.out) {
+      const abs = writeText(args.out, junit);
+      console.log(JSON.stringify({ junit: abs, totalUsd: r.totalUsd, rows: r.rows.length, groupBy: groupBy || null }));
+    } else {
+      process.stdout.write(junit);
+    }
+    if (args.html) writeHtmlFile(args.html);
+  } else if (format === "tap") {
+    const tap = formatTap(r, { budget: budgetPolicy });
+    if (args.out) {
+      const abs = writeText(args.out, tap);
+      console.log(JSON.stringify({ tap: abs, totalUsd: r.totalUsd, rows: r.rows.length, groupBy: groupBy || null }));
+    } else {
+      process.stdout.write(tap);
+    }
+    if (args.html) writeHtmlFile(args.html);
   } else if (format === "html") {
     const dest = args.html || args.out;
     if (dest) {
@@ -3584,7 +3845,7 @@ if (cmd === "--version" || cmd === "-V") {
   }
   if (budgetPolicy) {
     await runBudgetGate(r, budgetPolicy, {
-      quiet: format === "gha",
+      quiet: format === "gha" || format === "junit" || format === "tap",
       webhookUrl: hookUrl,
       webhookSecret: hookSecret,
     });

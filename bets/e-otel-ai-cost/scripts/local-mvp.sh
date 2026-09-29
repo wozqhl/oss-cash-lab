@@ -387,6 +387,37 @@ grep -q '::error' out/costs.gha.txt
 grep -q 'title=tenant/acme::' out/costs.gha.txt
 grep -q 'usd ' out/costs.gha.txt
 grep -q ' > budget ' out/costs.gha.txt
+
+rm -f out/costs.junit.xml out/costs-clean.junit.xml
+node src/cli.js report --in examples/spans.json --tenant-budget "acme=0.0001" --format junit > out/costs.junit.xml
+grep -q 'otel-ai-cost-budget' out/costs.junit.xml
+grep -q '<failure' out/costs.junit.xml
+grep -q 'classname="tenant"' out/costs.junit.xml
+grep -q 'name="acme"' out/costs.junit.xml
+node src/cli.js report --in examples/spans.json --format junit > out/costs-clean.junit.xml
+grep -q 'tests="0"' out/costs-clean.junit.xml
+grep -q 'failures="0"' out/costs-clean.junit.xml
+if grep -q '<failure' out/costs-clean.junit.xml; then
+  echo "clean junit must be empty suite"
+  cat out/costs-clean.junit.xml
+  exit 1
+fi
+echo "costs_junit_cli_ok"
+
+rm -f out/costs.tap.txt out/costs-clean.tap.txt
+node src/cli.js report --in examples/spans.json --tenant-budget "acme=0.0001" --format tap > out/costs.tap.txt
+grep -q 'TAP version 13' out/costs.tap.txt
+grep -q 'not ok' out/costs.tap.txt
+grep -q 'tenant/acme' out/costs.tap.txt
+node src/cli.js report --in examples/spans.json --format tap > out/costs-clean.tap.txt
+grep -q 'TAP version 13' out/costs-clean.tap.txt
+grep -q '1\.\.0' out/costs-clean.tap.txt
+if grep -q 'not ok' out/costs-clean.tap.txt; then
+  echo "clean tap must be empty plan 1..0"
+  cat out/costs-clean.tap.txt
+  exit 1
+fi
+echo "costs_tap_cli_ok"
 node src/cli.js report --in examples/spans.json --format annotations > out/costs-nobudget.gha.txt
 if grep -q '::error' out/costs-nobudget.gha.txt; then
   echo "no-budget --format gha must not emit ::error"
@@ -398,7 +429,7 @@ echo "cli --format gha ok"
 echo "==> local report server (serve --port 8792; hosted dashboard = paid later)"
 PORT=8792
 SERVE_LOG="$ROOT/out/serve.log"
-rm -f "$SERVE_LOG" out/serve-index.html out/serve-report.json out/serve-health.json out/serve-openapi.json out/serve-metrics.txt out/serve-costs.csv out/serve-costs.h out/serve-costs-q.csv out/serve-costs-q.h out/serve-costs.json out/serve-costs-json.h out/serve-costs.md out/serve-costs.md.h out/serve-costs-q.md out/serve-costs-q.md.h out/serve-costs.gha.txt out/serve-costs.gha.h out/serve-costs-q.gha.txt out/serve-costs-q.gha.h
+rm -f "$SERVE_LOG" out/serve-index.html out/serve-report.json out/serve-health.json out/serve-openapi.json out/serve-metrics.txt out/serve-costs.csv out/serve-costs.h out/serve-costs-q.csv out/serve-costs-q.h out/serve-costs.json out/serve-costs-json.h out/serve-costs.md out/serve-costs.md.h out/serve-costs-q.md out/serve-costs-q.md.h out/serve-costs.gha.txt out/serve-costs.gha.h out/serve-costs-q.gha.txt out/serve-costs-q.gha.h out/serve-costs.junit.xml out/serve-costs.junit.h out/serve-costs-q.junit.xml out/serve-costs-q.junit.h out/serve-costs.tap.txt out/serve-costs.tap.h out/serve-costs-q.tap.txt out/serve-costs-q.tap.h out/serve-costs.html out/serve-costs.html.h out/serve-costs-q.html out/serve-costs-q.html.h
 # Default deny CORS: do not pass --cors-origins; ignore leftover env.
 unset OTEL_AI_COST_CORS_ORIGINS || true
 unset RATE_LIMIT_PER_MINUTE RATE_LIMIT_RPM || true
@@ -561,6 +592,61 @@ grep -qiE "^content-type:[[:space:]]*text/plain" out/serve-costs-q.gha.h
 cmp -s out/serve-costs.gha.txt out/serve-costs-q.gha.txt
 echo "costs_gha_ok"
 
+echo "==> GET /v1/costs.junit.xml (no tenant budget on main serve → empty suite)"
+JUNIT_CODE="$(curl -s -o out/serve-costs.junit.xml -D out/serve-costs.junit.h -w "%{http_code}" "http://127.0.0.1:$PORT/v1/costs.junit.xml")"
+echo "costs_junit_status=$JUNIT_CODE"
+test "$JUNIT_CODE" = "200"
+grep -qiE "^content-type:[[:space:]]*application/xml" out/serve-costs.junit.h
+grep -qiE "^x-request-id:" out/serve-costs.junit.h
+grep -q 'otel-ai-cost-budget' out/serve-costs.junit.xml
+grep -q 'tests="0"' out/serve-costs.junit.xml
+if grep -q '<failure' out/serve-costs.junit.xml; then
+  echo "main serve junit must be empty suite (no tenant/global budget)"
+  cat out/serve-costs.junit.xml
+  exit 1
+fi
+JUNIT_Q="$(curl -s -o out/serve-costs-q.junit.xml -D out/serve-costs-q.junit.h -w "%{http_code}" "http://127.0.0.1:$PORT/v1/costs?format=junit")"
+echo "costs_format_junit_status=$JUNIT_Q"
+test "$JUNIT_Q" = "200"
+grep -qiE "^content-type:[[:space:]]*application/xml" out/serve-costs-q.junit.h
+cmp -s out/serve-costs.junit.xml out/serve-costs-q.junit.xml
+echo "costs_junit_ok"
+
+echo "==> GET /v1/costs.tap.txt (no tenant budget on main serve → empty plan 1..0)"
+TAP_CODE="$(curl -s -o out/serve-costs.tap.txt -D out/serve-costs.tap.h -w "%{http_code}" "http://127.0.0.1:$PORT/v1/costs.tap.txt")"
+echo "costs_tap_status=$TAP_CODE"
+test "$TAP_CODE" = "200"
+grep -qiE "^content-type:[[:space:]]*text/plain" out/serve-costs.tap.h
+grep -qiE "^x-request-id:" out/serve-costs.tap.h
+grep -q 'TAP version 13' out/serve-costs.tap.txt
+grep -q '1\.\.0' out/serve-costs.tap.txt
+if grep -q 'not ok' out/serve-costs.tap.txt; then
+  echo "main serve tap must be empty plan (no tenant/global budget)"
+  cat out/serve-costs.tap.txt
+  exit 1
+fi
+TAP_Q="$(curl -s -o out/serve-costs-q.tap.txt -D out/serve-costs-q.tap.h -w "%{http_code}" "http://127.0.0.1:$PORT/v1/costs?format=tap")"
+echo "costs_format_tap_status=$TAP_Q"
+test "$TAP_Q" = "200"
+grep -qiE "^content-type:[[:space:]]*text/plain" out/serve-costs-q.tap.h
+cmp -s out/serve-costs.tap.txt out/serve-costs-q.tap.txt
+echo "costs_tap_ok"
+
+echo "==> GET /v1/costs.html (same formatHtml body as GET /)"
+HTML_CODE="$(curl -s -o out/serve-costs.html -D out/serve-costs.html.h -w "%{http_code}" "http://127.0.0.1:$PORT/v1/costs.html")"
+echo "costs_html_status=$HTML_CODE"
+test "$HTML_CODE" = "200"
+grep -qiE "^content-type:[[:space:]]*text/html" out/serve-costs.html.h
+grep -qiE "^x-request-id:" out/serve-costs.html.h
+grep -q '<table' out/serve-costs.html
+grep -q 'otel-ai-cost report' out/serve-costs.html
+HTML_Q="$(curl -s -o out/serve-costs-q.html -D out/serve-costs-q.html.h -w "%{http_code}" "http://127.0.0.1:$PORT/v1/costs?format=html")"
+echo "costs_format_html_status=$HTML_Q"
+test "$HTML_Q" = "200"
+grep -qiE "^content-type:[[:space:]]*text/html" out/serve-costs-q.html.h
+cmp -s out/serve-costs.html out/serve-costs-q.html
+echo "costs_html_ok"
+
 echo "==> GET /v1/costs JSON (byTenant)"
 COSTS_JSON="$(curl -s -o out/serve-costs.json -D out/serve-costs-json.h -w "%{http_code}" "http://127.0.0.1:$PORT/v1/costs")"
 echo "costs_json_status=$COSTS_JSON"
@@ -716,10 +802,10 @@ node -e '
 const spec=require("./out/serve-openapi.json");
 if(!String(spec.openapi||"").startsWith("3.")) { console.error("openapi version", spec.openapi); process.exit(1); }
 const paths=spec.paths||{};
-const need=["/health","/ready","/","/report.json","/v1/costs.csv","/v1/costs.md","/v1/costs.gha.txt","/v1/costs","/v1/budgets","/v1/models","/v1/config","/v1/spans","/v1/tenants","/v1/tenants.csv","/metrics","/openapi.json"];
+const need=["/health","/ready","/","/report.json","/v1/costs.csv","/v1/costs.md","/v1/costs.gha.txt","/v1/costs.junit.xml","/v1/costs.tap.txt","/v1/costs.html","/v1/costs","/v1/budgets","/v1/models","/v1/config","/v1/spans","/v1/tenants","/v1/tenants.csv","/metrics","/openapi.json"];
 const missing=need.filter((p)=>!paths[p] || !paths[p].get);
 if(missing.length) { console.error("missing paths", missing); process.exit(1); }
-for (const p of ["/health","/ready","/","/report.json","/v1/costs.csv","/v1/costs.md","/v1/costs.gha.txt","/v1/costs","/v1/budgets","/v1/models","/v1/config","/v1/spans","/v1/tenants","/v1/tenants.csv","/metrics"]) {
+for (const p of ["/health","/ready","/","/report.json","/v1/costs.csv","/v1/costs.md","/v1/costs.gha.txt","/v1/costs.junit.xml","/v1/costs.tap.txt","/v1/costs.html","/v1/costs","/v1/budgets","/v1/models","/v1/config","/v1/spans","/v1/tenants","/v1/tenants.csv","/metrics"]) {
   const resp=(paths[p].get.responses||{});
   if(!resp["403"]) { console.error("missing 403 CORS", p, Object.keys(resp)); process.exit(1); }
 }
@@ -741,6 +827,9 @@ if(((paths["/report.json"]||{}).get||{}).operationId!=="getReport") process.exit
 if(((paths["/v1/costs.csv"]||{}).get||{}).operationId!=="getCostsCsv") process.exit(1);
 if(((paths["/v1/costs.md"]||{}).get||{}).operationId!=="getCostsMd") process.exit(1);
 if(((paths["/v1/costs.gha.txt"]||{}).get||{}).operationId!=="getCostsGha") process.exit(1);
+if(((paths["/v1/costs.junit.xml"]||{}).get||{}).operationId!=="getCostsJunit") process.exit(1);
+if(((paths["/v1/costs.tap.txt"]||{}).get||{}).operationId!=="getCostsTap") process.exit(1);
+if(((paths["/v1/costs.html"]||{}).get||{}).operationId!=="getCostsHtml") process.exit(1);
 if(((paths["/v1/costs"]||{}).get||{}).operationId!=="getCosts") process.exit(1);
 if(((paths["/v1/budgets"]||{}).get||{}).operationId!=="getBudgets") process.exit(1);
 if(((paths["/v1/models"]||{}).get||{}).operationId!=="getModels") process.exit(1);

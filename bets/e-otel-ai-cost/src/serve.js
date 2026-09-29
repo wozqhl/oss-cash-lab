@@ -3,7 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { report, formatHtml, toDailyJson, formatCsv, formatMd, formatGha, budgetsJson, modelsJson, spansJson, tenantsJson, formatTenantsCsv, DEFAULT_PRICES, applyBudgetDeny, spanTenant, ingestDenyWebhookCheck, resolveDenyOnWouldExceed, resolveBudgetPeriod, stampIngestTime, spansInBudgetPeriod, utcToday, tenantBudgetRemaining } from "./cost.js";
+import { report, formatHtml, toDailyJson, formatCsv, formatMd, formatGha, formatJunit, formatTap, budgetsJson, modelsJson, spansJson, tenantsJson, formatTenantsCsv, DEFAULT_PRICES, applyBudgetDeny, spanTenant, ingestDenyWebhookCheck, resolveDenyOnWouldExceed, resolveBudgetPeriod, stampIngestTime, spansInBudgetPeriod, utcToday, tenantBudgetRemaining } from "./cost.js";
 import { corsResponseHeaders, handlePreflight, normalizeCors } from "./cors.js";
 import { resolveRequestId, REQUEST_ID_HEADER } from "./request-id.js";
 import { attachAccessLog } from "./access-log.js";
@@ -114,6 +114,10 @@ function sendGha(res, status, gha, extraHeaders) {
   send(res, status, gha, "text/plain; charset=utf-8", extraHeaders);
 }
 
+function sendXml(res, status, xml, extraHeaders) {
+  send(res, status, xml, "application/xml; charset=utf-8", extraHeaders);
+}
+
 function costsFormat(url) {
   const raw = url.searchParams.get("format");
   if (raw == null || String(raw).trim() === "") return "json";
@@ -167,6 +171,8 @@ function snapshotFromSpans(spans, { groupBy, prices, version, tenantBudgets, bud
   const csv = formatCsv(r);
   const md = formatMd(r);
   const gha = formatGha(r, { budget });
+  const junit = formatJunit(r, { budget });
+  const tap = formatTap(r, { budget });
   const metricsReport =
     period === "day"
       ? { ...r, byTenant: report(spansInBudgetPeriod(spans, period, now), prices, { tenantBudgets }).byTenant }
@@ -180,7 +186,7 @@ function snapshotFromSpans(spans, { groupBy, prices, version, tenantBudgets, bud
     spanCount: r.rows.length,
     totalUsd: r.totalUsd,
   };
-  return { report: r, html, json, csv, md, gha, metricsText, health };
+  return { report: r, html, json, csv, md, gha, junit, tap, metricsText, health };
 }
 
 /**
@@ -217,7 +223,7 @@ export function startSpansWatch(filePath, { reload, load = loadSpansFile, pollMs
 /**
  * Build a stdlib http.Server that serves a snapshot cost report.
  * GET /health, GET /ready, GET / (HTML + SVG, daily when groupBy=day), GET /report.json,
- * GET /v1/costs.csv, GET /v1/costs.md, GET /v1/costs.gha.txt, GET /v1/costs?format=csv|json|md|gha, GET /v1/budgets, GET /v1/models, GET /v1/config, GET /v1/spans, GET /v1/tenants, GET /v1/tenants.csv, GET /openapi.json, GET /metrics
+ * GET /v1/costs.csv, GET /v1/costs.md, GET /v1/costs.gha.txt, GET /v1/costs.junit.xml, GET /v1/costs.tap.txt, GET /v1/costs.html, GET /v1/costs?format=csv|json|md|gha|junit|tap|html, GET /v1/budgets, GET /v1/models, GET /v1/config, GET /v1/spans, GET /v1/tenants, GET /v1/tenants.csv, GET /openapi.json, GET /metrics
  * POST /v1/traces (alias POST /v1/otlp/v1/traces) OTLP JSON ingest into the in-memory store.
  * Over-budget / would-exceed ingest deny fires the existing webhook once per denied request (HMAC/timestamp if set).
  * Optional CORS: corsOrigins CSV list (`*` allowed); empty/omit = deny extra CORS.
@@ -475,6 +481,18 @@ export function createReportServer({
       sendGha(res, 200, snap.gha, extra);
       return;
     }
+    if (pathName === "/v1/costs.junit.xml" || pathName === "/v1/costs.junit") {
+      sendXml(res, 200, snap.junit, extra);
+      return;
+    }
+    if (pathName === "/v1/costs.tap.txt" || pathName === "/v1/costs.tap") {
+      sendGha(res, 200, snap.tap, extra);
+      return;
+    }
+    if (pathName === "/v1/costs.html") {
+      sendHtml(res, 200, snap.html, extra);
+      return;
+    }
     if (pathName === "/v1/costs") {
       const fmt = costsFormat(url);
       if (fmt === "csv") {
@@ -489,11 +507,23 @@ export function createReportServer({
         sendGha(res, 200, snap.gha, extra);
         return;
       }
+      if (fmt === "junit") {
+        sendXml(res, 200, snap.junit, extra);
+        return;
+      }
+      if (fmt === "tap") {
+        sendGha(res, 200, snap.tap, extra);
+        return;
+      }
+      if (fmt === "html") {
+        sendHtml(res, 200, snap.html, extra);
+        return;
+      }
       if (fmt === "json") {
         sendJson(res, 200, snap.json, extra);
         return;
       }
-      sendJson(res, 400, { error: "bad_format", allowed: ["csv", "json", "md", "gha"] }, extra);
+      sendJson(res, 400, { error: "bad_format", allowed: ["csv", "json", "md", "gha", "junit", "tap", "html"] }, extra);
       return;
     }
     if (pathName === "/v1/budgets") {

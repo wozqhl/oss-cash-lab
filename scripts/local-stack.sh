@@ -395,6 +395,9 @@ grep -q '/v1/costs.csv' <<<"$E_OA"
 grep -q '/v1/costs.md' <<<"$E_OA"
 grep -q '/v1/costs.gha.txt' <<<"$E_OA"
 grep -q 'getCostsGha' <<<"$E_OA"
+grep -q '/v1/costs.html' <<<"$E_OA"
+grep -q 'getCostsHtml' <<<"$E_OA"
+grep -q 'format=html' <<<"$E_OA"
 grep -q '/v1/budgets' <<<"$E_OA"
 grep -q 'getBudgets' <<<"$E_OA"
 grep -q '/v1/models' <<<"$E_OA"
@@ -418,6 +421,9 @@ if grep -q '::error' <<<"$E_GHA"; then
   echo "$E_GHA"
   exit 1
 fi
+E_HTML="$(curl -sf "http://127.0.0.1:${E_PORT}/v1/costs.html")"
+grep -q '<table' <<<"$E_HTML"
+grep -q 'otel-ai-cost report' <<<"$E_HTML"
 E_BUDGETS="$(curl -s -o /tmp/e-stack-budgets.json -w '%{http_code}' "http://127.0.0.1:${E_PORT}/v1/budgets")"
 echo "otel-ai-cost-budgets=$E_BUDGETS $(cat /tmp/e-stack-budgets.json)"
 test "$E_BUDGETS" = "200"
@@ -544,6 +550,22 @@ grep -q 'AI-BOM' /tmp/d-stack-bom.html
 grep -q '/v1/bom.html' <<<"$D_OA"
 grep -q 'getBomHtml' <<<"$D_OA"
 grep -q 'format=html' <<<"$D_OA"
+D_JUNIT="$(curl -s -o /tmp/d-stack-bom.junit.xml -D /tmp/d-stack-bom-junit.h -w '%{http_code}' "http://127.0.0.1:${D_PORT}/v1/bom.junit.xml")"
+echo "ai-bom-junit=$D_JUNIT"
+test "$D_JUNIT" = "200"
+grep -qiE '^content-type:.*xml' /tmp/d-stack-bom-junit.h
+grep -q 'ai-bom-gate' /tmp/d-stack-bom.junit.xml
+grep -q '/v1/bom.junit.xml' <<<"$D_OA"
+grep -q 'getBomJunit' <<<"$D_OA"
+grep -q 'format=junit' <<<"$D_OA"
+D_TAP="$(curl -s -o /tmp/d-stack-bom.tap.txt -D /tmp/d-stack-bom-tap.h -w '%{http_code}' "http://127.0.0.1:${D_PORT}/v1/bom.tap.txt")"
+echo "ai-bom-tap=$D_TAP"
+test "$D_TAP" = "200"
+grep -qiE '^content-type:.*text/plain' /tmp/d-stack-bom-tap.h
+grep -q 'TAP version 13' /tmp/d-stack-bom.tap.txt
+grep -q '/v1/bom.tap.txt' <<<"$D_OA"
+grep -q 'getBomTap' <<<"$D_OA"
+grep -q 'format=tap' <<<"$D_OA"
 D_GHA="$(curl -sf "http://127.0.0.1:${D_PORT}/v1/bom?format=gha")"
 grep -q '::error' <<<"$D_GHA"
 grep -q '/v1/bom.gha.txt' <<<"$D_OA"

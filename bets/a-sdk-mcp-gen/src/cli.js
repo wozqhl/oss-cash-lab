@@ -42,7 +42,7 @@ import {
 } from "./openapi.js";
 import { loadOpenApiSpec } from "./yaml.js";
 import { fetchOpenApiText, parseFetchHeaderLines, redactSecretsInText, pollRemoteOpenApi, specWatchStateFromFetch, remoteSpecChange, hashSpecBody } from "./fetch-spec.js";
-import { runCheck } from "./check.js";
+import { runCheck, compareBreaking, formatCheckGha, formatCheckMd, formatCheckHtml, formatCheckSarif, formatCheckJson, formatCheckJunit, formatCheckTap, normalizeCheckFormat, CHECK_FORMATS_HELP } from "./check.js";
 import { writeChecksumManifest, runVerifyChecksums, CHECKSUMS_FILE } from "./checksums.js";
 import { writeSdkArchive, plannedArchiveName, ARCHIVE_TGZ, ARCHIVE_ZIP } from "./archive.js";
 import { writeLicenseArtifacts, removeLicenseArtifacts, LICENSE_FILE, NOTICE_FILE } from "./license.js";
@@ -77,7 +77,7 @@ Usage:
                           OpenAPI 3.0.x and 3.1.x (paths only; 3.1 webhooks ignored).
                           File path and --url are XOR (both set → error). --watch works with file or --url.
                           Repeatable --header 'Name: value' (http/https --url only; env SDK_FETCH_HEADER).
-  sdk-mcp-gen check --out <dir> --baseline <dir> [--no-clients]
+  sdk-mcp-gen check --out <dir> --baseline <dir> [--no-clients] [--format text|gha|md|html|sarif|json|junit|tap]
   sdk-mcp-gen verify-checksums --out <dir>
   sdk-mcp-gen registry-pack --in <generated-dir> --out <pack-dir>
                           Dry-run: wrap generated mcp-server.mjs as local MCP Registry listing + tarball.
@@ -110,6 +110,13 @@ Options:
   --gitignore             Write .gitignore (default on). Always overwritten on generate.
   --no-gitignore          Skip .gitignore (omit from dry-run files + checksums; unlink leftovers).
   --no-clients            With check: only compare mcp-tools.json names (skip client exports).
+  --format text|gha|md|html|sarif|json|junit|tap  Check output format (default text). gha/annotations → GitHub Actions
+                          ::error lines for REMOVED tools / missing client exports (empty if OK).
+                          md → Markdown summary for $GITHUB_STEP_SUMMARY. html → self-contained
+                          HTML report (no CDN). sarif → SARIF 2.1.0 JSON for code scanning upload.
+                          json → machine-readable drift for CI/jq. junit → JUnit XML for Actions/Jenkins/GitLab.
+                          tap → TAP version 13 (empty → 1..0; # in names escaped).
+                          Alias: annotations → gha.
 
 verify-checksums:
   Reads checksums.sha256 written by generate; exits 0 if all listed files match, 1 if missing/mismatch.
@@ -275,15 +282,23 @@ function parseCheckArgs(argv) {
   let out = null;
   let baseline = null;
   let checkClients = true;
+  let format = "text";
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--out" || a === "-o") out = argv[++i];
     else if (a === "--baseline" || a === "-b") baseline = argv[++i];
     else if (a.startsWith("--baseline=")) baseline = a.slice("--baseline=".length);
     else if (a === "--no-clients") checkClients = false;
+    else if (a === "--format") format = argv[++i];
+    else if (a.startsWith("--format=")) format = a.slice("--format=".length);
     else if (a.startsWith("--out=")) out = a.slice("--out=".length);
   }
-  return { out, baseline, checkClients };
+  const normalized = normalizeCheckFormat(format);
+  if (normalized == null) {
+    console.error(`check --format must be ${CHECK_FORMATS_HELP}`);
+    process.exit(2);
+  }
+  return { out, baseline, checkClients, format: normalized };
 }
 
 function parseVerifyChecksumsArgs(argv) {
@@ -3181,6 +3196,456 @@ if (cmd === "--version" || cmd === "-V") {
       console.error("smoke check removal should fail");
       process.exit(1);
     }
+    // check --format gha|md|html|sarif|json (align C/D/E CI annotations + HTML + SARIF + JSON)
+    const okGhaResult = compareBreaking(baseDir, baseDir, { checkClients: false });
+    const okGhaOut = formatCheckGha(okGhaResult);
+    if (okGhaOut !== "" || okGhaResult.breaking) {
+      console.error("smoke check gha identical should be empty", okGhaOut);
+      process.exit(1);
+    }
+    const okGhaCode = runCheck(baseDir, baseDir, { checkClients: false, format: "gha" });
+    if (okGhaCode !== 0) {
+      console.error("smoke check gha identical exit", okGhaCode);
+      process.exit(1);
+    }
+    const badGhaResult = compareBreaking(badDir, baseDir, { checkClients: false });
+    const badGhaOut = formatCheckGha(badGhaResult);
+    if (!badGhaResult.breaking || !badGhaOut.includes("::error title=tool/getPet::")) {
+      console.error("smoke check gha missing getPet error", badGhaOut);
+      process.exit(1);
+    }
+    for (const added of badGhaResult.added || []) {
+      if (badGhaOut.includes(`title=tool/${added}`)) {
+        console.error("smoke check gha must not error on ADDED tool", added, badGhaOut);
+        process.exit(1);
+      }
+    }
+    const badGhaCode = runCheck(badDir, baseDir, { checkClients: false, format: "gha" });
+    if (badGhaCode !== 1) {
+      console.error("smoke check gha removal exit", badGhaCode);
+      process.exit(1);
+    }
+    const badMd = formatCheckMd(badGhaResult);
+    if (!badMd.includes("# SDK MCP Gen drift check") || !badMd.includes("`getPet`")) {
+      console.error("smoke check md missing heading/getPet", badMd);
+      process.exit(1);
+    }
+    const mdCode = runCheck(badDir, baseDir, { checkClients: false, format: "md" });
+    if (mdCode !== 1) {
+      console.error("smoke check md removal exit", mdCode);
+      process.exit(1);
+    }
+    // check --format html (self-contained; align C/D)
+    const badHtml = formatCheckHtml(badGhaResult);
+    if (
+      !(badHtml.includes("<!DOCTYPE html>") || badHtml.toLowerCase().includes("<html")) ||
+      !badHtml.includes("SDK MCP Gen drift check") ||
+      !badHtml.includes("getPet")
+    ) {
+      console.error("smoke check html missing doctype/title/getPet", badHtml.slice(0, 400));
+      process.exit(1);
+    }
+    const htmlEscName = "a&b<c>\"'";
+    const htmlEscResult = {
+      baselineTools: [htmlEscName],
+      outTools: [],
+      removed: [htmlEscName],
+      added: [],
+      clientsChecked: false,
+      clientRemoved: {},
+      breaking: true,
+    };
+    const escHtml = formatCheckHtml(htmlEscResult);
+    if (
+      !escHtml.includes("a&amp;b&lt;c&gt;") ||
+      !escHtml.includes("&quot;") ||
+      !escHtml.includes("&#39;") ||
+      escHtml.includes(htmlEscName)
+    ) {
+      console.error("smoke check html escape", escHtml);
+      process.exit(1);
+    }
+    const okHtml = formatCheckHtml(okGhaResult);
+    if (!okHtml.includes("No breaking changes.") || !okHtml.includes("(none)")) {
+      console.error("smoke check html ok missing notice/none", okHtml.slice(0, 400));
+      process.exit(1);
+    }
+    const htmlCode = runCheck(badDir, baseDir, { checkClients: false, format: "html" });
+    if (htmlCode !== 1) {
+      console.error("smoke check html removal exit", htmlCode);
+      process.exit(1);
+    }
+    // escape: % and : in tool title
+    const escResult = {
+      baselineTools: ["a%b:c"],
+      outTools: [],
+      removed: ["a%b:c"],
+      added: [],
+      clientsChecked: false,
+      clientRemoved: {},
+      breaking: true,
+    };
+    const escGha = formatCheckGha(escResult);
+    if (!escGha.includes("title=tool/a%25b%3Ac::") || !escGha.includes("removed or renamed vs baseline")) {
+      console.error("smoke check gha escape", escGha);
+      process.exit(1);
+    }
+    // CLI invalid --format → exit 2
+    {
+      const cliSelf = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cli.js");
+      const badFmt = spawnSync(
+        process.execPath,
+        [cliSelf, "check", "--out", baseDir, "--baseline", baseDir, "--format", "nope"],
+        { encoding: "utf8", timeout: 8000, env: { ...process.env } }
+      );
+      if (badFmt.status !== 2) {
+        console.error("smoke check invalid format exit", badFmt.status, badFmt.stderr);
+        process.exit(1);
+      }
+    }
+    // annotations alias → gha (identical dirs → empty + exit 0)
+    {
+      const cliSelf = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cli.js");
+      const alias = spawnSync(
+        process.execPath,
+        [cliSelf, "check", "--out", baseDir, "--baseline", baseDir, "--format", "annotations", "--no-clients"],
+        { encoding: "utf8", timeout: 8000, env: { ...process.env } }
+      );
+      if (alias.status !== 0 || (alias.stdout || "") !== "") {
+        console.error("smoke check annotations alias", alias.status, alias.stdout);
+        process.exit(1);
+      }
+    }
+    // check --format sarif (SARIF 2.1.0; align D / GitHub code scanning)
+    const badSarifRaw = formatCheckSarif(badGhaResult);
+    let badSarif;
+    try {
+      badSarif = JSON.parse(badSarifRaw);
+    } catch (e) {
+      console.error("smoke check sarif bad JSON", e);
+      process.exit(1);
+    }
+    if (
+      badSarif.version !== "2.1.0" ||
+      !Array.isArray(badSarif.runs) ||
+      !badSarif.runs[0] ||
+      !Array.isArray(badSarif.runs[0].results) ||
+      badSarif.runs[0].results.length < 1
+    ) {
+      console.error("smoke check sarif bad shape/version/results", badSarifRaw.slice(0, 400));
+      process.exit(1);
+    }
+    {
+      const resText = JSON.stringify(badSarif.runs[0].results);
+      const hasGetPet = resText.includes("getPet");
+      const hasError = badSarif.runs[0].results.some((r) => r && r.level === "error");
+      if (!hasGetPet || !hasError) {
+        console.error("smoke check sarif missing getPet/error", badSarifRaw.slice(0, 600));
+        process.exit(1);
+      }
+      for (const added of badGhaResult.added || []) {
+        // ADDED tools must not appear as SARIF results
+        if (
+          badSarif.runs[0].results.some(
+            (r) => r.ruleId === "tool-removed" && (r.message?.text || "").includes(`"${added}"`)
+          )
+        ) {
+          console.error("smoke check sarif must not report ADDED as tool-removed", added);
+          process.exit(1);
+        }
+      }
+    }
+    const sarifCode = runCheck(badDir, baseDir, { checkClients: false, format: "sarif" });
+    if (sarifCode !== 1) {
+      console.error("smoke check sarif removal exit", sarifCode);
+      process.exit(1);
+    }
+    const okSarifRaw = formatCheckSarif(okGhaResult);
+    let okSarif;
+    try {
+      okSarif = JSON.parse(okSarifRaw);
+    } catch (e) {
+      console.error("smoke check sarif ok JSON", e);
+      process.exit(1);
+    }
+    if (
+      okSarif.version !== "2.1.0" ||
+      !Array.isArray(okSarif.runs) ||
+      !okSarif.runs[0] ||
+      !Array.isArray(okSarif.runs[0].results) ||
+      okSarif.runs[0].results.length !== 0
+    ) {
+      console.error("smoke check sarif ok should have empty results", okSarifRaw.slice(0, 400));
+      process.exit(1);
+    }
+    const okSarifCode = runCheck(baseDir, baseDir, { checkClients: false, format: "sarif" });
+    if (okSarifCode !== 0) {
+      console.error("smoke check sarif identical exit", okSarifCode);
+      process.exit(1);
+    }
+    console.log("check-gha-ok");
+    console.log("check-html-ok");
+    console.log("check-sarif-ok");
+    // check --format json (machine-readable drift for CI / jq)
+    const badJsonRaw = formatCheckJson(badGhaResult);
+    let badJson;
+    try {
+      badJson = JSON.parse(badJsonRaw);
+    } catch (e) {
+      console.error("smoke check json bad JSON", e);
+      process.exit(1);
+    }
+    if (
+      badJson.ok !== false ||
+      badJson.breaking !== true ||
+      badJson.tool !== "sdk-mcp-gen" ||
+      badJson.check !== "openapi-mcp-drift" ||
+      !Array.isArray(badJson.removed) ||
+      !badJson.removed.includes("getPet") ||
+      !Array.isArray(badJson.added) ||
+      typeof badJson.baselineToolCount !== "number" ||
+      typeof badJson.outToolCount !== "number" ||
+      typeof badJson.clientsChecked !== "boolean" ||
+      typeof badJson.clientRemoved !== "object" ||
+      badJson.clientRemoved === null ||
+      Array.isArray(badJson.baselineTools) ||
+      Array.isArray(badJson.outTools)
+    ) {
+      console.error("smoke check json bad shape/breaking/getPet", badJsonRaw.slice(0, 600));
+      process.exit(1);
+    }
+    // ADDED may be present but must not flip ok/breaking
+    if (badJson.ok === true || badJson.breaking !== true) {
+      console.error("smoke check json ok must be false only from breaking", badJson);
+      process.exit(1);
+    }
+    const jsonCode = runCheck(badDir, baseDir, { checkClients: false, format: "json" });
+    if (jsonCode !== 1) {
+      console.error("smoke check json removal exit", jsonCode);
+      process.exit(1);
+    }
+    const okJsonRaw = formatCheckJson(okGhaResult);
+    let okJson;
+    try {
+      okJson = JSON.parse(okJsonRaw);
+    } catch (e) {
+      console.error("smoke check json ok JSON", e);
+      process.exit(1);
+    }
+    if (
+      okJson.ok !== true ||
+      okJson.breaking !== false ||
+      !Array.isArray(okJson.removed) ||
+      okJson.removed.length !== 0 ||
+      !Array.isArray(okJson.added) ||
+      okJson.added.length !== 0 ||
+      Object.keys(okJson.clientRemoved || {}).length !== 0
+    ) {
+      console.error("smoke check json ok should be clean", okJsonRaw.slice(0, 400));
+      process.exit(1);
+    }
+    const okJsonCode = runCheck(baseDir, baseDir, { checkClients: false, format: "json" });
+    if (okJsonCode !== 0) {
+      console.error("smoke check json identical exit", okJsonCode);
+      process.exit(1);
+    }
+    {
+      const cliSelf = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cli.js");
+      const jsonCli = spawnSync(
+        process.execPath,
+        [cliSelf, "check", "--out", badDir, "--baseline", baseDir, "--format", "json", "--no-clients"],
+        { encoding: "utf8", timeout: 8000, env: { ...process.env } }
+      );
+      if (jsonCli.status !== 1) {
+        console.error("smoke check json CLI exit", jsonCli.status, jsonCli.stderr);
+        process.exit(1);
+      }
+      let parsedCli;
+      try {
+        parsedCli = JSON.parse(jsonCli.stdout || "");
+      } catch (e) {
+        console.error("smoke check json CLI stdout", e, (jsonCli.stdout || "").slice(0, 400));
+        process.exit(1);
+      }
+      if (parsedCli.breaking !== true || !(parsedCli.removed || []).includes("getPet")) {
+        console.error("smoke check json CLI body", parsedCli);
+        process.exit(1);
+      }
+    }
+    console.log("check-json-ok");
+    // check --format junit (JUnit XML for Actions / Jenkins / GitLab; align C)
+    const badJunitRaw = formatCheckJunit(badGhaResult);
+    if (
+      !badJunitRaw.includes("<testsuite") ||
+      !badJunitRaw.includes('name="sdk-mcp-gen-drift"') ||
+      !/failures="[1-9]/.test(badJunitRaw) ||
+      !badJunitRaw.includes("getPet") ||
+      !badJunitRaw.includes('classname="tool"') ||
+      !badJunitRaw.includes('message="removed or renamed vs baseline"') ||
+      !badJunitRaw.includes("<failure")
+    ) {
+      console.error("smoke check junit bad shape/getPet", badJunitRaw.slice(0, 600));
+      process.exit(1);
+    }
+    for (const added of badGhaResult.added || []) {
+      if (
+        badJunitRaw.includes(`name="${added}"`) &&
+        badJunitRaw.includes('classname="tool"') &&
+        badJunitRaw.includes(`<testcase classname="tool" name="${added}"`)
+      ) {
+        console.error("smoke check junit must not emit ADDED as failure", added);
+        process.exit(1);
+      }
+    }
+    const junitCode = runCheck(badDir, baseDir, { checkClients: false, format: "junit" });
+    if (junitCode !== 1) {
+      console.error("smoke check junit removal exit", junitCode);
+      process.exit(1);
+    }
+    const okJunitRaw = formatCheckJunit(okGhaResult);
+    if (
+      !okJunitRaw.includes("<testsuite") ||
+      !okJunitRaw.includes('tests="0"') ||
+      !okJunitRaw.includes('failures="0"') ||
+      okJunitRaw.includes("<failure")
+    ) {
+      console.error("smoke check junit ok should be empty suite", okJunitRaw.slice(0, 400));
+      process.exit(1);
+    }
+    const okJunitCode = runCheck(baseDir, baseDir, { checkClients: false, format: "junit" });
+    if (okJunitCode !== 0) {
+      console.error("smoke check junit identical exit", okJunitCode);
+      process.exit(1);
+    }
+    {
+      const junitEscName = "a&b<c>";
+      const junitEscResult = {
+        baselineTools: [junitEscName],
+        outTools: [],
+        removed: [junitEscName],
+        added: [],
+        clientsChecked: false,
+        clientRemoved: {},
+        breaking: true,
+      };
+      const escJunit = formatCheckJunit(junitEscResult);
+      if (
+        !escJunit.includes("a&amp;b&lt;c&gt;") ||
+        escJunit.includes(junitEscName) ||
+        !escJunit.includes("<failure")
+      ) {
+        console.error("smoke check junit escape", escJunit);
+        process.exit(1);
+      }
+    }
+    {
+      const cliSelf = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cli.js");
+      const junitCli = spawnSync(
+        process.execPath,
+        [cliSelf, "check", "--out", badDir, "--baseline", baseDir, "--format", "junit", "--no-clients"],
+        { encoding: "utf8", timeout: 8000, env: { ...process.env } }
+      );
+      if (junitCli.status !== 1) {
+        console.error("smoke check junit CLI exit", junitCli.status, junitCli.stderr);
+        process.exit(1);
+      }
+      const out = junitCli.stdout || "";
+      if (
+        !out.includes("<testsuite") ||
+        !out.includes("getPet") ||
+        !out.includes("<failure") ||
+        !/failures="[1-9]/.test(out)
+      ) {
+        console.error("smoke check junit CLI stdout", out.slice(0, 600));
+        process.exit(1);
+      }
+    }
+    console.log("check-junit-ok");
+    // check --format tap (TAP version 13; align C)
+    const badTapRaw = formatCheckTap(badGhaResult);
+    if (
+      !badTapRaw.startsWith("TAP version 13\n") ||
+      !/^1\.\.[1-9]/m.test(badTapRaw) ||
+      !badTapRaw.includes("not ok ") ||
+      !badTapRaw.includes("tool/getPet") ||
+      !badTapRaw.includes("# removed or renamed vs baseline")
+    ) {
+      console.error("smoke check tap bad shape/getPet", badTapRaw.slice(0, 600));
+      process.exit(1);
+    }
+    for (const added of badGhaResult.added || []) {
+      if (badTapRaw.includes(`tool/${added}`) && badTapRaw.includes("not ok ")) {
+        // ADDED must not appear as a not-ok tool/<added> failure line
+        const re = new RegExp(`^not ok \\d+ - tool/${added.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m");
+        if (re.test(badTapRaw)) {
+          console.error("smoke check tap must not emit ADDED as failure", added);
+          process.exit(1);
+        }
+      }
+    }
+    const tapCode = runCheck(badDir, baseDir, { checkClients: false, format: "tap" });
+    if (tapCode !== 1) {
+      console.error("smoke check tap removal exit", tapCode);
+      process.exit(1);
+    }
+    const okTapRaw = formatCheckTap(okGhaResult);
+    if (
+      okTapRaw !== "TAP version 13\n1..0\n" ||
+      okTapRaw.includes("not ok") ||
+      okTapRaw.includes("ok 1")
+    ) {
+      console.error("smoke check tap ok should be empty plan 1..0", okTapRaw.slice(0, 400));
+      process.exit(1);
+    }
+    const okTapCode = runCheck(baseDir, baseDir, { checkClients: false, format: "tap" });
+    if (okTapCode !== 0) {
+      console.error("smoke check tap identical exit", okTapCode);
+      process.exit(1);
+    }
+    {
+      const tapEscName = "a#b";
+      const tapEscResult = {
+        baselineTools: [tapEscName],
+        outTools: [],
+        removed: [tapEscName],
+        added: [],
+        clientsChecked: false,
+        clientRemoved: {},
+        breaking: true,
+      };
+      const escTap = formatCheckTap(tapEscResult);
+      if (
+        !escTap.includes("tool/a\\#b") ||
+        escTap.includes("tool/a#b") ||
+        !escTap.includes("not ok 1")
+      ) {
+        console.error("smoke check tap escape #", escTap);
+        process.exit(1);
+      }
+    }
+    {
+      const cliSelf = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cli.js");
+      const tapCli = spawnSync(
+        process.execPath,
+        [cliSelf, "check", "--out", badDir, "--baseline", baseDir, "--format", "tap", "--no-clients"],
+        { encoding: "utf8", timeout: 8000, env: { ...process.env } }
+      );
+      if (tapCli.status !== 1) {
+        console.error("smoke check tap CLI exit", tapCli.status, tapCli.stderr);
+        process.exit(1);
+      }
+      const out = tapCli.stdout || "";
+      if (
+        !out.includes("TAP version 13") ||
+        !out.includes("tool/getPet") ||
+        !out.includes("not ok ") ||
+        !/^1\.\.[1-9]/m.test(out)
+      ) {
+        console.error("smoke check tap CLI stdout", out.slice(0, 600));
+        process.exit(1);
+      }
+    }
+    console.log("check-tap-ok");
     // checksum manifest: generate writes checksums.sha256; verify OK; tweak fails
     const sumDir = path.join(tmp, "sums");
     const sumResult = generateToDir(demoSpec, sumDir, ["ts", "python", "go", "java", "rust", "csharp", "kotlin", "swift", "ruby", "php"]);
@@ -4220,16 +4685,16 @@ if (cmd === "--version" || cmd === "-V") {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, rust-page-ok, php-auth-ok, php-page-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok, typed-errors-ok, registry-pack-ok)`);
+  console.log(`sdk-mcp-gen ${VERSION} smoke OK — ${ops.length} ops -> ${tools.length} MCP tools (yaml-ok, py-ok, go-ok, java-ok, rust-ok, csharp-ok, kotlin-ok, swift-ok, ruby-ok, php-ok, check-ok, checksums-ok, dry-run-ok, mcp-ok, mcp-py-ok, mcp-go-ok, mcp-json-ok, package-name-ok, openapi-3.1-ok, url-ok, url-header-ok, url-watch-ok, zip-ok, license-ok, gitignore-ok, page-ok, auth-ok, auth-op-ok, java-auth-ok, java-retry-ok, java-page-ok, rust-auth-ok, rust-page-ok, php-auth-ok, php-page-ok, pack-ok, ua-ok, request-id-ok, accept-ok, idem-ok, mcp-id-ok, mcp-accept-ok, mcp-retry-ok, mcp-timeout-ok, typed-errors-ok, registry-pack-ok, check-gha-ok, check-html-ok, check-sarif-ok, check-json-ok, check-junit-ok, check-tap-ok)`);
 } else if (cmd === "demo") {
   console.log(JSON.stringify({ operations: listOperations(demoSpec), mcpTools: toMcpTools(listOperations(demoSpec)) }, null, 2));
 } else if (cmd === "check") {
-  const { out, baseline, checkClients } = parseCheckArgs(process.argv.slice(3));
+  const { out, baseline, checkClients, format } = parseCheckArgs(process.argv.slice(3));
   if (!out || !baseline) {
-    console.error("usage: sdk-mcp-gen check --out <dir> --baseline <dir> [--no-clients]");
+    console.error("usage: sdk-mcp-gen check --out <dir> --baseline <dir> [--no-clients] [--format text|gha|md|html|sarif|json|junit|tap]");
     process.exit(2);
   }
-  process.exit(runCheck(out, baseline, { checkClients }));
+  process.exit(runCheck(out, baseline, { checkClients, format }));
 } else if (cmd === "verify-checksums") {
   const { out } = parseVerifyChecksumsArgs(process.argv.slice(3));
   if (!out) {

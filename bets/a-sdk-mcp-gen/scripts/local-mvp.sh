@@ -1173,6 +1173,18 @@ if [ "$CHECK_FAIL_RC" -eq 0 ]; then
 fi
 echo "check_fail_rc=$CHECK_FAIL_RC (expected non-zero)"
 
+# optional --format gha: must mention removed deletePet and exit non-zero
+set +e
+GHA_OUT=$(node src/cli.js check --out out/petstore-breaking --baseline out/petstore-baseline --format gha 2>/dev/null)
+GHA_RC=$?
+set -e
+if [ "$GHA_RC" -eq 0 ]; then
+  echo "expected check --format gha to fail after removing deletePet" >&2
+  exit 1
+fi
+echo "$GHA_OUT" | grep -q '::error title=tool/deletePet::'
+echo "check_gha_ok (deletePet annotation)"
+
 # generate --check-baseline convenience must also fail
 set +e
 node src/cli.js generate out/petstore-mutated.openapi.json --out out/petstore-breaking-gen --check-baseline out/petstore-baseline

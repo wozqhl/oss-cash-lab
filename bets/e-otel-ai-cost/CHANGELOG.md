@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### report --format tap
+
+- `report --format tap` prints a TAP version 13 budget gate (align A `check --format tap` / D `scan --format tap`). Global `--budget` maxTotalUsd breach → `not ok N - budget/maxTotalUsd` + `#` diagnostic; each `--tenant-budget` breach → `not ok N - tenant/<id>` + `#` diagnostic. Clean → empty plan `1..0` (no fake passes). `#` escaped in descriptions/diagnostics. Exit codes unchanged (`--budget` still exit 1). HTTP: `GET /v1/costs?format=tap` / `GET /v1/costs.tap.txt` (`text/plain; charset=utf-8`). OpenAPI `getCostsTap`. Smoke: `tap-ok`.
+
+### GET /v1/costs.html
+
+- Versioned HTML cost export: `GET /v1/costs.html` and `GET /v1/costs?format=html` return the same self-contained `formatHtml` body as dashboard `GET /` / CLI `--format html` (`text/html; charset=utf-8`; heading + tables + SVG; empty/fixture still 200; no CDN). OpenAPI `getCostsHtml`; `CostFormat` + `bad_format.allowed` include `html`. Smoke: `costs-html-ok`. Dashboard `GET /` unchanged.
+
+### report --format junit
+
+- `report --format junit` prints a single `<testsuite name="otel-ai-cost-budget">` JUnit XML budget gate (Actions / Jenkins / GitLab ingest). Global `--budget` maxTotalUsd breach → `<testcase classname="budget" name="maxTotalUsd">` + `<failure>`; each `--tenant-budget` breach → `<testcase classname="tenant" name="<id>">` + `<failure>`. Clean → empty suite `tests="0" failures="0" errors="0"`. XML-escaped (`& < > " '`). Exit codes unchanged (`--budget` still exit 1). HTTP: `GET /v1/costs?format=junit` / `GET /v1/costs.junit.xml` (`application/xml`). OpenAPI `getCostsJunit`. Smoke: `junit-ok`.
+
 - Local HTML dashboard (`GET /` / `--html`) shows remaining-by-tenant when `--tenant-budget` is set (same remaining as CSV/metrics; period: UTC day / cumulative). Grafana remaining panel already scraped `otel_ai_cost_budget_remaining_usd`; no new series or panel.
 - Optional UTC calendar-day budget window: `BUDGET_PERIOD=day` / `--budget-period day` (default off); remaining / denied_count / would-exceed count only the current UTC day.
 - Chargeback-lite: `GET /v1/tenants.csv` (alias `?format=csv`) exports in-memory tenant totals as `tenant,spend_usd,budget_usd,remaining_usd,denied_count`; JSON `GET /v1/tenants` unchanged.

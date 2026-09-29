@@ -511,6 +511,24 @@ def _handler_class() -> type[BaseHTTPRequestHandler]:
                     head_only=head_only,
                 )
                 return
+            if path == "/v1/bom.junit.xml":
+                bom = self._bom_for_request(parsed)
+                self._send(
+                    200,
+                    dumps_export(bom, "junit"),
+                    content_type_for("junit"),
+                    head_only=head_only,
+                )
+                return
+            if path == "/v1/bom.tap.txt":
+                bom = self._bom_for_request(parsed)
+                self._send(
+                    200,
+                    dumps_export(bom, "tap"),
+                    content_type_for("tap"),
+                    head_only=head_only,
+                )
+                return
             if path == "/v1/bom":
                 raw_fmt = (parse_qs(parsed.query).get("format") or ["json"])[0]
                 fmt = normalize_format(raw_fmt)
@@ -789,7 +807,7 @@ def serve_forever(
     limit_note = httpd.rate_limit if httpd.rate_limit is not None else "unlimited"
     print(f"ai-bom listening on http://{host}:{port}")
     print(f"path={path}")
-    print("GET /health  GET /ready  GET /  GET /bom.json  GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html  GET /v1/bom.xml  GET /v1/bom.spdx.xml  GET /v1/bom.sarif  GET /v1/bom.md  GET /v1/bom.gha.txt  GET /v1/bom.html  GET /clock.json  GET /clock  GET /clock.md  GET /clock.html  GET /clock.ics  GET /v1/clock?format=json|md|html|ics|gha|text  GET /v1/policy  GET /v1/config  GET /v1/components  GET /v1/exceptions  GET /evidence.md  GET /openapi.json  GET /metrics")
+    print("GET /health  GET /ready  GET /  GET /bom.json  GET /v1/bom?format=json|cyclonedx|cyclonedx-xml|spdx|spdx-xml|spdx3|sarif|md|gha|html|junit|tap  GET /v1/bom.xml  GET /v1/bom.spdx.xml  GET /v1/bom.sarif  GET /v1/bom.md  GET /v1/bom.gha.txt  GET /v1/bom.html  GET /v1/bom.junit.xml  GET /v1/bom.tap.txt  GET /clock.json  GET /clock  GET /clock.md  GET /clock.html  GET /clock.ics  GET /v1/clock?format=json|md|html|ics|gha|text  GET /v1/policy  GET /v1/config  GET /v1/components  GET /v1/exceptions  GET /evidence.md  GET /openapi.json  GET /metrics")
     print(f"cors={cors_note}")
     print(f"rate_limit_per_minute={limit_note}")
     print(f"watch={'poll %dms' % WATCH_POLL_MS if watch else 'off'}")

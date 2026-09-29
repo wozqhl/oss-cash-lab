@@ -61,3 +61,17 @@ jobs:
       # Optional tenant annotations (prints ::error title=tenant/acme::, still exit 0):
       # - name: Tenant annotations
       #   run: node src/cli.js report --in examples/spans.json --tenant-budget acme=0.0001 --format gha
+
+      # Optional JUnit XML budget gate (Actions / Jenkins / GitLab ingest; empty suite when no breach):
+      # - name: JUnit budget gate
+      #   run: node src/cli.js report --in examples/spans.json --tenant-budget acme=0.0001 --format junit > costs.junit.xml
+      # - name: Upload JUnit
+      #   if: always()
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: otel-ai-cost-junit
+      #     path: costs.junit.xml
+
+      # Optional TAP version 13 budget gate (empty plan 1..0 when clean):
+      # - name: TAP budget gate
+      #   run: node src/cli.js report --in examples/spans.json --tenant-budget acme=0.0001 --format tap > costs.tap.txt

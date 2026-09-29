@@ -88,7 +88,9 @@ from ai_bom.export import (
     to_cyclonedx_xml,
     to_gha,
     to_html,
+    to_junit,
     to_markdown,
+    to_tap,
     to_spdx,
     to_spdx3,
     to_spdx_xml,
@@ -1100,7 +1102,7 @@ def main(argv: list[str] | None = None) -> int:
         "--format",
         default=DEFAULT_FORMAT,
         choices=list(FORMAT_CHOICES),
-        help="BOM export: json (default internal model), cyclonedx (CycloneDX 1.7 JSON), cyclonedx-xml (CycloneDX 1.7 XML; alias cdx-xml), spdx (SPDX 2.3 JSON), spdx-xml (SPDX 2.3 XML; alias spdxxml), spdx3 (SPDX 3.0.1 JSON; alias spdx-3), sarif (SARIF 2.1.0; same builder as --sarif PATH), md (human/Slack Markdown summary; alias markdown), gha (GitHub Actions ::error/::notice workflow commands; alias annotations), html (self-contained HTML BOM summary; no CDN)",
+        help="BOM export: json (default internal model), cyclonedx (CycloneDX 1.7 JSON), cyclonedx-xml (CycloneDX 1.7 XML; alias cdx-xml), spdx (SPDX 2.3 JSON), spdx-xml (SPDX 2.3 XML; alias spdxxml), spdx3 (SPDX 3.0.1 JSON; alias spdx-3), sarif (SARIF 2.1.0; same builder as --sarif PATH), md (human/Slack Markdown summary; alias markdown), gha (GitHub Actions ::error/::notice workflow commands; alias annotations), html (self-contained HTML BOM summary; no CDN), junit (JUnit XML ai-bom-gate suite for Actions/Jenkins/GitLab), tap (TAP version 13 gate report; empty → 1..0; # escaped)",
     )
     p_scan.add_argument(
         "--evidence",
@@ -1649,6 +1651,8 @@ def main(argv: list[str] | None = None) -> int:
             and "md" in FORMATS
             and "gha" in FORMATS
             and "html" in FORMATS
+            and "junit" in FORMATS
+            and "tap" in FORMATS
             and normalize_format("sarif") == "sarif"
             and normalize_format("SARIF") == "sarif"
             and normalize_format("md") == "md"
@@ -1659,6 +1663,10 @@ def main(argv: list[str] | None = None) -> int:
             and normalize_format("annotations") == "gha"
             and normalize_format("html") == "html"
             and normalize_format("HTML") == "html"
+            and normalize_format("junit") == "junit"
+            and normalize_format("JUNIT") == "junit"
+            and normalize_format("tap") == "tap"
+            and normalize_format("TAP") == "tap"
         )
         if not format_ok:
             print("smoke failed cyclonedx/spdx export")
@@ -2331,6 +2339,232 @@ def main(argv: list[str] | None = None) -> int:
             print("smoke failed gha annotations", gha_hit, empty_gha, waived_gha, gha_pct)
             return 1
 
+        junit_hit = dumps_export(
+            {
+                "summary": {
+                    "policyHits": 2,
+                    "forbidden": [
+                        {"pattern": "pickle.load", "path": "app.py"},
+                    ],
+                    "forbiddenLicenses": [
+                        {
+                            "component": "leftpad",
+                            "licenseId": "GPL-3.0",
+                            "id": "license/GPL-3.0",
+                        }
+                    ],
+                    "advisoryHits": [
+                        {
+                            "id": "ADV-FIXTURE-1",
+                            "component": "ai-bom-sample-app",
+                            "summary": "Planted fixture",
+                        }
+                    ],
+                    "waived": [],
+                },
+                "components": [],
+                "metadata": {"component": {"name": "hit"}},
+            },
+            "junit",
+        )
+        junit_amp = dumps_export(
+            {
+                "summary": {
+                    "policyHits": 1,
+                    "forbiddenLicenses": [
+                        {
+                            "component": "foo & bar<'\"",
+                            "licenseId": "GPL-3.0",
+                        }
+                    ],
+                    "waived": [],
+                },
+                "components": [],
+                "metadata": {"component": {"name": "amp"}},
+            },
+            "junit",
+        )
+        empty_junit = dumps_export(
+            {"summary": {}, "components": [], "metadata": {"component": {"name": "empty"}}},
+            "junit",
+        )
+        junit_dump = to_junit(
+            {
+                "summary": {
+                    "policyHits": 1,
+                    "forbidden": [{"pattern": "pickle.load", "path": "app.py"}],
+                },
+                "components": [],
+            }
+        )
+        fixtures_j = Path(__file__).resolve().parents[2] / "examples" / "cra-fixtures"
+        policy_j = Path(__file__).resolve().parents[2] / "policies" / "default.json"
+        license_fail_j = fixtures_j / "license-fail"
+        license_pass_j = fixtures_j / "license-pass"
+        junit_cli_rc, junit_fail_out = _capture_main(
+            ["scan", str(license_fail_j), "--policy", str(policy_j), "--format", "junit"]
+        )
+        junit_cli_ok_rc, junit_pass_out = _capture_main(
+            ["scan", str(license_pass_j), "--policy", str(policy_j), "--format", "junit"]
+        )
+        junit_ok = (
+            'name="ai-bom-gate"' in junit_hit
+            and "<failure" in junit_hit
+            and 'classname="policy"' in junit_hit
+            and 'name="app.py"' in junit_hit
+            and "pickle.load" in junit_hit
+            and 'classname="license"' in junit_hit
+            and 'name="leftpad"' in junit_hit
+            and "GPL-3.0" in junit_hit
+            and 'classname="advisory"' in junit_hit
+            and "ADV-FIXTURE-1" in junit_hit
+            and "ai-bom-sample-app" in junit_hit
+            and 'tests="0" failures="0" errors="0"' in empty_junit
+            and "<failure" not in empty_junit
+            and 'name="ai-bom-gate"' in empty_junit
+            and ("foo &amp; bar&lt;&#39;&quot;" in junit_amp or "foo &amp; bar&lt;&#x27;&quot;" in junit_amp)
+            and "foo & bar" not in junit_amp
+            and dumps_export(
+                {
+                    "summary": {
+                        "policyHits": 1,
+                        "forbidden": [{"pattern": "pickle.load", "path": "app.py"}],
+                    },
+                    "components": [],
+                },
+                "junit",
+            )
+            == junit_dump
+            and junit_cli_rc == 0
+            and junit_cli_ok_rc == 0
+            and "<failure" in junit_fail_out
+            and "GPL-3.0" in junit_fail_out
+            and "cra-license-fail" in junit_fail_out
+            and 'name="ai-bom-gate"' in junit_fail_out
+            and 'name="ai-bom-gate"' in junit_pass_out
+            and 'tests="0" failures="0" errors="0"' in junit_pass_out
+            and "<failure" not in junit_pass_out
+        )
+        if not junit_ok:
+            print(
+                "smoke failed junit export",
+                junit_hit[:240],
+                empty_junit,
+                junit_amp[:160],
+                junit_cli_rc,
+            )
+            return 1
+        print("junit-ok")
+
+        tap_hit = dumps_export(
+            {
+                "summary": {
+                    "policyHits": 2,
+                    "forbidden": [
+                        {"pattern": "pickle.load", "path": "app.py"},
+                    ],
+                    "forbiddenLicenses": [
+                        {
+                            "component": "leftpad",
+                            "licenseId": "GPL-3.0",
+                            "id": "license/GPL-3.0",
+                        }
+                    ],
+                    "advisoryHits": [
+                        {
+                            "id": "ADV-FIXTURE-1",
+                            "component": "ai-bom-sample-app",
+                            "summary": "Planted fixture",
+                        }
+                    ],
+                    "waived": [],
+                },
+                "components": [],
+                "metadata": {"component": {"name": "hit"}},
+            },
+            "tap",
+        )
+        empty_tap = dumps_export(
+            {"summary": {}, "components": [], "metadata": {"component": {"name": "empty"}}},
+            "tap",
+        )
+        tap_esc = dumps_export(
+            {
+                "summary": {
+                    "policyHits": 1,
+                    "forbidden": [{"pattern": "a#b", "path": "x#y"}],
+                    "waived": [],
+                },
+                "components": [],
+            },
+            "tap",
+        )
+        tap_dump = to_tap(
+            {
+                "summary": {
+                    "policyHits": 1,
+                    "forbidden": [{"pattern": "pickle.load", "path": "app.py"}],
+                },
+                "components": [],
+            }
+        )
+        fixtures_t = Path(__file__).resolve().parents[2] / "examples" / "cra-fixtures"
+        policy_t = Path(__file__).resolve().parents[2] / "policies" / "default.json"
+        license_fail_t = fixtures_t / "license-fail"
+        license_pass_t = fixtures_t / "license-pass"
+        tap_cli_rc, tap_fail_out = _capture_main(
+            ["scan", str(license_fail_t), "--policy", str(policy_t), "--format", "tap"]
+        )
+        tap_cli_ok_rc, tap_pass_out = _capture_main(
+            ["scan", str(license_pass_t), "--policy", str(policy_t), "--format", "tap"]
+        )
+        tap_ok = (
+            tap_hit.startswith("TAP version 13\n")
+            and "not ok " in tap_hit
+            and "policy/app.py" in tap_hit
+            and "pickle.load" in tap_hit
+            and "license/leftpad" in tap_hit
+            and "GPL-3.0" in tap_hit
+            and "advisory/ai-bom-sample-app" in tap_hit
+            and "ADV-FIXTURE-1" in tap_hit
+            and empty_tap == "TAP version 13\n1..0\n"
+            and "not ok" not in empty_tap.split("\n", 2)[-1]
+            and "1..0" in empty_tap
+            and "policy/x\\#y" in tap_esc
+            and "a\\#b" in tap_esc
+            and dumps_export(
+                {
+                    "summary": {
+                        "policyHits": 1,
+                        "forbidden": [{"pattern": "pickle.load", "path": "app.py"}],
+                    },
+                    "components": [],
+                },
+                "tap",
+            )
+            == tap_dump
+            and tap_cli_rc == 0
+            and tap_cli_ok_rc == 0
+            and "TAP version 13" in tap_fail_out
+            and "not ok " in tap_fail_out
+            and "GPL-3.0" in tap_fail_out
+            and ("license/" in tap_fail_out or "cra-license-fail" in tap_fail_out)
+            and tap_pass_out.startswith("TAP version 13\n")
+            and "1..0" in tap_pass_out
+            and "not ok" not in tap_pass_out
+        )
+        if not tap_ok:
+            print(
+                "smoke failed tap export",
+                tap_hit[:240],
+                empty_tap,
+                tap_esc[:160],
+                tap_cli_rc,
+            )
+            return 1
+        print("tap-ok")
+
+
         policy_path = Path(__file__).resolve().parents[2] / "policies" / "default.json"
         try:
             lic_policy = load_policy(policy_path)
@@ -2465,6 +2699,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             if "::notice" not in gha_w or "title=leftpad::" not in gha_w or "waived" not in gha_w:
                 print("smoke failed exceptions: waived gha missing ::notice", gha_w)
+                return 1
+            junit_missing = to_junit(bom_missing)
+            if "<failure" not in junit_missing or "leftpad" not in junit_missing:
+                print("smoke failed exceptions: junit missing GPL failure", junit_missing[:200])
+                return 1
+            if "GPL-3.0" not in junit_missing:
+                print("smoke failed exceptions: junit missing GPL-3.0", junit_missing[:200])
+                return 1
+            junit_w = to_junit(bom_ok)
+            if "<failure" in junit_w and "leftpad" in junit_w and 'classname="license"' in junit_w:
+                # waived should clear forbiddenLicenses → no license failure for leftpad
+                print("smoke failed exceptions: waived junit still has license failure", junit_w[:200])
                 return 1
             sarif_w = to_sarif(bom_ok, tool_version=__version__)
             sarif_results = (sarif_w.get("runs") or [{}])[0].get("results") or []
@@ -2673,6 +2919,8 @@ def main(argv: list[str] | None = None) -> int:
             or skip_rate_limit("/v1/bom.spdx.xml")
             or skip_rate_limit("/v1/bom.md")
             or skip_rate_limit("/v1/bom.html")
+            or skip_rate_limit("/v1/bom.junit.xml")
+            or skip_rate_limit("/v1/bom.tap.txt")
             or skip_rate_limit("/v1/policy")
             or skip_rate_limit("/v1/config")
             or skip_rate_limit("/v1/components")
@@ -3000,7 +3248,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, json.JSONDecodeError) as e:
             print(f"smoke failed openapi load: {e}")
             return 1
-        need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/clock.json", "/clock", "/clock.md", "/clock.html", "/clock.ics", "/v1/clock", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
+        need = ["/health", "/ready", "/bom.json", "/v1/bom", "/v1/bom.sarif", "/v1/bom.xml", "/v1/bom.spdx.xml", "/v1/bom.md", "/v1/bom.gha.txt", "/v1/bom.html", "/v1/bom.junit.xml", "/v1/bom.tap.txt", "/clock.json", "/clock", "/clock.md", "/clock.html", "/clock.ics", "/v1/clock", "/v1/policy", "/v1/config", "/v1/components", "/v1/exceptions", "/evidence.md", "/", "/metrics", "/openapi.json"]
         paths = spec.get("paths") or {}
         missing = [p for p in need if p not in paths]
         get_health = ((paths.get("/health") or {}).get("get") or {}).get("responses") or {}
@@ -3055,6 +3303,8 @@ def main(argv: list[str] | None = None) -> int:
             and "md" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and "gha" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and "html" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
+            and "junit" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
+            and "tap" in (((params.get("BomFormat") or {}).get("schema") or {}).get("enum") or [])
             and ((paths.get("/v1/bom.sarif") or {}).get("get") or {}).get("operationId") == "getBomSarif"
             and "get" in (paths.get("/v1/bom.xml") or {})
             and ((paths.get("/v1/bom.xml") or {}).get("get") or {}).get("operationId") == "getBomXml"
@@ -3066,6 +3316,10 @@ def main(argv: list[str] | None = None) -> int:
             and ((paths.get("/v1/bom.gha.txt") or {}).get("get") or {}).get("operationId") == "getBomGha"
             and "get" in (paths.get("/v1/bom.html") or {})
             and ((paths.get("/v1/bom.html") or {}).get("get") or {}).get("operationId") == "getBomHtml"
+            and "get" in (paths.get("/v1/bom.junit.xml") or {})
+            and ((paths.get("/v1/bom.junit.xml") or {}).get("get") or {}).get("operationId") == "getBomJunit"
+            and "get" in (paths.get("/v1/bom.tap.txt") or {})
+            and ((paths.get("/v1/bom.tap.txt") or {}).get("get") or {}).get("operationId") == "getBomTap"
             and "get" in (paths.get("/v1/policy") or {})
             and ((paths.get("/v1/policy") or {}).get("get") or {}).get("operationId") == "getPolicy"
             and "PolicyGate" in ((spec.get("components") or {}).get("schemas") or {})
@@ -3359,6 +3613,46 @@ def main(argv: list[str] | None = None) -> int:
                         return 1
                     if "<table" not in alias_html:
                         print("smoke failed HTTP /v1/bom.html missing table")
+                        return 1
+                with urllib.request.urlopen(base + "/v1/bom?format=junit") as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    junit_http = resp.read().decode("utf-8")
+                    if resp.status != 200:
+                        print(f"smoke failed HTTP junit status {resp.status}")
+                        return 1
+                    if 'name="ai-bom-gate"' not in junit_http:
+                        print(f"smoke failed HTTP junit body {junit_http[:120]!r}")
+                        return 1
+                    if "xml" not in ctype:
+                        print(f"smoke failed HTTP junit content-type {ctype}")
+                        return 1
+                with urllib.request.urlopen(base + "/v1/bom.junit.xml") as resp:
+                    alias_junit = resp.read().decode("utf-8")
+                    if resp.status != 200:
+                        print(f"smoke failed HTTP /v1/bom.junit.xml status {resp.status}")
+                        return 1
+                    if 'name="ai-bom-gate"' not in alias_junit:
+                        print(f"smoke failed HTTP /v1/bom.junit.xml {alias_junit[:80]!r}")
+                        return 1
+                with urllib.request.urlopen(base + "/v1/bom?format=tap") as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    tap_http = resp.read().decode("utf-8")
+                    if resp.status != 200:
+                        print(f"smoke failed HTTP tap status {resp.status}")
+                        return 1
+                    if "TAP version 13" not in tap_http:
+                        print(f"smoke failed HTTP tap body {tap_http[:120]!r}")
+                        return 1
+                    if "text/plain" not in ctype:
+                        print(f"smoke failed HTTP tap content-type {ctype}")
+                        return 1
+                with urllib.request.urlopen(base + "/v1/bom.tap.txt") as resp:
+                    alias_tap = resp.read().decode("utf-8")
+                    if resp.status != 200:
+                        print(f"smoke failed HTTP /v1/bom.tap.txt status {resp.status}")
+                        return 1
+                    if "TAP version 13" not in alias_tap:
+                        print(f"smoke failed HTTP /v1/bom.tap.txt {alias_tap[:80]!r}")
                         return 1
                 req_pol = urllib.request.Request(
                     base + "/v1/policy", headers={"X-Request-Id": "smoke-policy-empty"}
@@ -3984,7 +4278,7 @@ def main(argv: list[str] | None = None) -> int:
                 if httpd is not None:
                     httpd.server_close()
 
-        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock+clockCli+serveClock+vex")
+        print(f"ai-bom {__version__} smoke OK — models={models} + cors+requestId+openapi+metrics+webhook+hmac+retry+watch+shutdown+accessLog+cyclonedx+spdx+spdx3+sarif+cyclonedx-xml+spdx-xml+md+gha+html+junit+tap+rateLimit+exceptions+policyGate+config+exceptionsList+advisories+osvConvert+mlbomObs+spdx3Files+spdx3Ai+evidencePack+craClock+clockCli+serveClock+vex")
         return 0
     if args.cmd == "convert-advisories":
         return _run_convert_advisories(args)

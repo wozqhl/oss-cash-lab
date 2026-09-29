@@ -46,6 +46,12 @@ Lower the cost of wiring legacy APIs into agents.
 - [x] generate with optional --lang ts,python,go,java,rust,csharp,kotlin,swift,ruby,php (default all ten)
 - [x] Petstore-like fixture demo
 - [x] Breaking check: `check --out/--baseline` + `generate --check-baseline`
+- [x] `check --format gha|md|text` (annotations → gha; CI annotations + `$GITHUB_STEP_SUMMARY`; smoke `check-gha-ok`)
+- [x] `check --format html` (self-contained HTML drift report; no CDN; smoke `check-html-ok`)
+- [x] `check --format sarif` (SARIF 2.1.0 drift report for code scanning upload; smoke `check-sarif-ok`)
+- [x] `check --format json` (machine-readable drift report for CI/jq; smoke `check-json-ok`)
+- [x] `check --format junit` (JUnit XML drift report for Actions/Jenkins/GitLab; smoke `check-junit-ok`)
+- [x] `check --format tap` (TAP version 13 drift report; empty → `1..0`; `#` escaped; smoke `check-tap-ok`)
 - [x] `generate --watch` polls OpenAPI mtime (200ms) and regenerates on change
 - [x] `generate --watch --url` polls remote spec (ETag / If-None-Match 304 skip, else body hash; default 2s; `--watch-interval-ms`)
 - [x] Generate writes `checksums.sha256`; `verify-checksums --out` (exit 0/1)
@@ -274,9 +280,21 @@ node src/cli.js generate examples/petstore.openapi.json --out out/new --check-ba
 
 Use `--no-clients` on `check` to compare only `mcp-tools.json` names.
 
+`--format text|gha|md|html|sarif|json|junit|tap` (default `text`; alias `annotations` → `gha`) selects output style. **gha** prints GitHub Actions `::error title=tool/<name>::` / `title=<lang>/<export>::` for removed tools and missing client exports (empty stdout when nothing broke; ADDED tools are OK). **md** prints a Markdown summary suitable for `$GITHUB_STEP_SUMMARY`. **html** prints a self-contained HTML report (inline CSS, no CDN; REMOVED / missing export rows highlighted). **sarif** prints SARIF 2.1.0 JSON (same OASIS schema family as D; rules `tool-removed` / `client-export-missing`; empty `results` when OK) for optional GitHub code scanning upload. **json** prints a compact machine-readable drift object (`ok`/`breaking`, counts, sorted `removed`/`added`, `clientRemoved`; ADDED listed but not breaking) for CI scripts / jq. **junit** prints a single `<testsuite name="sdk-mcp-gen-drift">` (REMOVED / missing export → `<failure>`; ADDED omitted; empty suite `tests="0"` when OK) for GitHub Actions / Jenkins / GitLab artifact ingest. **tap** prints TAP version 13 (`not ok N - tool/<name>` / `<lang>/<export>` for REMOVED / missing exports; ADDED omitted; empty plan `1..0` when OK; `#` in names escaped) for harnesses that ingest TAP (align C). Exit codes stay the same (breaking → 1, else 0, bad usage → 2). `generate --check-baseline` still uses human text.
+
+```bash
+node src/cli.js check --out out/new --baseline out/petstore --format gha
+node src/cli.js check --out out/new --baseline out/petstore --format md >> "$GITHUB_STEP_SUMMARY"
+node src/cli.js check --out out/new --baseline out/petstore --format html > drift.html
+node src/cli.js check --out out/new --baseline out/petstore --format sarif > drift.sarif
+node src/cli.js check --out out/new --baseline out/petstore --format json > drift.json
+node src/cli.js check --out out/new --baseline out/petstore --format junit > drift.junit.xml
+node src/cli.js check --out out/new --baseline out/petstore --format tap > drift.tap
+```
+
 `--check-baseline` is one-shot (no `--watch`): generate then exit with the check code.
 
-**Copy-paste workflow:** portfolio [`examples/github-actions/sdk-mcp-gen-check.yml`](../../examples/github-actions/sdk-mcp-gen-check.yml) → consumer `.github/workflows/`. Typical consumer: commit a generated `sdk/`, then CI `node src/cli.js generate examples/petstore.openapi.json --out sdk-new --check-baseline sdk` (or omit `--out` for a temp dir: `generate … --check-baseline sdk`; or two-step `check --out NEW --baseline sdk`). Exit 1 fails the job (removed/renamed tools). Happy path on the petstore fixture: generate twice, second with `--check-baseline` against the first → exit 0. Optional composite: [`examples/github-actions/sdk-mcp-gen-check/action.yml`](../../examples/github-actions/sdk-mcp-gen-check/action.yml). See [`examples/github-actions/README.md`](../../examples/github-actions/README.md). Not a required workflow on this repo.
+**Copy-paste workflow:** portfolio [`examples/github-actions/sdk-mcp-gen-check.yml`](../../examples/github-actions/sdk-mcp-gen-check.yml) → consumer `.github/workflows/`. Typical consumer: commit a generated `sdk/`, then CI `node src/cli.js generate examples/petstore.openapi.json --out sdk-new --check-baseline sdk` (or omit `--out` for a temp dir: `generate … --check-baseline sdk`; or two-step `check --out NEW --baseline sdk`). Optional `--format gha` for annotations, `--format md` appended to `$GITHUB_STEP_SUMMARY`, `--format html` for a local self-contained report, `--format sarif > drift.sarif` for optional `github/codeql-action/upload-sarif` (consumer repos with code scanning enabled; copy-paste only — not a live workflow on this portfolio), `--format json > drift.json` for jq-friendly machine-readable drift, and `--format junit > drift.junit.xml` plus optional `actions/upload-artifact` for Actions/Jenkins/GitLab ingest, and `--format tap > drift.tap` for TAP13 harnesses. Exit 1 fails the job (removed/renamed tools). Happy path on the petstore fixture: generate twice, second with `--check-baseline` against the first → exit 0. Optional composite: [`examples/github-actions/sdk-mcp-gen-check/action.yml`](../../examples/github-actions/sdk-mcp-gen-check/action.yml). See [`examples/github-actions/README.md`](../../examples/github-actions/README.md). Not a required workflow on this repo.
 
 ## Watch mode
 

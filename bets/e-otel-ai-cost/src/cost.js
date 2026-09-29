@@ -1228,6 +1228,117 @@ export function formatGha(reportResult, { budget = null } = {}) {
   return lines.join("\n") + "\n";
 }
 
+
+function junitEscape(text) {
+  return String(text == null ? "" : text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * JUnit XML budget gate report (Actions / Jenkins / GitLab ingest).
+ * Single `<testsuite name="otel-ai-cost-budget">`.
+ * Global `--budget` maxTotalUsd breach → classname=`budget` + `<failure>`.
+ * Each tenant budget breach → classname=`tenant` name=<id> + `<failure>`.
+ * Clean (no breach) → empty suite tests="0" failures="0" errors="0" (align D).
+ * XML-escaped (`& < > " '`). Never includes prompts/secrets.
+ * Exit codes stay with `--budget` gate; format only changes stdout.
+ */
+export function formatJunit(reportResult, { budget = null } = {}) {
+  const cases = [];
+  const policy = budget && typeof budget === "object" && !Array.isArray(budget) ? budget : null;
+  if (policy && policy.maxTotalUsd != null && policy.maxTotalUsd !== "") {
+    const limit = Number(policy.maxTotalUsd);
+    const actual = Number(reportResult?.totalUsd);
+    if (Number.isFinite(limit) && Number.isFinite(actual) && actual > limit) {
+      cases.push({
+        classname: "budget",
+        name: "maxTotalUsd",
+        message: `totalUsd ${actual} > budget ${limit}`,
+      });
+    }
+  }
+  const items = Array.isArray(reportResult?.budgetBreaches) ? reportResult.budgetBreaches : [];
+  for (const b of items) {
+    const tenant =
+      b?.tenant == null || String(b.tenant).trim() === "" ? UNKNOWN_TENANT : String(b.tenant);
+    const usd = Number(b?.usd);
+    const bud = Number(b?.budget);
+    cases.push({
+      classname: "tenant",
+      name: tenant,
+      message: `usd ${Number.isFinite(usd) ? usd : 0} > budget ${Number.isFinite(bud) ? bud : 0}`,
+    });
+  }
+  const n = cases.length;
+  const lines = [
+    `<testsuite name="otel-ai-cost-budget" tests="${n}" failures="${n}" errors="0" time="0">`,
+  ];
+  for (const c of cases) {
+    const cn = junitEscape(c.classname);
+    const nm = junitEscape(c.name);
+    const msg = junitEscape(c.message);
+    lines.push(`  <testcase classname="${cn}" name="${nm}" time="0">`);
+    lines.push(`    <failure message="${msg}">${msg}</failure>`);
+    lines.push("  </testcase>");
+  }
+  lines.push("</testsuite>");
+  return lines.join("\n") + "\n";
+}
+
+/** Escape TAP description/diagnostic so `#` cannot start a comment; flatten newlines. */
+function tapEscape(text) {
+  let s = text == null ? "" : String(text);
+  s = s.replace(/\r\n/g, " ").replace(/\n/g, " ").replace(/\r/g, " ");
+  return s.replace(/#/g, "\\#");
+}
+
+/**
+ * TAP version 13 budget gate report (align A check --format tap / D scan --format tap).
+ * Same hit sources as formatJunit:
+ * Global `--budget` maxTotalUsd breach → `not ok N - budget/maxTotalUsd` + `#` diagnostic.
+ * Each tenant budget breach → `not ok N - tenant/<id>` + `#` diagnostic.
+ * Clean (no breach) → empty plan `1..0` (no fake passes).
+ * `#` escaped in descriptions/diagnostics; CR/LF flattened to spaces.
+ * Exit codes stay with `--budget` gate; format only changes stdout.
+ */
+export function formatTap(reportResult, { budget = null } = {}) {
+  const cases = [];
+  const policy = budget && typeof budget === "object" && !Array.isArray(budget) ? budget : null;
+  if (policy && policy.maxTotalUsd != null && policy.maxTotalUsd !== "") {
+    const limit = Number(policy.maxTotalUsd);
+    const actual = Number(reportResult?.totalUsd);
+    if (Number.isFinite(limit) && Number.isFinite(actual) && actual > limit) {
+      cases.push({
+        desc: "budget/maxTotalUsd",
+        message: `totalUsd ${actual} > budget ${limit}`,
+      });
+    }
+  }
+  const items = Array.isArray(reportResult?.budgetBreaches) ? reportResult.budgetBreaches : [];
+  for (const b of items) {
+    const tenant =
+      b?.tenant == null || String(b.tenant).trim() === "" ? UNKNOWN_TENANT : String(b.tenant);
+    const usd = Number(b?.usd);
+    const bud = Number(b?.budget);
+    cases.push({
+      desc: `tenant/${tenant}`,
+      message: `usd ${Number.isFinite(usd) ? usd : 0} > budget ${Number.isFinite(bud) ? bud : 0}`,
+    });
+  }
+  const n = cases.length;
+  const lines = ["TAP version 13", `1..${n}`];
+  for (let i = 0; i < n; i++) {
+    const c = cases[i];
+    lines.push(`not ok ${i + 1} - ${tapEscape(c.desc)}`);
+    lines.push(`# ${tapEscape(c.message)}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
 export function formatBudgetResult(check) {
   const lines = [];
   if (check.ok) {

@@ -4,6 +4,14 @@ Bet-local notes. Portfolio root `CHANGELOG.md` is separate and is not updated he
 
 ## Unreleased
 
+### scan --format tap
+
+- `scan --format tap` prints a TAP version 13 gate report (align A `check --format tap` / C `run --format tap`). Policy hit / disclosure gap → `not ok N - policy/<component-or-id>` + `#` diagnostic; forbidden license → `license/<component>`; observed `--advisories` hits → `advisory/<component>`. Clean scan → empty plan `1..0` (no fake passes). `#` escaped in descriptions/diagnostics. Exit codes unchanged (still `--strict` / `--gate-licenses` / `--gate-vulns`). HTTP: `GET /v1/bom?format=tap` / `GET /v1/bom.tap.txt` (`text/plain; charset=utf-8`). OpenAPI `getBomTap`. Gate report, not an SBOM spec. Smoke: `tap-ok`.
+
+### scan --format junit
+
+- `scan --format junit` prints a single `<testsuite name="ai-bom-gate">` JUnit XML gate report (Actions / Jenkins / GitLab ingest). Policy hit / disclosure gap → `<testcase classname="policy">` + `<failure>`; forbidden license → `classname="license"`; observed `--advisories` hits → `classname="advisory"`. Clean scan → empty suite `tests="0" failures="0" errors="0"`. XML-escaped (`& < > " '`). Exit codes unchanged (still `--strict` / `--gate-licenses` / `--gate-vulns`). HTTP: `GET /v1/bom?format=junit` / `GET /v1/bom.junit.xml` (`application/xml`). OpenAPI `getBomJunit`. Smoke: `junit-ok`.
+
 ### Serve CRA calendar clock
 
 - Local `serve` exposes `GET /clock.json` / `GET /clock` (JSON), `/clock.md`, `/clock.html`, `/clock.ics`, and `GET /v1/clock?format=json|md|html|ics|gha|text` (same bodies as CLI clock formats; bad format → 400 `bad_format`). Optional `?as-of=YYYY-MM-DD` (UTC; invalid → 400 `bad_as_of`; default today UTC). Observed vulns default empty (same as bare `ai-bom clock`); buyers still use CLI `--advisories` / evidence-pack for matched counts. Listen banner + index nav + OpenAPI document the paths with honest "calendar helper, not a CRA certificate" / 日历辅助 wording. Calendar/evidence helper, not a CRA compliance certificate. 日历/证据辅助，不是 CRA 合格证书。 Smoke: `serve-clock-ok`.
