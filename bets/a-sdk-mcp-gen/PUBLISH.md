@@ -45,9 +45,11 @@ From bets/a-sdk-mcp-gen (or a future standalone repo):
 
 Inspect the tarball. Do not upload the package from CI or agents.
 `npm pack` is the local proof; publish is still manual.
-The files field includes src/, examples/, action.yml, and docs.
+Agents must not npm publish or upload.
+The files field includes src/, examples/, action.yml, docs, LICENSE, and NOTICE.
+LICENSE and NOTICE are in-tree (Apache-2.0; copied from the portfolio root) and are included in the pack.
 The bin field already points at ./src/cli.js. Engines: Node >=18.
-If LICENSE/NOTICE are missing here, copy them from the portfolio root first.
+Smoke prints `pack-ok` and `pack-license-ok` when the tarball lists those license files.
 The scoped name needs an org or a rename (human decision).
 
 ## 2. Official registry publisher (generated server, not this CLI)

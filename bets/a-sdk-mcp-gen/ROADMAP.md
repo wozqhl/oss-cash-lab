@@ -8,6 +8,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 - [x] Example workflow + artifact upload (examples/github-actions/sdk-mcp-gen-generate.yml)
 - [x] docs/vs-stainless.md (matches shipped timeout/retry/auth/identity headers; Stainless hosted wound down May 2026; Speakeasy + Fern/Postman remain; no fake numbers)
 - [x] Publish-ready package.json + PUBLISH.md (checklist for io.github.wozqhl/sdk-mcp-gen; do not upload from this tree)
+- [x] npm pack includes Apache-2.0 LICENSE + NOTICE (in-tree; package.json files; smoke pack-license-ok; human upload still open)
 - [x] Drift-check example remains CHECK only (examples/github-actions/sdk-mcp-gen-check.yml)
 - [x] Generated TS / Python / Go clients retry transient HTTP (429 / 5xx / network; max 2 retries; Retry-After <30s)
 - [x] Generated TS / Python / Go iterate* page helpers (page/cursor; cap 1000; existing names unchanged)
@@ -33,7 +34,7 @@ Bet-local. Portfolio root ROADMAP is updated separately.
 
 - [x] Dry-run registry-pack for generated mcp-server.mjs (local server.json + wrapper tarball layout; smoke registry-pack-ok; never POSTs; human still publishes)
 
-- [x] `check --format gha|md|text` (annotations alias → gha; CI ::error for REMOVED tools / missing client exports; md for $GITHUB_STEP_SUMMARY; smoke check-gha-ok)
+- [x] `check --format gha|md|text` (annotations alias → gha; CI ::error for REMOVED tools / missing client exports; md for `$GITHUB_STEP_SUMMARY`; smoke check-gha-ok)
 - [x] `check --format html` (self-contained HTML drift report; inline CSS; no CDN; smoke check-html-ok)
 - [x] `check --format sarif` (SARIF 2.1.0 OpenAPI/MCP drift for GitHub code scanning upload; smoke check-sarif-ok)
 - [x] `check --format json` (machine-readable OpenAPI/MCP drift for CI/jq; smoke check-json-ok)
