@@ -57,10 +57,12 @@ Ship `mock-upstream.js` for local proof (`source: mock-upstream`).
 
 ```bash
 npm run smoke
-npm run local-mvp
-# optional standalone upstream:
-node mock-upstream.js --port 8790
+npm run local-mvp   # mock upstream auto-picks a free port (UPSTREAM_PORT=... pins it)
+# optional standalone upstream (--port 0 = OS-assigned free port; the actual port is logged):
+node mock-upstream.js --port 0
 ```
+
+`local-mvp` used to default the mock upstream to fixed port **8790**, which collides with other local listeners (e.g. `sand-egress-tun` on some CI hosts; F cn-work-agent also serves on 8790) and made `GET /health` report `upstream.connected:false`. It now probes a free ephemeral port at startup and threads the same value into the mock upstream, the gateway `upstream.baseUrl`, and the health waits.
 
 Container (k8s placeholder; images not published; skip if no Docker): `docker build -t ghcr.io/wozqhl/b-mcp-gateway:dev bets/b-mcp-gateway` (`node:20-alpine`, EXPOSE **8787**, `serve --host 0.0.0.0`).
 
