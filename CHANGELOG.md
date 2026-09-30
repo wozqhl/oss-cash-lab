@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A npm pack includes Apache-2.0 LICENSE + NOTICE (in-tree; package.json files; smoke pack-license-ok). Human still publishes.
 - E `report --format tap` (TAP version 13 budget gate; `GET /v1/costs.tap.txt` / `?format=tap`; global/tenant `not ok`; clean → `1..0`; `#` escaped; smoke `tap-ok`).
 - D `scan --format tap` (TAP version 13 gate report; `GET /v1/bom?format=tap` / `GET /v1/bom.tap.txt`; policy/license/advisory `not ok`; clean → `1..0`; `#` escaped; smoke `tap-ok`).
 - A `check --format tap` (TAP version 13 OpenAPI/MCP drift; empty → 1..0; # escaped; smoke check-tap-ok).

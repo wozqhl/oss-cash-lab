@@ -4,7 +4,7 @@
 
 Docs: [vs Stainless / Speakeasy / OpenAPI Generator](./docs/vs-stainless.md) · [PUBLISH.md](./PUBLISH.md) · [CHANGELOG](./CHANGELOG.md) · [ROADMAP](./ROADMAP.md)
 
-`npm pack` is the local proof the tarball is installable (smoke prints `pack-ok`); publish is still manual.
+`npm pack` is the local proof the tarball is installable (smoke prints `pack-ok` + `pack-license-ok` for LICENSE/NOTICE); publish is still manual.
 `registry-pack` writes a local listing payload for generated mcp-server.mjs (smoke prints `registry-pack-ok`); never POSTs; human still publishes.
 
 ## Thesis / 立意
