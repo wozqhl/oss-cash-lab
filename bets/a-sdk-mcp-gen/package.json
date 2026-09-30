@@ -37,7 +37,9 @@
     "README.md",
     "PUBLISH.md",
     "CHANGELOG.md",
-    "docs"
+    "docs",
+    "LICENSE",
+    "NOTICE"
   ],
   "keywords": [
     "openapi",
