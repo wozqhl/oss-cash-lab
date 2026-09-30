@@ -1,1 +1,1 @@
-file:///workspace/oss-cash-lab/bets/a-sdk-mcp-gen/src/cli.js
+PLACEHOLDER
