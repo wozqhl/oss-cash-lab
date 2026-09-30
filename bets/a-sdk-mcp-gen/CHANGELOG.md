@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Pack includes in-tree Apache-2.0 `LICENSE` + `NOTICE` (`package.json` `files`; copied from portfolio root). Smoke `npm pack` asserts `package/LICENSE` + `package/NOTICE` and prints `pack-license-ok` (with `pack-ok`). Human still publishes; agents do not upload.
 - `check --format tap` — TAP version 13 OpenAPI/MCP drift report (align C; `TAP version 13` + plan `1..N`; REMOVED tools → `not ok N - tool/<name>` + `#` diagnostic; missing client exports → `not ok N - <lang>/<export>`; ADDED omitted; empty plan `1..0` when OK; `#` in names escaped). Exit codes unchanged. Smoke prints `check-tap-ok`. Optional copy-paste `--format tap > drift.tap`.
 - `check --format junit` — JUnit XML OpenAPI/MCP drift report for GitHub Actions / Jenkins / GitLab (`<testsuite name="sdk-mcp-gen-drift">`; one `<testcase>` per REMOVED tool or missing client export with `<failure>`; ADDED omitted; empty suite `tests="0"` when OK). Exit codes unchanged. Smoke prints `check-junit-ok`. Optional copy-paste `--format junit > drift.junit.xml` + upload-artifact note in the GHA example.
 - `check --format json` — machine-readable OpenAPI/MCP drift report for CI / jq (`ok`/`breaking`, tool counts, sorted `removed`/`added`, `clientsChecked`, `clientRemoved`; ADDED listed but not breaking; no full tool-name lists). Exit codes unchanged. Smoke prints `check-json-ok`. Optional copy-paste `--format json > drift.json` note in the GHA example.
