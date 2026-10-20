@@ -13,7 +13,7 @@ authors = [{ name = "wozqhl" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=9.1.1"]
 
 [project.scripts]
 ai-bom = "ai_bom.cli:main"
